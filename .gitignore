@@ -1,0 +1,16 @@
+# Rust
+target/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+.env
+*.zip
+land-polygons-*

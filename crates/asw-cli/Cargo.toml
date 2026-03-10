@@ -1,0 +1,22 @@
+[package]
+name = "asw-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "asw"
+path = "src/main.rs"
+
+[dependencies]
+asw-build = { path = "../asw-build" }
+asw-serve = { path = "../asw-serve" }
+asw-core = { path = "../asw-core" }
+asw-cloud = { path = "../asw-cloud" }
+clap = { version = "4", features = ["derive", "env"] }
+h3o.workspace = true
+tokio = { version = "1", features = ["full"] }
+axum = "0.8"
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow.workspace = true
+dotenvy = "0.15"

@@ -1,0 +1,16 @@
+[package]
+name = "asw-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+h3o.workspace = true
+geo.workspace = true
+geo-types.workspace = true
+rstar.workspace = true
+serde.workspace = true
+bincode.workspace = true
+ordered-float.workspace = true
+geojson.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
