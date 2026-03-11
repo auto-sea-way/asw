@@ -61,6 +61,26 @@ crates/
 └── asw-cli       # CLI entry point
 ```
 
+## Full Planet Build
+
+Built on Hetzner cpx62 (16 vCPU, 32 GB RAM):
+
+| Metric | Value |
+|--------|-------|
+| Nodes | 11,462,948 |
+| Edges | 85,631,148 |
+| Graph file size | 1.4 GB |
+| Build time | ~33 min |
+| Connectivity | 95.7% (largest component: 10.97M nodes) |
+| Components | 31,139 |
+| Peak RAM | ~7.5 GB |
+| Graph load time | ~8.5 sec |
+| Route query (NY→Marmaris, 8924 km) | 0.67 sec |
+
+```bash
+asw cloud build --output export/planet.graph
+```
+
 ## Known Limitations
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.

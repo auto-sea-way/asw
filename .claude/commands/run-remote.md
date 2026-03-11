@@ -63,6 +63,6 @@ cargo run -p asw-cli -- cloud teardown
 - Always use `-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null` for SSH
 - Remote data directory: `/data/asw`
 - Remote binary: `/usr/local/bin/asw`
-- Server type: cpx62 (64 GB RAM, 32 vCPU), Ubuntu 24.04, location: nbg1
+- Server type: cpx62 (32 GB RAM, 16 vCPU), Ubuntu 24.04, location: nbg1
 - Keep the server alive between commands unless explicitly asked to tear down
 - Show the command output to the user clearly
