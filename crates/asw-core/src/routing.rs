@@ -190,3 +190,54 @@ pub fn compute_route(
         coordinates,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::GraphBuilder;
+
+    fn diamond_graph() -> RoutingGraph {
+        let mut b = GraphBuilder::new();
+        b.add_node(0.0, 0.0);   // A = 0
+        b.add_node(0.05, 0.0);  // B = 1
+        b.add_node(0.0, 0.05);  // C = 2
+        b.add_node(0.05, 0.05); // D = 3
+        b.add_edge(0, 1, 5.0);
+        b.add_edge(0, 2, 10.0);
+        b.add_edge(1, 3, 5.0);
+        b.add_edge(2, 3, 10.0);
+        b.build()
+    }
+
+    #[test]
+    fn astar_shortest_path() {
+        let g = diamond_graph();
+        let result = astar(&g, 0, 3);
+        assert!(result.is_some());
+        let (path, cost) = result.unwrap();
+        assert!((cost - 10.0).abs() < 1e-6, "cost was {cost}, expected 10.0");
+        assert_eq!(path.len(), 3);
+        assert_eq!(path[0], 0);
+        assert_eq!(*path.last().unwrap(), 3);
+    }
+
+    #[test]
+    fn astar_same_node() {
+        let g = diamond_graph();
+        let result = astar(&g, 0, 0);
+        assert!(result.is_some());
+        let (path, cost) = result.unwrap();
+        assert_eq!(path, vec![0]);
+        assert!((cost - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn astar_unreachable() {
+        let mut b = GraphBuilder::new();
+        b.add_node(0.0, 0.0);
+        b.add_node(1.0, 1.0);
+        let g = b.build();
+        let result = astar(&g, 0, 1);
+        assert!(result.is_none());
+    }
+}
