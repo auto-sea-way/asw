@@ -1,3 +1,4 @@
+use asw_core::routing::compute_route;
 use axum::{
     extract::{Query, State},
     http::StatusCode,
@@ -6,10 +7,9 @@ use axum::{
     Router,
 };
 use serde::{Deserialize, Serialize};
-use asw_core::routing::compute_route;
 use std::sync::Arc;
 
-use crate::state::AppState;
+use crate::state::ServerState;
 
 #[derive(Deserialize)]
 pub struct RouteQuery {
@@ -32,20 +32,38 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+#[derive(Serialize)]
+pub struct InfoResponse {
+    pub nodes: u32,
+    pub edges: u32,
+    pub graph_path: String,
+    pub version: String,
+}
+
 fn parse_latlng(s: &str) -> Option<(f64, f64)> {
-    let parts: Vec<&str> = s.split(',').collect();
-    if parts.len() != 2 {
+    let (lat_s, lon_s) = s.split_once(',')?;
+    if lon_s.contains(',') {
         return None;
     }
-    let lat: f64 = parts[0].trim().parse().ok()?;
-    let lon: f64 = parts[1].trim().parse().ok()?;
+    let lat: f64 = lat_s.trim().parse().ok()?;
+    let lon: f64 = lon_s.trim().parse().ok()?;
     Some((lat, lon))
 }
 
 async fn route_handler(
-    State(state): State<Arc<AppState>>,
+    State(state): State<Arc<ServerState>>,
     Query(params): Query<RouteQuery>,
 ) -> Result<Json<RouteResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let guard = state.inner.read().await;
+    let app = guard.as_ref().ok_or_else(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Server is loading graph...".into(),
+            }),
+        )
+    })?;
+
     let (from_lat, from_lon) = parse_latlng(&params.from).ok_or_else(|| {
         (
             StatusCode::BAD_REQUEST,
@@ -64,15 +82,15 @@ async fn route_handler(
         )
     })?;
 
-    let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { state.nearest_node(lat, lon) };
+    let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.nearest_node(lat, lon) };
 
     let result = compute_route(
-        &state.graph,
+        &app.graph,
         from_lat,
         from_lon,
         to_lat,
         to_lon,
-        &state.coastline,
+        &app.coastline,
         &knn,
     )
     .ok_or_else(|| {
@@ -101,9 +119,34 @@ async fn health_handler() -> &'static str {
     "ok"
 }
 
-pub fn create_router(state: Arc<AppState>) -> Router {
+async fn ready_handler(State(state): State<Arc<ServerState>>) -> Result<&'static str, StatusCode> {
+    let guard = state.inner.read().await;
+    if guard.is_some() {
+        Ok("ready")
+    } else {
+        Err(StatusCode::SERVICE_UNAVAILABLE)
+    }
+}
+
+async fn info_handler(
+    State(state): State<Arc<ServerState>>,
+) -> Result<Json<InfoResponse>, StatusCode> {
+    let guard = state.inner.read().await;
+    let app = guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+
+    Ok(Json(InfoResponse {
+        nodes: app.graph.num_nodes,
+        edges: app.graph.num_edges,
+        graph_path: state.graph_path.clone(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    }))
+}
+
+pub fn create_router(state: Arc<ServerState>) -> Router {
     Router::new()
         .route("/route", get(route_handler))
         .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .route("/info", get(info_handler))
         .with_state(state)
 }

@@ -1,6 +1,26 @@
-use rstar::{primitives::GeomWithData, RTree};
 use asw_core::geo_index::CoastlineIndex;
 use asw_core::graph::RoutingGraph;
+use rstar::{primitives::GeomWithData, RTree};
+
+/// Wrapper that tracks readiness — the HTTP server starts before the graph is loaded.
+pub struct ServerState {
+    pub inner: tokio::sync::RwLock<Option<AppState>>,
+    pub graph_path: String,
+}
+
+impl ServerState {
+    pub fn new(graph_path: String) -> Self {
+        Self {
+            inner: tokio::sync::RwLock::new(None),
+            graph_path,
+        }
+    }
+
+    pub fn set_ready(&self, app: AppState) {
+        // Use blocking_lock since this is called from spawn_blocking
+        *self.inner.blocking_write() = Some(app);
+    }
+}
 
 /// Shared application state for the HTTP server.
 pub struct AppState {

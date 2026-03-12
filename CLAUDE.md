@@ -21,10 +21,14 @@ asw cloud teardown
 asw cloud status
 
 # Serve routing API
-asw serve --graph export/asw.graph
+asw serve --graph export/asw.graph --port 3000
 
-# Export KML for visualization
-asw kml --graph export/asw.graph --hexes --edges --output export/asw.kml
+# Docker
+docker build -t asw .
+docker run -v asw-data:/data -p 3000:3000 asw
+
+# Export GeoJSON for visualization
+asw geojson --graph export/asw.graph --bbox marmaris --coastline --output export/asw.geojson
 ```
 
 ## Architecture
@@ -47,4 +51,7 @@ Rust workspace with 5 crates:
 - Hetzner API via reqwest (blocking), no SDK dependency
 - Bbox presets: "dev", "dev-small", "marmaris" or custom min_lon,min_lat,max_lon,max_lat
 - `.env` file in project root auto-loaded by CLI (dotenvy) — `HETZNER_TOKEN` picked up automatically
-- `export/` directory for all output files (graphs, KML) — gitignored
+- `export/` directory for all output files (graphs, GeoJSON) — gitignored
+- Docker: multi-stage build (rust:bookworm → distroless), graph auto-download via `ASW_GRAPH_URL`
+- Readiness probe: server starts TCP listener immediately, `/ready` returns 503 until graph loaded
+- CI/CD: GitHub Actions for CI, Docker push to ghcr.io, and binary releases on version tags

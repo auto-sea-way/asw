@@ -7,7 +7,7 @@ pub mod routing;
 /// H3 resolution for the coarsest ocean tier
 pub const H3_RES_BASE: u8 = 3;
 /// H3 resolution for the finest shoreline tier
-pub const H3_RES_LEAF: u8 = 9;
+pub const H3_RES_LEAF: u8 = 10;
 
 /// Adaptive refinement cascade: (resolution, distance_threshold_deg).
 /// If a cell at `resolution` is closer than `threshold` to the coastline,
@@ -20,7 +20,8 @@ pub const H3_RES_LEAF: u8 = 9;
 /// res-6: near-mid     (edge ~3.2km) — threshold 0.025° (~2.8km)→ refine to res-7
 /// res-7: coastal      (edge ~1.2km) — threshold 0.012° (~1.3km)→ refine to res-8
 /// res-8: near-coast   (edge ~461m)  — threshold 0.005° (~550m) → refine to res-9
-/// res-9: shoreline    (edge ~174m)  — leaf level, no refinement
+/// res-9: near-shore   (edge ~174m)  — threshold 0.002° (~220m) → refine to res-10
+/// res-10: shoreline   (edge ~66m)   — leaf level, no refinement
 /// ```
 pub const CASCADE: &[(u8, f64)] = &[
     (3, 0.30),
@@ -29,9 +30,8 @@ pub const CASCADE: &[(u8, f64)] = &[
     (6, 0.025),
     (7, 0.012),
     (8, 0.005),
+    (9, 0.002),
 ];
 
 /// Max vertices per coastline segment for R-tree indexing
 pub const COASTLINE_SUBDIVIDE_MAX: usize = 256;
-/// Max distance (km) to snap a passage waypoint to an existing node
-pub const PASSAGE_SNAP_KM: f64 = 5.0;

@@ -35,10 +35,7 @@ pub fn resolution(cell: CellIndex) -> u8 {
 /// Get the boundary vertices of an H3 cell as Vec<(lat, lon)> in degrees.
 pub fn cell_boundary(cell: CellIndex) -> Vec<(f64, f64)> {
     let boundary = cell.boundary();
-    boundary
-        .iter()
-        .map(|ll| (ll.lat(), ll.lng()))
-        .collect()
+    boundary.iter().map(|ll| (ll.lat(), ll.lng())).collect()
 }
 
 /// Convert an H3 cell boundary to a geo::Polygon (lon/lat coordinates).
@@ -46,7 +43,10 @@ pub fn cell_polygon(cell: CellIndex) -> geo::Polygon<f64> {
     let boundary = cell.boundary();
     let mut coords: Vec<geo::Coord<f64>> = boundary
         .iter()
-        .map(|ll| geo::Coord { x: ll.lng(), y: ll.lat() })
+        .map(|ll| geo::Coord {
+            x: ll.lng(),
+            y: ll.lat(),
+        })
         .collect();
     // Close the ring
     if let Some(&first) = coords.first() {

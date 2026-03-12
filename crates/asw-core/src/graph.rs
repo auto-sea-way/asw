@@ -32,6 +32,12 @@ pub struct GraphBuilder {
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
 }
 
+impl Default for GraphBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GraphBuilder {
     pub fn new() -> Self {
         Self {
@@ -110,15 +116,17 @@ impl GraphBuilder {
 }
 
 impl RoutingGraph {
-    /// Serialize to a writer via bincode.
+    /// Serialize to a writer via bincode + zstd compression.
     pub fn save<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        bincode::serialize_into(writer, self)?;
+        let encoder = zstd::Encoder::new(writer, 3)?.auto_finish();
+        bincode::serialize_into(encoder, self)?;
         Ok(())
     }
 
-    /// Deserialize from a reader via bincode.
+    /// Deserialize from a reader via bincode + zstd decompression.
     pub fn load<R: Read>(reader: R) -> anyhow::Result<Self> {
-        let graph = bincode::deserialize_from(reader)?;
+        let decoder = zstd::Decoder::new(reader)?;
+        let graph = bincode::deserialize_from(decoder)?;
         Ok(graph)
     }
 

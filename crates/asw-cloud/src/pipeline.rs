@@ -24,13 +24,41 @@ struct Step {
 }
 
 const STEPS: &[Step] = &[
-    Step { number: 0, name: "provision",    description: "Create Hetzner server" },
-    Step { number: 1, name: "upload_src",   description: "Upload Rust source to server" },
-    Step { number: 2, name: "compile",      description: "Install Rust + compile on server" },
-    Step { number: 3, name: "download_shp", description: "Download land polygons on server" },
-    Step { number: 4, name: "build_graph",  description: "Run asw build on server" },
-    Step { number: 5, name: "download",     description: "Download graph to local machine" },
-    Step { number: 6, name: "teardown",     description: "Delete Hetzner server" },
+    Step {
+        number: 0,
+        name: "provision",
+        description: "Create Hetzner server",
+    },
+    Step {
+        number: 1,
+        name: "upload_src",
+        description: "Upload Rust source to server",
+    },
+    Step {
+        number: 2,
+        name: "compile",
+        description: "Install Rust + compile on server",
+    },
+    Step {
+        number: 3,
+        name: "download_shp",
+        description: "Download land polygons on server",
+    },
+    Step {
+        number: 4,
+        name: "build_graph",
+        description: "Run asw build on server",
+    },
+    Step {
+        number: 5,
+        name: "download",
+        description: "Download graph to local machine",
+    },
+    Step {
+        number: 6,
+        name: "teardown",
+        description: "Delete Hetzner server",
+    },
 ];
 
 impl Pipeline {
@@ -39,7 +67,10 @@ impl Pipeline {
 
         for step in STEPS {
             if step.name == "teardown" && self.keep_server {
-                eprintln!("  [{}/{}] {}: skipped (--keep-server)", step.number, total, step.name);
+                eprintln!(
+                    "  [{}/{}] {}: skipped (--keep-server)",
+                    step.number, total, step.name
+                );
                 continue;
             }
 
@@ -74,14 +105,17 @@ impl Pipeline {
             "provision" => return self.host.is_some(),
             "upload_src" => self.remote_file_exists(&format!("{}/Cargo.toml", REMOTE_SRC_DIR)),
             "compile" => self.remote_binary_works(),
-            "download_shp" => self.remote_dir_exists(&format!(
-                "{}/land-polygons-split-4326",
-                REMOTE_DATA_DIR
-            )),
+            "download_shp" => {
+                self.remote_dir_exists(&format!("{}/land-polygons-split-4326", REMOTE_DATA_DIR))
+            }
             "build_graph" => self.remote_file_exists(&format!("{}/asw.graph", REMOTE_DATA_DIR)),
             "download" => {
                 return self.output_path.exists()
-                    && self.output_path.metadata().map(|m| m.len() > 1024).unwrap_or(false);
+                    && self
+                        .output_path
+                        .metadata()
+                        .map(|m| m.len() > 1024)
+                        .unwrap_or(false);
             }
             _ => return false,
         };
@@ -92,7 +126,10 @@ impl Pipeline {
         let cfg = self.ssh_cfg();
         let output = ssh::run_ssh(
             &cfg,
-            &format!("{} --version 2>/dev/null && echo yes || echo no", REMOTE_BIN),
+            &format!(
+                "{} --version 2>/dev/null && echo yes || echo no",
+                REMOTE_BIN
+            ),
         )?;
         Ok(output.trim().ends_with("yes"))
     }
@@ -222,7 +259,10 @@ impl Pipeline {
         ssh::run_ssh(&cfg, &format!("mkdir -p {}", REMOTE_DATA_DIR))?;
 
         // Ensure unzip is available (defensive — bootstrap should have installed it)
-        ssh::run_ssh(&cfg, "command -v unzip >/dev/null 2>&1 || apt-get install -y -qq unzip")?;
+        ssh::run_ssh(
+            &cfg,
+            "command -v unzip >/dev/null 2>&1 || apt-get install -y -qq unzip",
+        )?;
 
         info!("Downloading land polygons (~900 MB)...");
         ssh::run_ssh_stream(
@@ -243,11 +283,14 @@ impl Pipeline {
         let shp_path = format!("{}/land-polygons-split-4326", REMOTE_DATA_DIR);
         let graph_path = format!("{}/asw.graph", REMOTE_DATA_DIR);
 
-        let mut cmd = format!("{} build --shp {} --output {}", REMOTE_BIN, shp_path, graph_path);
+        let mut cmd = format!(
+            "{} build --shp {} --output {}",
+            REMOTE_BIN, shp_path, graph_path
+        );
 
         if let Some((min_lon, min_lat, max_lon, max_lat)) = self.bbox {
             cmd.push_str(&format!(
-                " --bbox {},{},{},{}",
+                " --bbox '{},{},{},{}'",
                 min_lon, min_lat, max_lon, max_lat
             ));
         }

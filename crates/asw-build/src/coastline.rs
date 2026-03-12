@@ -1,7 +1,7 @@
-use geo::{Coord, LineString, Polygon};
-use rayon::prelude::*;
 use asw_core::geo_index::CoastlineSegment;
 use asw_core::COASTLINE_SUBDIVIDE_MAX;
+use geo::{Coord, LineString, Polygon};
+use rayon::prelude::*;
 use tracing::info;
 
 /// Extract coastline segments from land polygons and subdivide for R-tree indexing.
@@ -9,10 +9,7 @@ use tracing::info;
 pub fn extract_coastline(
     polygons: &[Polygon<f64>],
 ) -> (Vec<CoastlineSegment>, Vec<Vec<(f32, f32)>>) {
-    info!(
-        "Extracting coastline from {} polygons...",
-        polygons.len()
-    );
+    info!("Extracting coastline from {} polygons...", polygons.len());
 
     let results: Vec<Vec<LineString<f64>>> = polygons
         .par_iter()
@@ -30,7 +27,10 @@ pub fn extract_coastline(
         .collect();
 
     let all_segments: Vec<LineString<f64>> = results.into_iter().flatten().collect();
-    info!("{} coastline segments after subdivision", all_segments.len());
+    info!(
+        "{} coastline segments after subdivision",
+        all_segments.len()
+    );
 
     let coastline_segments: Vec<CoastlineSegment> = all_segments
         .iter()
@@ -39,11 +39,7 @@ pub fn extract_coastline(
 
     let coastline_coords: Vec<Vec<(f32, f32)>> = all_segments
         .iter()
-        .map(|ls| {
-            ls.coords()
-                .map(|c| (c.x as f32, c.y as f32))
-                .collect()
-        })
+        .map(|ls| ls.coords().map(|c| (c.x as f32, c.y as f32)).collect())
         .collect();
 
     (coastline_segments, coastline_coords)

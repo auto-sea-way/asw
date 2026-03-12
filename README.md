@@ -16,10 +16,25 @@ asw cloud teardown
 
 `HETZNER_TOKEN` is read from `.env` automatically.
 
+## Docker
+
+```bash
+# Run with a mounted graph file
+docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way
+
+# Auto-download graph on first start (cached in volume)
+docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/auto-sea-way/releases/download/v0.1.0/planet.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way
+
+# Custom port
+docker run -e ASW_PORT=8080 -p 8080:8080 \
+  -v /path/to/asw.graph:/data/asw.graph ghcr.io/auto-sea-way/auto-sea-way
+```
+
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Add** manual edges for critical narrow passages (Suez, Panama, Bosphorus, Dover, etc.)
@@ -40,10 +55,10 @@ asw cloud status
 asw cloud teardown
 
 # Serve routing API
-asw serve --graph export/asw.graph --listen 0.0.0.0:3000
+asw serve --graph export/asw.graph --host 0.0.0.0 --port 3000
 
-# Visualize in Google Earth
-asw kml --graph export/asw.graph --hexes --edges --output export/asw.kml
+# Export as GeoJSON for visualization
+asw geojson --graph export/asw.graph --bbox marmaris --coastline --output export/asw.geojson
 ```
 
 Bbox supports presets (`dev`, `dev-small`, `marmaris`) or `min_lon,min_lat,max_lon,max_lat`.
@@ -81,9 +96,29 @@ Built on Hetzner cpx62 (16 vCPU, 32 GB RAM):
 asw cloud build --output export/planet.graph
 ```
 
+## API Endpoints
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /route?from=lat,lon&to=lat,lon` | Compute maritime route, returns GeoJSON LineString |
+| `GET /health` | Liveness probe (always 200) |
+| `GET /ready` | Readiness probe (503 during graph load, 200 when ready) |
+| `GET /info` | Graph metadata: node/edge counts, version |
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ASW_PORT` | `3000` | Server listen port |
+| `ASW_HOST` | `0.0.0.0` | Bind address |
+| `ASW_GRAPH` | `export/asw.graph` | Path to graph file |
+| `ASW_GRAPH_URL` | — | URL to download graph if file is missing |
+| `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
+
 ## Known Limitations
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.
+- **Man-made canals (Kiel, Panama).** OSM land polygon data is derived from `natural=coastline` ways only. Man-made canals tagged as `waterway=canal` are not represented as water gaps, so routing through these canals is not currently supported. Future work: integrate supplementary OSM waterway data.
 
 ## Data Sources
 

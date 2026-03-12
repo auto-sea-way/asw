@@ -1,6 +1,9 @@
 # Rust
 target/
 
+# Output
+export/
+
 # IDE
 .idea/
 .vscode/
@@ -12,5 +15,6 @@ target/
 Thumbs.db
 
 .env
+.superpowers/
 *.zip
 land-polygons-*

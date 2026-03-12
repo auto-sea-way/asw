@@ -147,7 +147,10 @@ impl HetznerClient {
     /// Create a server with location fallback.
     fn create_server(&self, ssh_key_id: u64) -> Result<ServerInfo> {
         for &loc in HETZNER_LOCATIONS {
-            info!("Creating {} server '{}' in {} ...", HETZNER_SERVER_TYPE, HETZNER_SERVER_NAME, loc);
+            info!(
+                "Creating {} server '{}' in {} ...",
+                HETZNER_SERVER_TYPE, HETZNER_SERVER_NAME, loc
+            );
 
             let body = CreateServerRequest {
                 name: HETZNER_SERVER_NAME.to_string(),
@@ -170,7 +173,10 @@ impl HetznerClient {
             if resp.status().is_success() {
                 let created: ServerCreateResponse =
                     resp.json().context("Failed to parse create response")?;
-                info!("Server created: {} (id={})", created.server.name, created.server.id);
+                info!(
+                    "Server created: {} (id={})",
+                    created.server.name, created.server.id
+                );
                 return Ok(created.server);
             }
 
@@ -186,7 +192,10 @@ impl HetznerClient {
             bail!("Failed to create server (HTTP {}): {}", status, text);
         }
 
-        bail!("Could not create server in any location: {:?}", HETZNER_LOCATIONS);
+        bail!(
+            "Could not create server in any location: {:?}",
+            HETZNER_LOCATIONS
+        );
     }
 
     /// Delete a server by ID.
@@ -221,11 +230,7 @@ impl HetznerClient {
 
     /// List all SSH keys in the account.
     fn list_ssh_keys(&self) -> Result<Vec<SshKeyInfo>> {
-        let resp: SshKeysResponse = self
-            .get("/ssh_keys")
-            .send()?
-            .error_for_status()?
-            .json()?;
+        let resp: SshKeysResponse = self.get("/ssh_keys").send()?.error_for_status()?.json()?;
         Ok(resp.ssh_keys)
     }
 
@@ -363,7 +368,10 @@ pub fn teardown(token: &str) -> Result<()> {
             info!("Server deleted.");
         }
         None => {
-            info!("No server named '{}' found — nothing to tear down.", HETZNER_SERVER_NAME);
+            info!(
+                "No server named '{}' found — nothing to tear down.",
+                HETZNER_SERVER_NAME
+            );
         }
     }
     Ok(())

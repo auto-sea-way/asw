@@ -1,96 +1,85 @@
-/// A critical maritime passage defined by a sequence of (lat, lon) waypoints.
+/// A critical maritime passage defined by a corridor bounding box.
+///
+/// The system uses zone cells at `zone_resolution` to identify which areas
+/// of the main cascade should be refined further to `leaf_resolution`.
+/// This extends the adaptive cascade into narrow waterways without
+/// generating flat-resolution corridor cells.
 pub struct Passage {
     pub name: &'static str,
-    pub waypoints: &'static [(f64, f64)],
+    /// Bounding box around the waterway: (min_lon, min_lat, max_lon, max_lat)
+    pub corridor: (f64, f64, f64, f64),
+    /// H3 resolution for zone membership (typically 5)
+    pub zone_resolution: u8,
+    /// Cascade refines to this resolution within zone
+    pub leaf_resolution: u8,
 }
 
-/// All 10 critical passages.
+/// Critical passages with corridor bounding boxes.
+///
+/// Leaf resolution guidelines by canal width:
+/// - ~200m+ (Suez, Panama): res-11 (25m edge)
+/// - ~100m (Kiel): res-11 (25m edge)
+/// - ~25m (Corinth): res-13 (3.5m edge)
+/// - Wide straits (Bosphorus, Dover, etc.): res-10
 pub static PASSAGES: &[Passage] = &[
     Passage {
         name: "Suez Canal",
-        waypoints: &[
-            (29.9167, 32.5500),
-            (30.2000, 32.3400),
-            (30.4500, 32.3500),
-            (30.7167, 32.3400),
-            (31.0000, 32.3200),
-            (31.2667, 32.3100),
-        ],
+        corridor: (32.20, 29.85, 32.65, 31.32),
+        zone_resolution: 5,
+        leaf_resolution: 11,
     },
     Passage {
         name: "Panama Canal",
-        waypoints: &[
-            (8.9500, -79.5700),
-            (9.1000, -79.7000),
-            (9.2800, -79.9200),
-        ],
+        corridor: (-79.95, 8.88, -79.50, 9.42),
+        zone_resolution: 5,
+        leaf_resolution: 11,
     },
     Passage {
         name: "Kiel Canal",
-        waypoints: &[
-            (54.3667, 10.1500),
-            (54.3333, 9.9500),
-            (54.3167, 9.7000),
-            (54.3167, 9.5000),
-            (54.2833, 9.1500),
-        ],
+        corridor: (9.05, 53.85, 10.20, 54.40),
+        zone_resolution: 5,
+        leaf_resolution: 11,
     },
     Passage {
         name: "Corinth Canal",
-        waypoints: &[
-            (37.9333, 22.9833),
-            (37.9167, 23.0000),
-            (37.9000, 23.0167),
-        ],
+        corridor: (22.94, 37.88, 23.03, 37.96),
+        zone_resolution: 5,
+        leaf_resolution: 13,
     },
     Passage {
         name: "Bosphorus",
-        waypoints: &[
-            (41.2167, 29.1000),
-            (41.1167, 29.0667),
-            (41.0667, 29.0167),
-            (41.0000, 29.0000),
-        ],
+        corridor: (28.95, 40.95, 29.20, 41.28),
+        zone_resolution: 5,
+        leaf_resolution: 10,
     },
     Passage {
         name: "Dardanelles",
-        waypoints: &[
-            (40.4500, 26.6667),
-            (40.3500, 26.5000),
-            (40.2167, 26.4000),
-            (40.0500, 26.2000),
-        ],
+        corridor: (26.10, 39.95, 26.75, 40.50),
+        zone_resolution: 5,
+        leaf_resolution: 10,
     },
     Passage {
         name: "Malacca Strait",
-        waypoints: &[
-            (1.2667, 103.8500),
-            (1.1833, 103.7500),
-            (1.1667, 103.5000),
-        ],
+        corridor: (103.35, 1.10, 103.90, 1.40),
+        zone_resolution: 5,
+        leaf_resolution: 10,
     },
     Passage {
         name: "Singapore Strait",
-        waypoints: &[
-            (1.2667, 103.8500),
-            (1.2333, 104.0000),
-            (1.2500, 104.1500),
-        ],
+        corridor: (103.70, 1.15, 104.35, 1.30),
+        zone_resolution: 5,
+        leaf_resolution: 10,
     },
     Passage {
         name: "Messina Strait",
-        waypoints: &[
-            (38.2667, 15.6333),
-            (38.2000, 15.6167),
-            (38.1000, 15.6500),
-        ],
+        corridor: (15.55, 38.05, 15.70, 38.35),
+        zone_resolution: 5,
+        leaf_resolution: 10,
     },
     Passage {
         name: "Dover Strait",
-        waypoints: &[
-            (51.1000, 1.3500),
-            (50.9667, 1.5000),
-            (50.8833, 1.7000),
-        ],
+        corridor: (1.15, 50.85, 1.70, 51.20),
+        zone_resolution: 5,
+        leaf_resolution: 10,
     },
 ];

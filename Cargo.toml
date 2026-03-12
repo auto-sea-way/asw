@@ -23,6 +23,7 @@ indicatif = "0.18"
 ordered-float = "5"
 geojson = "0.24"
 anyhow = "1"
+zstd = "0.13"
 
 [profile.release]
 opt-level = 3

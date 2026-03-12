@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust stable
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-release-stable-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-release-stable-
+
+      - name: Build release binary
+        run: cargo build --release -p asw-cli
+
+      - name: Rename binary
+        run: cp target/release/asw target/release/asw-linux-amd64
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/asw-linux-amd64
+          generate_release_notes: true

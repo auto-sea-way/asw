@@ -1,10 +1,10 @@
 use anyhow::Result;
-use h3o::{CellIndex, Resolution};
-use indicatif::{ProgressBar, ProgressStyle};
-use rayon::prelude::*;
 use asw_core::geo_index::LandIndex;
 use asw_core::h3::{cell_center, haversine_km, neighbors, parent, resolution};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
+use h3o::{CellIndex, Resolution};
+use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
 use std::collections::HashMap;
 use tracing::info;
 
@@ -12,10 +12,7 @@ use tracing::info;
 pub type Edge = (u32, u32, f32);
 
 /// Build all edges: same-resolution + cross-resolution, with land-crossing removal.
-pub fn build_edges(
-    cells: &HashMap<CellIndex, u32>,
-    water: &LandIndex,
-) -> Result<Vec<Edge>> {
+pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result<Vec<Edge>> {
     let cell_list: Vec<(CellIndex, u32)> = cells.iter().map(|(&c, &id)| (c, id)).collect();
 
     // Step 1: Same-resolution edges (parallel)
@@ -53,8 +50,13 @@ pub fn build_edges(
     info!("{} same-resolution edges", same_res_edges.len());
 
     // Step 2: Cross-resolution edges for each adjacent pair: (fine, coarse)
-    // Generate all consecutive pairs: (9,8), (8,7), (7,6), (6,5), (5,4), (4,3)
-    let cross_res_pairs: Vec<(u8, u8)> = (H3_RES_BASE..H3_RES_LEAF)
+    // Derive max resolution from actual cells (may exceed H3_RES_LEAF due to corridor cells)
+    let max_res = cell_list
+        .iter()
+        .map(|(c, _)| resolution(*c))
+        .max()
+        .unwrap_or(H3_RES_LEAF);
+    let cross_res_pairs: Vec<(u8, u8)> = (H3_RES_BASE..max_res)
         .rev()
         .map(|coarse| (coarse + 1, coarse))
         .collect();
@@ -102,9 +104,12 @@ pub fn build_edges(
                         if let Some(&dst_id) = cells.get(&parent_neighbor) {
                             if resolution(parent_neighbor) == *coarse_res {
                                 let (dst_lat, dst_lon) = cell_center(parent_neighbor);
-                                let cost =
-                                    haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
-                                let (a, b) = if src_id < dst_id { (src_id, dst_id) } else { (dst_id, src_id) };
+                                let cost = haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
+                                let (a, b) = if src_id < dst_id {
+                                    (src_id, dst_id)
+                                } else {
+                                    (dst_id, src_id)
+                                };
                                 edges.push((a, b, cost));
                             }
                         }
@@ -114,9 +119,12 @@ pub fn build_edges(
                     if let Some(&dst_id) = cells.get(&parent_cell) {
                         if resolution(parent_cell) == *coarse_res {
                             let (dst_lat, dst_lon) = cell_center(parent_cell);
-                            let cost =
-                                haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
-                            let (a, b) = if src_id < dst_id { (src_id, dst_id) } else { (dst_id, src_id) };
+                            let cost = haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
+                            let (a, b) = if src_id < dst_id {
+                                (src_id, dst_id)
+                            } else {
+                                (dst_id, src_id)
+                            };
                             edges.push((a, b, cost));
                         }
                     }

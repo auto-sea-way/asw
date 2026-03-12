@@ -25,10 +25,14 @@ impl SshConfig {
 
 /// Common SSH options to avoid interactive prompts.
 const SSH_OPTS: &[&str] = &[
-    "-o", "StrictHostKeyChecking=no",
-    "-o", "UserKnownHostsFile=/dev/null",
-    "-o", "ServerAliveInterval=30",
-    "-o", "LogLevel=ERROR",
+    "-o",
+    "StrictHostKeyChecking=no",
+    "-o",
+    "UserKnownHostsFile=/dev/null",
+    "-o",
+    "ServerAliveInterval=30",
+    "-o",
+    "LogLevel=ERROR",
 ];
 
 fn ssh_base_args(cfg: &SshConfig) -> Vec<String> {

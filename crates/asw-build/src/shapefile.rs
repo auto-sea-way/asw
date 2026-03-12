@@ -1,8 +1,8 @@
 use anyhow::{Context, Result};
+use asw_core::geo_index::{LandIndex, LandPolygon};
 use geo::{Coord, LineString, Polygon};
 use indicatif::{ProgressBar, ProgressStyle};
 use shapefile::PolygonRing;
-use asw_core::geo_index::{LandIndex, LandPolygon};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -52,7 +52,11 @@ pub fn load_land_polygons(shp_path: &Path, bbox: Option<Bbox>) -> Result<LandInd
 
     if shp_path.is_dir() {
         let shp_files = find_shp_files(shp_path)?;
-        info!("Loading land polygons from {} shapefiles in {:?}", shp_files.len(), shp_path);
+        info!(
+            "Loading land polygons from {} shapefiles in {:?}",
+            shp_files.len(),
+            shp_path
+        );
         let pb = ProgressBar::new(shp_files.len() as u64);
         pb.set_style(
             ProgressStyle::default_bar()
@@ -142,10 +146,7 @@ fn convert_shapefile_polygon(shp_poly: &shapefile::Polygon) -> Vec<Polygon<f64>>
             PolygonRing::Inner(pts) => (pts, false),
         };
 
-        let coords: Vec<Coord<f64>> = points
-            .iter()
-            .map(|p| Coord { x: p.x, y: p.y })
-            .collect();
+        let coords: Vec<Coord<f64>> = points.iter().map(|p| Coord { x: p.x, y: p.y }).collect();
         let ls = LineString::new(coords);
 
         if is_outer {
@@ -189,7 +190,11 @@ pub fn download_and_extract(output_dir: &Path) -> Result<PathBuf> {
     let zip_path = output_dir.join("land-polygons-split-4326.zip");
     let extract_dir = output_dir.join("land-polygons-split-4326");
 
-    if extract_dir.is_dir() && find_shp_files(&extract_dir).map(|f| !f.is_empty()).unwrap_or(false) {
+    if extract_dir.is_dir()
+        && find_shp_files(&extract_dir)
+            .map(|f| !f.is_empty())
+            .unwrap_or(false)
+    {
         info!("Shapefiles already exist at {:?}", extract_dir);
         return Ok(extract_dir);
     }
@@ -201,7 +206,10 @@ pub fn download_and_extract(output_dir: &Path) -> Result<PathBuf> {
         .build()
         .context("Failed to build HTTP client")?;
 
-    let mut resp = client.get(url).send().context("Failed to download shapefile")?;
+    let mut resp = client
+        .get(url)
+        .send()
+        .context("Failed to download shapefile")?;
     let mut out_file = std::fs::File::create(&zip_path).context("Failed to create zip file")?;
     let bytes_copied = std::io::copy(&mut resp, &mut out_file).context("Failed to write zip")?;
     info!("Downloaded {} MB", bytes_copied / 1_000_000);

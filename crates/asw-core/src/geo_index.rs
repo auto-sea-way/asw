@@ -134,10 +134,7 @@ impl CoastlineIndex {
         let max_lat = lat1.max(lat2);
         let envelope = AABB::from_corners([min_lon, min_lat], [max_lon, max_lat]);
 
-        let line = Line::new(
-            Coord { x: lon1, y: lat1 },
-            Coord { x: lon2, y: lat2 },
-        );
+        let line = Line::new(Coord { x: lon1, y: lat1 }, Coord { x: lon2, y: lat2 });
 
         for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
             if line.intersects(&seg.line) {

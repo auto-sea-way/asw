@@ -1,0 +1,9 @@
+target/
+export/
+land-polygons-*
+*.zip
+.env
+.git/
+.idea/
+.vscode/
+.DS_Store

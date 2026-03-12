@@ -156,6 +156,9 @@ dependencies = [
  "clap",
  "dotenvy",
  "h3o",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -186,6 +189,7 @@ dependencies = [
  "rstar 0.12.2",
  "serde",
  "tracing",
+ "zstd",
 ]
 
 [[package]]

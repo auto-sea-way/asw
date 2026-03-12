@@ -18,11 +18,7 @@ pub struct RouteResult {
 }
 
 /// A* pathfinding with haversine heuristic.
-pub fn astar(
-    graph: &RoutingGraph,
-    start: u32,
-    goal: u32,
-) -> Option<(Vec<u32>, f64)> {
+pub fn astar(graph: &RoutingGraph, start: u32, goal: u32) -> Option<(Vec<u32>, f64)> {
     let n = graph.num_nodes as usize;
     let mut g_score = vec![f32::MAX; n];
     let mut came_from = vec![u32::MAX; n];
@@ -82,11 +78,7 @@ pub fn astar(
 ///
 /// Takes the raw A* path and removes unnecessary waypoints by checking
 /// if direct lines between waypoints cross any coastline.
-pub fn smooth(
-    graph: &RoutingGraph,
-    path: &[u32],
-    coastline: &CoastlineIndex,
-) -> Vec<u32> {
+pub fn smooth(graph: &RoutingGraph, path: &[u32], coastline: &CoastlineIndex) -> Vec<u32> {
     if path.len() <= 2 {
         return path.to_vec();
     }

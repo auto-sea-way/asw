@@ -1,8 +1,11 @@
+mod bench;
+mod download;
+
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use h3o::CellIndex;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 #[derive(Parser)]
@@ -21,7 +24,7 @@ enum Commands {
         shp: Option<PathBuf>,
 
         /// Bounding box: min_lon,min_lat,max_lon,max_lat or preset name (dev, dev-small, marmaris)
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         bbox: Option<String>,
 
         /// Output graph file path
@@ -35,39 +38,65 @@ enum Commands {
     /// Serve the routing API over HTTP
     Serve {
         /// Path to the graph file
-        #[arg(long, default_value = "export/asw.graph")]
+        #[arg(long, env = "ASW_GRAPH", default_value = "export/asw.graph")]
         graph: PathBuf,
 
-        /// Listen address
-        #[arg(long, default_value = "0.0.0.0:3000")]
-        listen: String,
+        /// Bind address
+        #[arg(long, env = "ASW_HOST", default_value = "0.0.0.0")]
+        host: String,
+
+        /// Listen port
+        #[arg(long, env = "ASW_PORT", default_value = "3000")]
+        port: u16,
+
+        /// URL to download graph from if file doesn't exist
+        #[arg(long, env = "ASW_GRAPH_URL")]
+        graph_url: Option<String>,
     },
-    /// Export graph as KML for visualization in Google Earth
-    Kml {
+    /// Export graph as GeoJSON for visualization
+    Geojson {
         /// Path to the graph file
         #[arg(long, default_value = "export/asw.graph")]
         graph: PathBuf,
 
-        /// Output KML file path
-        #[arg(long, default_value = "export/asw.kml")]
+        /// Output GeoJSON file path
+        #[arg(long, default_value = "export/asw.geojson")]
         output: PathBuf,
-
-        /// Include edges (can be very large)
-        #[arg(long)]
-        edges: bool,
 
         /// Include coastline segments
         #[arg(long)]
         coastline: bool,
 
-        /// Render hex boundaries instead of dots
-        #[arg(long)]
-        hexes: bool,
+        /// Bounding box: preset name or min_lon,min_lat,max_lon,max_lat
+        #[arg(long, allow_hyphen_values = true)]
+        bbox: Option<String>,
     },
     /// Cloud build: provision server, build remotely, download result
     Cloud {
         #[command(subcommand)]
         action: CloudAction,
+    },
+    /// Benchmark routing performance
+    Bench {
+        /// Path to the graph file
+        #[arg(long, env = "ASW_GRAPH", default_value = "export/asw.graph")]
+        graph: PathBuf,
+
+        /// Measured iterations per route
+        #[arg(long, default_value_t = 50)]
+        iterations: usize,
+
+        /// Output results as JSON to stdout
+        #[arg(long)]
+        json: bool,
+
+        /// Write JSON results to file
+        #[arg(long)]
+        output: Option<PathBuf>,
+
+        /// Compare against previous JSON baseline
+        #[arg(long)]
+        compare: Option<PathBuf>,
     },
 }
 
@@ -80,7 +109,7 @@ enum CloudAction {
         hetzner_token: String,
 
         /// Bounding box: preset name (dev, dev-small, marmaris) or min_lon,min_lat,max_lon,max_lat
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         bbox: Option<String>,
 
         /// Output graph file path
@@ -150,14 +179,15 @@ fn rust_src_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Go up to workspace root
     manifest_dir
-        .parent()  // crates/
-        .and_then(|p| p.parent())  // workspace root
+        .parent() // crates/
+        .and_then(|p| p.parent()) // workspace root
         .map(|p| p.to_path_buf())
         .unwrap_or(manifest_dir)
 }
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
@@ -189,42 +219,96 @@ fn main() -> Result<()> {
             asw_build::pipeline::run(&shp_path, bbox, &output)?;
             info!("Build complete!");
         }
-        Commands::Serve { graph, listen } => {
-            info!("Loading graph from {:?}...", graph);
-            let file = std::fs::File::open(&graph).context("Failed to open graph file")?;
-            let reader = std::io::BufReader::new(file);
-            let routing_graph =
-                asw_core::graph::RoutingGraph::load(reader).context("Failed to load graph")?;
+        Commands::Serve {
+            graph,
+            host,
+            port,
+            graph_url,
+        } => {
+            // Download graph if missing
+            download::ensure_graph(&graph, graph_url.as_deref())?;
 
-            info!(
-                "Graph loaded: {} nodes, {} edges",
-                routing_graph.num_nodes, routing_graph.num_edges
-            );
-
-            let state = std::sync::Arc::new(asw_serve::state::AppState::new(routing_graph));
-
-            info!(
-                "Coastline: {} segments, Node tree ready",
-                state.coastline.segment_count()
-            );
+            let listen = format!("{}:{}", host, port);
+            let graph_path = graph.display().to_string();
 
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
-                let app = asw_serve::api::create_router(state);
+                // Create server state (graph not loaded yet)
+                let state = std::sync::Arc::new(asw_serve::state::ServerState::new(graph_path));
+
+                let app = asw_serve::api::create_router(state.clone());
                 let listener = tokio::net::TcpListener::bind(&listen).await?;
                 info!("Listening on {}", listen);
+
+                // Load graph in background
+                let graph_file = graph.clone();
+                let bg_state = state.clone();
+                let load_handle = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                    info!("Loading graph from {:?}...", graph_file);
+                    let file =
+                        std::fs::File::open(&graph_file).context("Failed to open graph file")?;
+                    let reader = std::io::BufReader::new(file);
+                    let routing_graph = asw_core::graph::RoutingGraph::load(reader)
+                        .context("Failed to load graph")?;
+
+                    info!(
+                        "Graph loaded: {} nodes, {} edges",
+                        routing_graph.num_nodes, routing_graph.num_edges
+                    );
+
+                    let app_state = asw_serve::state::AppState::new(routing_graph);
+                    info!(
+                        "Coastline: {} segments, Node tree ready",
+                        app_state.coastline.segment_count()
+                    );
+
+                    bg_state.set_ready(app_state);
+                    info!("Server ready");
+                    Ok(())
+                });
+
+                // Monitor graph loading — exit on failure so orchestrator can restart
+                tokio::spawn(async move {
+                    match load_handle.await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => {
+                            tracing::error!("Graph loading failed: {:#}", e);
+                            std::process::exit(1);
+                        }
+                        Err(e) => {
+                            tracing::error!("Graph loading task panicked: {}", e);
+                            std::process::exit(1);
+                        }
+                    }
+                });
+
                 axum::serve(listener, app).await?;
                 Ok::<(), anyhow::Error>(())
             })?;
         }
-        Commands::Kml {
+        Commands::Geojson {
             graph,
             output,
-            edges,
             coastline,
-            hexes,
+            bbox,
         } => {
-            export_kml(&graph, &output, edges, coastline, hexes)?;
+            let bbox = bbox.map(|b| parse_bbox(&b)).transpose()?;
+            export_geojson(&graph, &output, coastline, bbox)?;
+        }
+        Commands::Bench {
+            graph,
+            iterations,
+            json,
+            output,
+            compare,
+        } => {
+            bench::run(
+                &graph,
+                iterations,
+                json,
+                output.as_deref(),
+                compare.as_deref(),
+            )?;
         }
         Commands::Cloud { action } => match action {
             CloudAction::Build {
@@ -275,222 +359,291 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn export_kml(graph_path: &PathBuf, output: &PathBuf, include_edges: bool, include_coastline: bool, include_hexes: bool) -> Result<()> {
+/// Build a single GeoJSON feature string for a hex cell polygon.
+fn hex_feature_string(
+    boundary: &[(f64, f64)],
+    res: u8,
+    color: &str,
+) -> String {
+    let mut s = String::with_capacity(512);
+    s.push_str(r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[["#);
+    for (j, &(lat, lon)) in boundary.iter().enumerate() {
+        if j > 0 {
+            s.push(',');
+        }
+        use std::fmt::Write as FmtWrite;
+        write!(s, "[{},{}]", lon, lat).unwrap();
+    }
+    // Close the ring
+    if let Some(&(lat, lon)) = boundary.first() {
+        use std::fmt::Write as FmtWrite;
+        write!(s, ",[{},{}]", lon, lat).unwrap();
+    }
+    use std::fmt::Write as FmtWrite;
+    write!(
+        s,
+        r#"]]}},"properties":{{"layer":"hex-res-{}","fill":"{}","fill-opacity":0.38,"stroke":"{}","stroke-opacity":1.0,"stroke-width":1}}}}"#,
+        res, color, color
+    ).unwrap();
+    s
+}
+
+/// Build a single GeoJSON feature string for a passage edge.
+fn passage_feature_string(
+    src_lon: f64,
+    src_lat: f64,
+    dst_lon: f64,
+    dst_lat: f64,
+    weight: f32,
+) -> String {
+    format!(
+        r##"{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[[{},{}],[{},{}]]}},"properties":{{"layer":"passages","stroke":"#ff00ff","stroke-width":2.5,"weight_km":{:.2}}}}}"##,
+        src_lon, src_lat, dst_lon, dst_lat, weight
+    )
+}
+
+/// Build a single GeoJSON feature string for a coastline segment.
+fn coastline_feature_string(seg: &[(f32, f32)]) -> String {
+    let mut s = String::with_capacity(256 + seg.len() * 24);
+    s.push_str(r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":["#);
+    for (j, &(lon, lat)) in seg.iter().enumerate() {
+        if j > 0 {
+            s.push(',');
+        }
+        use std::fmt::Write as FmtWrite;
+        write!(s, "[{},{}]", lon as f64, lat as f64).unwrap();
+    }
+    s.push_str(
+        r##"]},"properties":{"layer":"coastline","stroke":"#ff0000","stroke-width":1.5}}"##,
+    );
+    s
+}
+
+/// Write a GeoJSON FeatureCollection to the given path from pre-built feature strings.
+fn write_feature_collection(path: &Path, features: &[String]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut out = std::io::BufWriter::new(
+        std::fs::File::create(path)
+            .with_context(|| format!("Failed to create {}", path.display()))?,
+    );
+    write!(out, r#"{{"type":"FeatureCollection","features":["#)?;
+    for (i, feat) in features.iter().enumerate() {
+        if i > 0 {
+            write!(out, ",")?;
+        }
+        write!(out, "{}", feat)?;
+    }
+    write!(out, "]}}")?;
+    out.flush()?;
+    Ok(())
+}
+
+fn export_geojson(
+    graph_path: &Path,
+    output: &Path,
+    include_coastline: bool,
+    bbox: Option<(f64, f64, f64, f64)>,
+) -> Result<()> {
     info!("Loading graph from {:?}...", graph_path);
     let file = std::fs::File::open(graph_path).context("Failed to open graph file")?;
     let reader = std::io::BufReader::new(file);
     let graph = asw_core::graph::RoutingGraph::load(reader).context("Failed to load graph")?;
 
-    info!("Graph: {} nodes, {} edges", graph.num_nodes, graph.num_edges);
-
-    let mut out = std::io::BufWriter::new(
-        std::fs::File::create(output).context("Failed to create KML file")?,
+    info!(
+        "Graph: {} nodes, {} edges",
+        graph.num_nodes, graph.num_edges
     );
 
-    // KML header
-    write!(out, r#"<?xml version="1.0" encoding="UTF-8"?>
-<kml xmlns="http://www.opengis.net/kml/2.2">
-<Document>
-<name>asw graph</name>
-<description>{} nodes, {} edges</description>
-
-<!-- Styles -->
-<Style id="node-ocean">
-  <IconStyle>
-    <color>ffff8800</color>
-    <scale>0.4</scale>
-    <Icon><href>http://maps.google.com/mapfiles/kml/shapes/shaded_dot.png</href></Icon>
-  </IconStyle>
-  <LabelStyle><scale>0</scale></LabelStyle>
-</Style>
-<Style id="node-coastal">
-  <IconStyle>
-    <color>ff00aaff</color>
-    <scale>0.3</scale>
-    <Icon><href>http://maps.google.com/mapfiles/kml/shapes/shaded_dot.png</href></Icon>
-  </IconStyle>
-  <LabelStyle><scale>0</scale></LabelStyle>
-</Style>
-<Style id="edge">
-  <LineStyle>
-    <color>8800ff00</color>
-    <width>1</width>
-  </LineStyle>
-</Style>
-<Style id="coastline">
-  <LineStyle>
-    <color>ff0000ff</color>
-    <width>1.5</width>
-  </LineStyle>
-</Style>
-<Style id="hex-ocean">
-  <PolyStyle>
-    <color>60ff8800</color>
-    <outline>1</outline>
-  </PolyStyle>
-  <LineStyle>
-    <color>ffff8800</color>
-    <width>1</width>
-  </LineStyle>
-</Style>
-<Style id="hex-mid">
-  <PolyStyle>
-    <color>6000cc00</color>
-    <outline>1</outline>
-  </PolyStyle>
-  <LineStyle>
-    <color>ff00cc00</color>
-    <width>1</width>
-  </LineStyle>
-</Style>
-<Style id="hex-coastal">
-  <PolyStyle>
-    <color>6000aaff</color>
-    <outline>1</outline>
-  </PolyStyle>
-  <LineStyle>
-    <color>ff00aaff</color>
-    <width>1</width>
-  </LineStyle>
-</Style>
-<Style id="hex-near">
-  <PolyStyle>
-    <color>60ffff00</color>
-    <outline>1</outline>
-  </PolyStyle>
-  <LineStyle>
-    <color>ffffff00</color>
-    <width>1</width>
-  </LineStyle>
-</Style>
-<Style id="hex-shore">
-  <PolyStyle>
-    <color>60ff00ff</color>
-    <outline>1</outline>
-  </PolyStyle>
-  <LineStyle>
-    <color>ffff00ff</color>
-    <width>1</width>
-  </LineStyle>
-</Style>
-"#, graph.num_nodes, graph.num_edges)?;
-
-    // Nodes folder
-    if include_hexes {
-        write!(out, "<Folder>\n<name>Hexes ({} total)</name>\n", graph.num_nodes)?;
-        for i in 0..graph.num_nodes {
-            let cell_u64 = graph.node_cells[i as usize];
-            if cell_u64 == 0 {
-                continue; // synthetic node, no hex
-            }
-            let cell = CellIndex::try_from(cell_u64);
-            if let Ok(cell) = cell {
-                let boundary = asw_core::h3::cell_boundary(cell);
-                let res = cell.resolution() as u8;
-                let style = match res {
-                    0..=3 => "#hex-ocean",
-                    4..=5 => "#hex-mid",
-                    6..=7 => "#hex-coastal",
-                    8 => "#hex-near",
-                    _ => "#hex-shore",
-                };
-                write!(out, "<Placemark><styleUrl>{}</styleUrl><Polygon><outerBoundaryIs><LinearRing><coordinates>", style)?;
-                for (j, &(lat, lon)) in boundary.iter().enumerate() {
-                    if j > 0 {
-                        write!(out, " ")?;
-                    }
-                    write!(out, "{},{},0", lon, lat)?;
-                }
-                // Close the ring
-                if let Some(&(lat, lon)) = boundary.first() {
-                    write!(out, " {},{},0", lon, lat)?;
-                }
-                write!(out, "</coordinates></LinearRing></outerBoundaryIs></Polygon></Placemark>\n")?;
-            }
-        }
-        write!(out, "</Folder>\n")?;
-    } else {
-        write!(out, "<Folder>\n<name>Nodes ({} total)</name>\n", graph.num_nodes)?;
-        for i in 0..graph.num_nodes {
-            let lat = graph.node_lats[i as usize];
-            let lon = graph.node_lngs[i as usize];
-            let cell_u64 = graph.node_cells[i as usize];
-            let style = if cell_u64 != 0 {
-                let cell = CellIndex::try_from(cell_u64);
-                if let Ok(c) = cell {
-                    let r = c.resolution() as u8;
-                    if r <= 3 { "#node-ocean" } else if r <= 5 { "#node-ocean" } else { "#node-coastal" }
-                } else {
-                    "#node-coastal"
-                }
-            } else {
-                "#node-coastal"
-            };
-            write!(
-                out,
-                "<Placemark><styleUrl>{}</styleUrl><Point><coordinates>{},{},0</coordinates></Point></Placemark>\n",
-                style, lon, lat
-            )?;
-        }
-        write!(out, "</Folder>\n")?;
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
     }
 
-    // Edges folder
-    if include_edges {
-        let edge_count = graph.num_edges / 2; // bidirectional, count once
-        write!(out, "<Folder>\n<name>Edges (~{} unique)</name>\n", edge_count)?;
+    // Collect features by layer: hex-res-0 through hex-res-15, passages, coastline
+    // Index 0..=15 for hex resolutions, 16 for passages, 17 for coastline
+    const LAYER_PASSAGES: usize = 16;
+    const LAYER_COASTLINE: usize = 17;
+    const NUM_LAYERS: usize = 18;
+    let mut layers: Vec<Vec<String>> = vec![Vec::new(); NUM_LAYERS];
 
-        // Deduplicate: only emit edge where source < target
-        for src in 0..graph.num_nodes {
-            let src_lat = graph.node_lats[src as usize];
-            let src_lon = graph.node_lngs[src as usize];
-            for (dst, _weight) in graph.edges_with_weights(src) {
-                if src < dst {
-                    let dst_lat = graph.node_lats[dst as usize];
-                    let dst_lon = graph.node_lngs[dst as usize];
-                    write!(
-                        out,
-                        "<Placemark><styleUrl>#edge</styleUrl><LineString><coordinates>{},{},0 {},{},0</coordinates></LineString></Placemark>\n",
-                        src_lon, src_lat, dst_lon, dst_lat
-                    )?;
-                }
+    // Hex polygons
+    let mut hex_count: u64 = 0;
+    for i in 0..graph.num_nodes as usize {
+        let cell_u64 = graph.node_cells[i];
+        if cell_u64 == 0 {
+            continue; // synthetic node
+        }
+        let cell = CellIndex::try_from(cell_u64);
+        let Ok(cell) = cell else { continue };
+
+        // Bbox filter
+        if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
+            let lat = graph.node_lats[i] as f64;
+            let lon = graph.node_lngs[i] as f64;
+            if lon < min_lon || lon > max_lon || lat < min_lat || lat > max_lat {
+                continue;
             }
         }
-        write!(out, "</Folder>\n")?;
+
+        let boundary = asw_core::h3::cell_boundary(cell);
+        let res = cell.resolution() as u8;
+        let color = match res {
+            0..=3 => "#0088ff",
+            4..=5 => "#00cc00",
+            6..=7 => "#ffaa00",
+            8 => "#00ffff",
+            _ => "#ff00ff",
+        };
+
+        let feat = hex_feature_string(&boundary, res, color);
+        layers[res as usize].push(feat);
+
+        hex_count += 1;
+        if hex_count % 1_000_000 == 0 {
+            info!("  processed {} hex features...", hex_count);
+        }
     }
 
-    // Coastline folder
+    // Passage edges
+    for src in 0..graph.num_nodes as usize {
+        let src_synthetic = graph.node_cells[src] == 0;
+        let start = graph.offsets[src] as usize;
+        let end = graph.offsets[src + 1] as usize;
+        for idx in start..end {
+            let dst = graph.adjacency[idx] as usize;
+            let dst_synthetic = graph.node_cells[dst] == 0;
+
+            if !src_synthetic && !dst_synthetic {
+                continue;
+            }
+            if src >= dst {
+                continue;
+            }
+
+            let src_lat = graph.node_lats[src] as f64;
+            let src_lon = graph.node_lngs[src] as f64;
+            let dst_lat = graph.node_lats[dst] as f64;
+            let dst_lon = graph.node_lngs[dst] as f64;
+
+            if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
+                let src_in = src_lon >= min_lon && src_lon <= max_lon && src_lat >= min_lat && src_lat <= max_lat;
+                let dst_in = dst_lon >= min_lon && dst_lon <= max_lon && dst_lat >= min_lat && dst_lat <= max_lat;
+                if !src_in && !dst_in {
+                    continue;
+                }
+            }
+
+            let weight = graph.weights[idx];
+            let feat = passage_feature_string(src_lon, src_lat, dst_lon, dst_lat, weight);
+            layers[LAYER_PASSAGES].push(feat);
+        }
+    }
+    if !layers[LAYER_PASSAGES].is_empty() {
+        info!("  {} passage edges", layers[LAYER_PASSAGES].len());
+    }
+
+    // Coastline segments
     if include_coastline && !graph.coastline_coords.is_empty() {
-        write!(
-            out,
-            "<Folder>\n<name>Coastline ({} segments)</name>\n",
-            graph.coastline_coords.len()
-        )?;
-
         for seg in &graph.coastline_coords {
             if seg.len() < 2 {
                 continue;
             }
-            write!(out, "<Placemark><styleUrl>#coastline</styleUrl><LineString><coordinates>")?;
-            for (j, &(lon, lat)) in seg.iter().enumerate() {
-                if j > 0 {
-                    write!(out, " ")?;
+
+            if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
+                let in_bbox = seg.iter().any(|&(lon, lat)| {
+                    (lon as f64) >= min_lon
+                        && (lon as f64) <= max_lon
+                        && (lat as f64) >= min_lat
+                        && (lat as f64) <= max_lat
+                });
+                if !in_bbox {
+                    continue;
                 }
-                write!(out, "{},{},0", lon, lat)?;
             }
-            write!(out, "</coordinates></LineString></Placemark>\n")?;
+
+            let feat = coastline_feature_string(seg);
+            layers[LAYER_COASTLINE].push(feat);
         }
-        write!(out, "</Folder>\n")?;
     }
 
-    // KML footer
-    write!(out, "</Document>\n</kml>\n")?;
-    out.flush()?;
+    // Derive base path: strip .geojson extension
+    let stem = output
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let parent = output.parent().unwrap_or(Path::new("."));
 
+    // Write layer files: hexagons (all resolutions combined), passages, coastline
+    let mut hex_features: Vec<String> = Vec::new();
+    for idx in 0..=15 {
+        hex_features.append(&mut layers[idx]);
+    }
+    if !hex_features.is_empty() {
+        let hex_path = parent.join(format!("{}-hexagons.geojson", stem));
+        write_feature_collection(&hex_path, &hex_features)?;
+        let size = std::fs::metadata(&hex_path)?.len();
+        info!(
+            "  Layer {:?}: {} features, {:.1} MB",
+            hex_path,
+            hex_features.len(),
+            size as f64 / 1_000_000.0
+        );
+    }
+
+    if !layers[LAYER_PASSAGES].is_empty() {
+        let passages_path = parent.join(format!("{}-passages.geojson", stem));
+        write_feature_collection(&passages_path, &layers[LAYER_PASSAGES])?;
+        let size = std::fs::metadata(&passages_path)?.len();
+        info!(
+            "  Layer {:?}: {} features, {:.1} MB",
+            passages_path,
+            layers[LAYER_PASSAGES].len(),
+            size as f64 / 1_000_000.0
+        );
+    }
+
+    if !layers[LAYER_COASTLINE].is_empty() {
+        let coastline_path = parent.join(format!("{}-coastline.geojson", stem));
+        write_feature_collection(&coastline_path, &layers[LAYER_COASTLINE])?;
+        let size = std::fs::metadata(&coastline_path)?.len();
+        info!(
+            "  Layer {:?}: {} features, {:.1} MB",
+            coastline_path,
+            layers[LAYER_COASTLINE].len(),
+            size as f64 / 1_000_000.0
+        );
+    }
+
+    // Write combined file (all features in one FeatureCollection)
+    let all_features: Vec<&String> = hex_features
+        .iter()
+        .chain(layers[LAYER_PASSAGES].iter())
+        .chain(layers[LAYER_COASTLINE].iter())
+        .collect();
+
+    {
+        let mut out = std::io::BufWriter::new(
+            std::fs::File::create(output).context("Failed to create combined GeoJSON file")?,
+        );
+        write!(out, r#"{{"type":"FeatureCollection","features":["#)?;
+        for (i, feat) in all_features.iter().enumerate() {
+            if i > 0 {
+                write!(out, ",")?;
+            }
+            write!(out, "{}", feat)?;
+        }
+        write!(out, "]}}")?;
+        out.flush()?;
+    }
+
+    let total_features = all_features.len();
     let file_size = std::fs::metadata(output)?.len();
     info!(
-        "KML exported to {:?} ({:.1} MB)",
+        "Combined GeoJSON exported to {:?} ({} features, {:.1} MB)",
         output,
+        total_features,
         file_size as f64 / 1_000_000.0
     );
 
