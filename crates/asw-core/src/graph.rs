@@ -230,3 +230,95 @@ impl RoutingGraph {
         parent
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn square_graph() -> RoutingGraph {
+        let mut b = GraphBuilder::new();
+        b.add_node(0.0, 0.0);
+        b.add_node(0.0, 1.0);
+        b.add_node(1.0, 1.0);
+        b.add_node(1.0, 0.0);
+        b.add_edge(0, 1, 10.0);
+        b.add_edge(1, 2, 10.0);
+        b.add_edge(2, 3, 10.0);
+        b.add_edge(3, 0, 10.0);
+        b.build()
+    }
+
+    #[test]
+    fn graph_builder_counts() {
+        let g = square_graph();
+        assert_eq!(g.num_nodes, 4);
+        assert_eq!(g.num_edges, 8);
+    }
+
+    #[test]
+    fn graph_edges() {
+        let g = square_graph();
+        let neighbors: Vec<u32> = g.edges(0).to_vec();
+        assert_eq!(neighbors.len(), 2);
+        assert!(neighbors.contains(&1));
+        assert!(neighbors.contains(&3));
+    }
+
+    #[test]
+    fn graph_edges_with_weights() {
+        let g = square_graph();
+        let edges: Vec<(u32, f32)> = g.edges_with_weights(0).collect();
+        assert_eq!(edges.len(), 2);
+        for (_, w) in &edges {
+            assert!((*w - 10.0).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn graph_node_pos_roundtrip() {
+        let g = square_graph();
+        let (lat, lon) = g.node_pos(2);
+        assert!((lat - 1.0).abs() < 1e-6);
+        assert!((lon - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn graph_connected_components_single() {
+        let g = square_graph();
+        let comps = g.connected_components();
+        assert_eq!(comps, vec![4]);
+    }
+
+    #[test]
+    fn graph_connected_components_isolated() {
+        let mut b = GraphBuilder::new();
+        b.add_node(0.0, 0.0);
+        b.add_node(0.0, 1.0);
+        b.add_node(1.0, 1.0);
+        b.add_node(1.0, 0.0);
+        b.add_node(5.0, 5.0);
+        b.add_edge(0, 1, 10.0);
+        b.add_edge(1, 2, 10.0);
+        b.add_edge(2, 3, 10.0);
+        b.add_edge(3, 0, 10.0);
+        let g = b.build();
+        let comps = g.connected_components();
+        assert_eq!(comps, vec![4, 1]);
+    }
+
+    #[test]
+    fn graph_save_load_roundtrip() {
+        let g = square_graph();
+        let mut buf = Vec::new();
+        g.save(&mut buf).unwrap();
+
+        let g2 = RoutingGraph::load(std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(g2.num_nodes, g.num_nodes);
+        assert_eq!(g2.num_edges, g.num_edges);
+        assert_eq!(g2.node_lats, g.node_lats);
+        assert_eq!(g2.node_lngs, g.node_lngs);
+        assert_eq!(g2.adjacency, g.adjacency);
+        assert_eq!(g2.weights, g.weights);
+        assert_eq!(g2.offsets, g.offsets);
+    }
+}
