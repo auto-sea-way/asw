@@ -360,11 +360,7 @@ fn main() -> Result<()> {
 }
 
 /// Build a single GeoJSON feature string for a hex cell polygon.
-fn hex_feature_string(
-    boundary: &[(f64, f64)],
-    res: u8,
-    color: &str,
-) -> String {
+fn hex_feature_string(boundary: &[(f64, f64)], res: u8, color: &str) -> String {
     let mut s = String::with_capacity(512);
     s.push_str(r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[["#);
     for (j, &(lat, lon)) in boundary.iter().enumerate() {
@@ -413,9 +409,7 @@ fn coastline_feature_string(seg: &[(f32, f32)]) -> String {
         use std::fmt::Write as FmtWrite;
         write!(s, "[{},{}]", lon as f64, lat as f64).unwrap();
     }
-    s.push_str(
-        r##"]},"properties":{"layer":"coastline","stroke":"#ff0000","stroke-width":1.5}}"##,
-    );
+    s.push_str(r##"]},"properties":{"layer":"coastline","stroke":"#ff0000","stroke-width":1.5}}"##);
     s
 }
 
@@ -527,8 +521,14 @@ fn export_geojson(
             let dst_lon = graph.node_lngs[dst] as f64;
 
             if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
-                let src_in = src_lon >= min_lon && src_lon <= max_lon && src_lat >= min_lat && src_lat <= max_lat;
-                let dst_in = dst_lon >= min_lon && dst_lon <= max_lon && dst_lat >= min_lat && dst_lat <= max_lat;
+                let src_in = src_lon >= min_lon
+                    && src_lon <= max_lon
+                    && src_lat >= min_lat
+                    && src_lat <= max_lat;
+                let dst_in = dst_lon >= min_lon
+                    && dst_lon <= max_lon
+                    && dst_lat >= min_lat
+                    && dst_lat <= max_lat;
                 if !src_in && !dst_in {
                     continue;
                 }

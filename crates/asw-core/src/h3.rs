@@ -80,13 +80,19 @@ mod tests {
     #[test]
     fn haversine_london_paris() {
         let d = haversine_km(51.5074, -0.1278, 48.8566, 2.3522);
-        assert!((d - 344.0).abs() < 5.0, "London-Paris was {d} km, expected ~344");
+        assert!(
+            (d - 344.0).abs() < 5.0,
+            "London-Paris was {d} km, expected ~344"
+        );
     }
 
     #[test]
     fn haversine_antipodal() {
         let d = haversine_km(90.0, 0.0, -90.0, 0.0);
-        assert!((d - 20015.0).abs() < 100.0, "Antipodal was {d} km, expected ~20015");
+        assert!(
+            (d - 20015.0).abs() < 100.0,
+            "Antipodal was {d} km, expected ~20015"
+        );
     }
 
     #[test]

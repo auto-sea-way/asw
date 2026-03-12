@@ -14,29 +14,29 @@ const NUM_SAILING_ROUTES: usize = 10;
 /// Hardcoded real-world sailing routes: (name, from_lat, from_lon, to_lat, to_lon)
 const ROUTES: &[(&str, f64, f64, f64, f64)] = &[
     // Short crossings (< 100km)
-    ("English Channel",      51.11,   1.32,  50.97,   1.86),
-    ("Aegean Hop",           36.85,  28.28,  36.44,  28.23),
-    ("Strait of Gibraltar",  36.13,  -5.35,  35.79,  -5.81),
-    ("Baltic Crossing",      60.14,  24.97,  59.45,  24.76),
+    ("English Channel", 51.11, 1.32, 50.97, 1.86),
+    ("Aegean Hop", 36.85, 28.28, 36.44, 28.23),
+    ("Strait of Gibraltar", 36.13, -5.35, 35.79, -5.81),
+    ("Baltic Crossing", 60.14, 24.97, 59.45, 24.76),
     // Medium passages (100-500km)
-    ("Balearic Sea",         39.55,   2.64,  41.37,   2.18),
-    ("Florida Strait",       24.55, -81.79,  23.15, -82.35),
-    ("Malacca Route",         1.26, 103.86,   7.88,  98.38),
+    ("Balearic Sea", 39.55, 2.64, 41.37, 2.18),
+    ("Florida Strait", 24.55, -81.79, 23.15, -82.35),
+    ("Malacca Route", 1.26, 103.86, 7.88, 98.38),
     // Long haul (1000km+)
-    ("Tasman Sea",          -33.86, 151.28, -36.83, 174.78),
-    ("South Atlantic",      -33.92,  18.43, -22.91, -43.16),
-    ("North Atlantic",       40.65, -74.03,  50.89,  -1.39),
+    ("Tasman Sea", -33.86, 151.28, -36.83, 174.78),
+    ("South Atlantic", -33.92, 18.43, -22.91, -43.16),
+    ("North Atlantic", 40.65, -74.03, 50.89, -1.39),
     // Passage transits (short routes forcing passage edges)
-    ("Suez Canal",           29.50,  32.85,  31.50,  32.00),
-    ("Panama Canal",          8.80, -79.45,   9.40, -80.05),
-    ("Kiel Canal",           54.40,  10.20,  54.25,   9.10),
-    ("Corinth Canal",        37.95,  22.95,  37.88,  23.05),
-    ("Bosphorus",            40.85,  28.90,  41.35,  29.15),
-    ("Dardanelles",          40.50,  26.72,  40.00,  26.15),
-    ("Malacca Strait",        1.30, 103.90,   1.15, 103.45),
-    ("Singapore Strait",      1.30, 103.80,   1.22, 104.20),
-    ("Messina Strait",       38.30,  15.65,  38.05,  15.67),
-    ("Dover Strait",         51.15,   1.30,  50.85,   1.75),
+    ("Suez Canal", 29.50, 32.85, 31.50, 32.00),
+    ("Panama Canal", 8.80, -79.45, 9.40, -80.05),
+    ("Kiel Canal", 54.40, 10.20, 54.25, 9.10),
+    ("Corinth Canal", 37.95, 22.95, 37.88, 23.05),
+    ("Bosphorus", 40.85, 28.90, 41.35, 29.15),
+    ("Dardanelles", 40.50, 26.72, 40.00, 26.15),
+    ("Malacca Strait", 1.30, 103.90, 1.15, 103.45),
+    ("Singapore Strait", 1.30, 103.80, 1.22, 104.20),
+    ("Messina Strait", 38.30, 15.65, 38.05, 15.67),
+    ("Dover Strait", 51.15, 1.30, 50.85, 1.75),
 ];
 
 struct BenchRoute {
@@ -152,7 +152,9 @@ fn git_commit() -> String {
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -175,7 +177,17 @@ fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
             (Some(_), Some(_)) => {
                 // Validate routability with a test computation
                 let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
-                if compute_route(&app.graph, from_lat, from_lon, to_lat, to_lon, &app.coastline, &knn).is_none() {
+                if compute_route(
+                    &app.graph,
+                    from_lat,
+                    from_lon,
+                    to_lat,
+                    to_lon,
+                    &app.coastline,
+                    &knn,
+                )
+                .is_none()
+                {
                     info!("  SKIP {} (no route found)", name);
                     continue;
                 }
@@ -235,7 +247,12 @@ fn run_benchmark(
                 &knn,
             );
             let (distance_km, raw_hops, smooth_hops, coordinates) = match &first {
-                Some(r) => (r.distance_km, r.raw_hops, r.smooth_hops, r.coordinates.clone()),
+                Some(r) => (
+                    r.distance_km,
+                    r.raw_hops,
+                    r.smooth_hops,
+                    r.coordinates.clone(),
+                ),
                 None => (0.0, 0, 0, Vec::new()),
             };
 
@@ -415,7 +432,10 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
     let mut has_regression = false;
 
     for current_route in &current.routes {
-        let baseline_route = baseline.routes.iter().find(|r| r.name == current_route.name);
+        let baseline_route = baseline
+            .routes
+            .iter()
+            .find(|r| r.name == current_route.name);
         match baseline_route {
             Some(base) => {
                 let delta_pct = if base.p50_us > 0 {
@@ -444,7 +464,11 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
             None => {
                 println!(
                     "{:<20} {:>12} {:>12} {:>10} {:>10}",
-                    current_route.name, "-", format_time(current_route.p50_us), "-", "NEW"
+                    current_route.name,
+                    "-",
+                    format_time(current_route.p50_us),
+                    "-",
+                    "NEW"
                 );
             }
         }
@@ -455,11 +479,7 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
 }
 
 /// Write markdown benchmark results to `benchmarks/BENCHMARKS.md`.
-fn write_markdown(
-    stats: &[RouteStats],
-    graph: &RoutingGraph,
-    iterations: usize,
-) -> Result<()> {
+fn write_markdown(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize) -> Result<()> {
     std::fs::create_dir_all("benchmarks")?;
 
     let commit = git_commit();
@@ -604,8 +624,7 @@ fn write_geojson(stats: &[RouteStats]) -> Result<()> {
         "features": features
     });
 
-    let json_str = serde_json::to_string_pretty(&geojson)
-        .context("Failed to serialize GeoJSON")?;
+    let json_str = serde_json::to_string_pretty(&geojson).context("Failed to serialize GeoJSON")?;
     std::fs::write("benchmarks/bench-routes.geojson", json_str)
         .context("Failed to write bench-routes.geojson")?;
 
@@ -645,7 +664,12 @@ pub fn run(
         let dist = haversine_km(route.from_lat, route.from_lon, route.to_lat, route.to_lon);
         info!(
             "  {} ({:.1}km): ({:.4},{:.4}) -> ({:.4},{:.4}){}",
-            route.name, dist, route.from_lat, route.from_lon, route.to_lat, route.to_lon,
+            route.name,
+            dist,
+            route.from_lat,
+            route.from_lon,
+            route.to_lat,
+            route.to_lon,
             if route.is_passage { " [passage]" } else { "" }
         );
     }

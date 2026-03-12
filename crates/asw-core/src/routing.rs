@@ -198,9 +198,9 @@ mod tests {
 
     fn diamond_graph() -> RoutingGraph {
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0);   // A = 0
-        b.add_node(0.05, 0.0);  // B = 1
-        b.add_node(0.0, 0.05);  // C = 2
+        b.add_node(0.0, 0.0); // A = 0
+        b.add_node(0.05, 0.0); // B = 1
+        b.add_node(0.0, 0.05); // C = 2
         b.add_node(0.05, 0.05); // D = 3
         b.add_edge(0, 1, 5.0);
         b.add_edge(0, 2, 10.0);

@@ -163,8 +163,8 @@ pub fn generate_cells(
         if zone_lookup.is_empty() {
             (Vec::new(), current_water)
         } else {
-            let zone_res = Resolution::try_from(passages[0].zone_resolution)
-                .expect("invalid zone resolution");
+            let zone_res =
+                Resolution::try_from(passages[0].zone_resolution).expect("invalid zone resolution");
             let mut zone = Vec::new();
             let mut normal = Vec::new();
             for &cell in &current_water {
@@ -266,10 +266,7 @@ pub fn generate_cells(
                 by_parent.entry(parent).or_default().push(cell);
             }
 
-            let pb = make_progress(
-                current.len(),
-                &format!("zone filter res-{}", H3_RES_LEAF),
-            );
+            let pb = make_progress(current.len(), &format!("zone filter res-{}", H3_RES_LEAF));
 
             // Split into pure water (keep at res-9) and land-intersecting (refine further)
             let (pure, straddle): (Vec<CellIndex>, Vec<CellIndex>) = by_parent
@@ -279,10 +276,7 @@ pub fn generate_cells(
                     if water.contains_polygon(&parent_poly) {
                         pb.inc(leaf_cells.len() as u64);
                         // All land — neither keep nor refine
-                        return leaf_cells
-                            .into_iter()
-                            .map(|_| None)
-                            .collect::<Vec<_>>();
+                        return leaf_cells.into_iter().map(|_| None).collect::<Vec<_>>();
                     }
                     if !water.intersects_polygon(&parent_poly) {
                         pb.inc(leaf_cells.len() as u64);
@@ -336,14 +330,11 @@ pub fn generate_cells(
 
             for res in H3_RES_LEAF..leaf_res {
                 let next_res = res + 1;
-                let next_resolution =
-                    Resolution::try_from(next_res).expect("invalid resolution");
+                let next_resolution = Resolution::try_from(next_res).expect("invalid resolution");
 
                 // Expand to children
-                let pb = make_progress(
-                    current.len(),
-                    &format!("zone refining to res-{}", next_res),
-                );
+                let pb =
+                    make_progress(current.len(), &format!("zone refining to res-{}", next_res));
                 let expanded: Vec<CellIndex> = current
                     .par_iter()
                     .flat_map(|&parent_cell| {
@@ -460,10 +451,7 @@ pub fn generate_cells(
 /// Build a lookup from zone cells (at zone_resolution) to leaf_resolution.
 /// For each passage overlapping the build bbox, generate covering H3 cells
 /// at zone_resolution and map them to the passage's leaf_resolution.
-fn build_zone_lookup(
-    passages: &[Passage],
-    bbox: Option<Bbox>,
-) -> Result<HashMap<CellIndex, u8>> {
+fn build_zone_lookup(passages: &[Passage], bbox: Option<Bbox>) -> Result<HashMap<CellIndex, u8>> {
     let mut lookup = HashMap::new();
 
     for passage in passages {
@@ -480,8 +468,8 @@ fn build_zone_lookup(
             }
         }
 
-        let zone_res = Resolution::try_from(passage.zone_resolution)
-            .expect("invalid zone resolution");
+        let zone_res =
+            Resolution::try_from(passage.zone_resolution).expect("invalid zone resolution");
         let zone_cells = generate_covering_cells(Some(passage.corridor), zone_res)?;
 
         let mut count = 0;
