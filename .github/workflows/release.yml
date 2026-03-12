@@ -4,17 +4,46 @@ on:
   push:
     tags: ["v*"]
 
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  check:
+    uses: ./.github/workflows/ci-check.yml
+
+  build:
+    needs: [check]
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: asw-linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: asw-linux-arm64
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            binary: asw-darwin-amd64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary: asw-darwin-arm64
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
 
-      - name: Install Rust stable
-        run: rustup toolchain install stable --profile minimal
+      - name: Add target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -23,17 +52,51 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-release-stable-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-release-stable-
+          key: ${{ runner.os }}-release-${{ matrix.target }}-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-release-${{ matrix.target }}-
 
-      - name: Build release binary
-        run: cargo build --release -p asw-cli
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p asw-cli
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p asw-cli
 
       - name: Rename binary
-        run: cp target/release/asw target/release/asw-linux-amd64
+        run: cp target/${{ matrix.target }}/release/asw ${{ matrix.binary }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: ${{ matrix.binary }}
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect binaries and generate checksums
+        run: |
+          mkdir -p release
+          find artifacts -type f -name 'asw-*' -exec cp {} release/ \;
+          cd release
+          sha256sum asw-* > SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: target/release/asw-linux-amd64
+          files: |
+            release/asw-*
+            release/SHA256SUMS
           generate_release_notes: true
