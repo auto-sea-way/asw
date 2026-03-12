@@ -2,43 +2,44 @@
 allowed-tools: Bash, Read, Glob, Grep
 ---
 
-# /visualize — Export routing graph as KML for Google Earth
+# /visualize — Export routing graph as GeoJSON for visualization
 
 Visualize the routing graph: $ARGUMENTS
 
 ## Instructions
 
-Export routing data as KML files for viewing in Google Earth. This works locally — no server needed.
+Export routing data as GeoJSON files for viewing in geojson.io, QGIS, or any GeoJSON viewer.
 
 ### 1. Find graph file
 
 Look for a `.graph` file in the `export/` directory (e.g., `export/marmaris.graph`, `export/asw.graph`).
 
-### 2. Export KML
+### 2. Export GeoJSON
 
-Use the `asw kml` command:
-
-```bash
-# Hex boundaries + edges (most useful)
-cargo run -p asw-cli -- kml --graph export/marmaris.graph --hexes --edges --output export/asw.kml
-
-# Just hexes
-cargo run -p asw-cli -- kml --graph export/marmaris.graph --hexes --output export/asw-hexes.kml
-
-# Include coastline
-cargo run -p asw-cli -- kml --graph export/marmaris.graph --hexes --edges --coastline --output export/asw.kml
-```
-
-### 3. Open in Google Earth
+Use the `asw geojson` command:
 
 ```bash
-open export/asw.kml
+# Hexes + coastline (most useful)
+cargo run --release -p asw-cli -- geojson --graph export/marmaris.graph --bbox marmaris --coastline --output export/marmaris.geojson
+
+# Without coastline
+cargo run --release -p asw-cli -- geojson --graph export/marmaris.graph --bbox marmaris --output export/marmaris.geojson
 ```
+
+### 3. Open for viewing
+
+```bash
+open export/marmaris.geojson
+```
+
+Or upload to geojson.io for browser-based viewing.
 
 ### Key details
 
-- KML colors are AABBGGRR format (not RGB)
-- Edge deduplication: only emits edge where source < target (bidirectional graph)
-- Node resolution: 7 = coastal (within 50km of shore), 3 = deep ocean
+- Produces up to three files from a single output path:
+  - `export/<name>-hexagons.geojson` — hex cells with `layer` property for per-resolution filtering
+  - `export/<name>-coastline.geojson` — coastline overlay (when `--coastline` is used)
+  - `export/<name>.geojson` — combined
+- `--bbox` accepts preset names (marmaris, dev, dev-small) or custom min_lon,min_lat,max_lon,max_lat
+- If bbox starts with `-`, use `--bbox="value"` to avoid arg parsing issues
 - Output files go in the `export/` directory (gitignored)
-- `--hexes` renders hex boundaries instead of point dots (much more useful)
