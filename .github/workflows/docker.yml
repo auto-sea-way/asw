@@ -4,12 +4,20 @@ on:
   push:
     tags: ["v*"]
 
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  check:
+    uses: ./.github/workflows/ci-check.yml
+
   build-and-push:
+    needs: [check]
     runs-on: ubuntu-latest
     permissions:
       contents: read
