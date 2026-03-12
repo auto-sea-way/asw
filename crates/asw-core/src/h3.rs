@@ -66,3 +66,33 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     let c = 2.0 * a.sqrt().asin();
     r * c
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn haversine_zero_distance() {
+        let d = haversine_km(51.5074, -0.1278, 51.5074, -0.1278);
+        assert!((d - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn haversine_london_paris() {
+        let d = haversine_km(51.5074, -0.1278, 48.8566, 2.3522);
+        assert!((d - 344.0).abs() < 5.0, "London-Paris was {d} km, expected ~344");
+    }
+
+    #[test]
+    fn haversine_antipodal() {
+        let d = haversine_km(90.0, 0.0, -90.0, 0.0);
+        assert!((d - 20015.0).abs() < 100.0, "Antipodal was {d} km, expected ~20015");
+    }
+
+    #[test]
+    fn haversine_symmetry() {
+        let d1 = haversine_km(51.5074, -0.1278, 48.8566, 2.3522);
+        let d2 = haversine_km(48.8566, 2.3522, 51.5074, -0.1278);
+        assert!((d1 - d2).abs() < 1e-10);
+    }
+}
