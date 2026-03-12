@@ -500,7 +500,7 @@ fn export_geojson(
         layers[res as usize].push(feat);
 
         hex_count += 1;
-        if hex_count % 1_000_000 == 0 {
+        if hex_count.is_multiple_of(1_000_000) {
             info!("  processed {} hex features...", hex_count);
         }
     }
@@ -577,8 +577,8 @@ fn export_geojson(
 
     // Write layer files: hexagons (all resolutions combined), passages, coastline
     let mut hex_features: Vec<String> = Vec::new();
-    for idx in 0..=15 {
-        hex_features.append(&mut layers[idx]);
+    for layer in layers.iter_mut().take(16) {
+        hex_features.append(layer);
     }
     if !hex_features.is_empty() {
         let hex_path = parent.join(format!("{}-hexagons.geojson", stem));
