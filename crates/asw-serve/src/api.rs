@@ -150,3 +150,44 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/info", get(info_handler))
         .with_state(state)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_valid() {
+        let (lat, lon) = parse_latlng("36.85,28.27").unwrap();
+        assert!((lat - 36.85).abs() < 1e-10);
+        assert!((lon - 28.27).abs() < 1e-10);
+    }
+
+    #[test]
+    fn parse_whitespace() {
+        let (lat, lon) = parse_latlng(" 36.85 , 28.27 ").unwrap();
+        assert!((lat - 36.85).abs() < 1e-10);
+        assert!((lon - 28.27).abs() < 1e-10);
+    }
+
+    #[test]
+    fn parse_negative() {
+        let (lat, lon) = parse_latlng("-33.9,18.4").unwrap();
+        assert!((lat - -33.9).abs() < 1e-10);
+        assert!((lon - 18.4).abs() < 1e-10);
+    }
+
+    #[test]
+    fn parse_invalid() {
+        assert!(parse_latlng("abc,def").is_none());
+    }
+
+    #[test]
+    fn parse_too_many_commas() {
+        assert!(parse_latlng("1,2,3").is_none());
+    }
+
+    #[test]
+    fn parse_empty() {
+        assert!(parse_latlng("").is_none());
+    }
+}
