@@ -135,6 +135,10 @@ impl GraphBuilder {
             for &(target, weight_nm) in list {
                 let delta = target - prev_target;
                 crate::varint::encode(delta, &mut edge_data);
+                debug_assert!(
+                    weight_nm <= 655.35,
+                    "weight {weight_nm} nm exceeds u16 range (max 655.35 nm)"
+                );
                 let weight_u16 = (weight_nm * 100.0).round() as u16;
                 edge_data.extend_from_slice(&weight_u16.to_le_bytes());
                 prev_target = target;
@@ -207,6 +211,18 @@ impl RoutingGraph {
                 graph.offsets[i - 1]
             );
         }
+        anyhow::ensure!(
+            graph.node_lats.len() == n,
+            "node_lats length {} != num_nodes {}",
+            graph.node_lats.len(),
+            n
+        );
+        anyhow::ensure!(
+            graph.node_lngs.len() == n,
+            "node_lngs length {} != num_nodes {}",
+            graph.node_lngs.len(),
+            n
+        );
         anyhow::ensure!(
             graph.passage_mask.len() == (n + 7) / 8,
             "passage_mask length {} != expected {}",
