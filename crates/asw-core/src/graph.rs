@@ -10,6 +10,8 @@ use std::io::{Read, Write};
 pub struct RoutingGraph {
     pub node_lats: Vec<i32>,
     pub node_lngs: Vec<i32>,
+    /// H3 resolution (3-15) for each node, 0 = passage node.
+    pub node_resolutions: Vec<u8>,
     pub passage_mask: Vec<u8>,
     /// Byte offsets into `edge_data`. Length = num_nodes + 1.
     /// Invariant: `offsets[num_nodes] == edge_data.len()`
@@ -50,8 +52,9 @@ impl<'a> Iterator for NeighborIter<'a> {
 }
 
 pub struct GraphBuilder {
-    /// (lat_deg, lng_deg, is_passage) per node
-    nodes: Vec<(f64, f64, bool)>,
+    /// (lat_deg, lng_deg, is_passage, h3_resolution) per node
+    /// h3_resolution: 0 for passage nodes, 3-15 for regular H3 nodes
+    nodes: Vec<(f64, f64, bool, u8)>,
     /// (src, dst, weight_nm)
     edges: Vec<(u32, u32, f32)>,
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
@@ -73,9 +76,10 @@ impl GraphBuilder {
     }
 
     /// Add a node. Returns node ID.
-    pub fn add_node(&mut self, lat: f64, lng: f64, is_passage: bool) -> u32 {
+    /// `resolution`: H3 resolution (3-15) for regular nodes, 0 for passage nodes.
+    pub fn add_node(&mut self, lat: f64, lng: f64, is_passage: bool, resolution: u8) -> u32 {
         let id = self.nodes.len() as u32;
-        self.nodes.push((lat, lng, is_passage));
+        self.nodes.push((lat, lng, is_passage, resolution));
         id
     }
 
@@ -99,18 +103,21 @@ impl GraphBuilder {
         let node_lats: Vec<i32> = self
             .nodes
             .iter()
-            .map(|(lat, _, _)| (*lat * 1e7).round() as i32)
+            .map(|(lat, _, _, _)| (*lat * 1e7).round() as i32)
             .collect();
         let node_lngs: Vec<i32> = self
             .nodes
             .iter()
-            .map(|(_, lng, _)| (*lng * 1e7).round() as i32)
+            .map(|(_, lng, _, _)| (*lng * 1e7).round() as i32)
             .collect();
+
+        // Store H3 resolution per node
+        let node_resolutions: Vec<u8> = self.nodes.iter().map(|(_, _, _, res)| *res).collect();
 
         // Build passage mask bitset
         let mask_len = (num_nodes as usize + 7) / 8;
         let mut passage_mask = vec![0u8; mask_len];
-        for (i, (_, _, is_passage)) in self.nodes.iter().enumerate() {
+        for (i, (_, _, is_passage, _)) in self.nodes.iter().enumerate() {
             if *is_passage {
                 passage_mask[i / 8] |= 1 << (i % 8);
             }
@@ -149,6 +156,7 @@ impl GraphBuilder {
         RoutingGraph {
             node_lats,
             node_lngs,
+            node_resolutions,
             passage_mask,
             offsets,
             edge_data,
@@ -228,6 +236,12 @@ impl RoutingGraph {
             "passage_mask length {} != expected {}",
             graph.passage_mask.len(),
             (n + 7) / 8
+        );
+        anyhow::ensure!(
+            graph.node_resolutions.len() == n,
+            "node_resolutions length {} != num_nodes {}",
+            graph.node_resolutions.len(),
+            n
         );
 
         Ok(graph)
@@ -337,10 +351,10 @@ mod tests {
 
     fn square_graph() -> RoutingGraph {
         let mut b = GraphBuilder::new();
-        let n0 = b.add_node(0.0, 0.0, false);
-        let n1 = b.add_node(0.0, 1.0, false);
-        let n2 = b.add_node(1.0, 0.0, false);
-        let n3 = b.add_node(1.0, 1.0, false);
+        let n0 = b.add_node(0.0, 0.0, false, 0);
+        let n1 = b.add_node(0.0, 1.0, false, 0);
+        let n2 = b.add_node(1.0, 0.0, false, 0);
+        let n3 = b.add_node(1.0, 1.0, false, 0);
         b.add_edge(n0, n1, 1.0);
         b.add_edge(n1, n3, 1.0);
         b.add_edge(n0, n2, 2.0);
@@ -391,11 +405,11 @@ mod tests {
     #[test]
     fn graph_connected_components_isolated() {
         let mut b = GraphBuilder::new();
-        let n0 = b.add_node(0.0, 0.0, false);
-        let n1 = b.add_node(0.0, 1.0, false);
+        let n0 = b.add_node(0.0, 0.0, false, 0);
+        let n1 = b.add_node(0.0, 1.0, false, 0);
         b.add_edge(n0, n1, 1.0);
-        let n2 = b.add_node(1.0, 0.0, false);
-        let n3 = b.add_node(1.0, 1.0, false);
+        let n2 = b.add_node(1.0, 0.0, false, 0);
+        let n3 = b.add_node(1.0, 1.0, false, 0);
         b.add_edge(n2, n3, 1.0);
         let g = b.build();
         let mut components = g.connected_components();
@@ -417,6 +431,7 @@ mod tests {
         assert_eq!(loaded.num_edges, g.num_edges);
         assert_eq!(loaded.node_lats, g.node_lats);
         assert_eq!(loaded.node_lngs, g.node_lngs);
+        assert_eq!(loaded.node_resolutions, g.node_resolutions);
         assert_eq!(loaded.passage_mask, g.passage_mask);
         assert_eq!(loaded.offsets, g.offsets);
         assert_eq!(loaded.edge_data, g.edge_data);
@@ -453,6 +468,7 @@ mod tests {
         let graph = RoutingGraph {
             node_lats: vec![0; 1],
             node_lngs: vec![0; 1],
+            node_resolutions: vec![0; 1],
             passage_mask: vec![0],
             offsets: vec![0, end],
             edge_data,
@@ -475,6 +491,7 @@ mod tests {
         let graph = RoutingGraph {
             node_lats: vec![0; 8],
             node_lngs: vec![0; 8],
+            node_resolutions: vec![0; 8],
             passage_mask: mask,
             offsets: vec![0; 9],
             edge_data: vec![],
@@ -493,6 +510,7 @@ mod tests {
         let graph = RoutingGraph {
             node_lats: vec![(36.848_f64 * 1e7).round() as i32],
             node_lngs: vec![(28.268_f64 * 1e7).round() as i32],
+            node_resolutions: vec![5],
             passage_mask: vec![0],
             offsets: vec![0, 0],
             edge_data: vec![],
@@ -508,9 +526,9 @@ mod tests {
     #[test]
     fn builder_produces_compact_format() {
         let mut b = GraphBuilder::new();
-        let n0 = b.add_node(51.5, -0.1, false);
-        let n1 = b.add_node(48.8, 2.3, false);
-        let n2 = b.add_node(0.0, 0.0, true);
+        let n0 = b.add_node(51.5, -0.1, false, 5);
+        let n1 = b.add_node(48.8, 2.3, false, 5);
+        let n2 = b.add_node(0.0, 0.0, true, 0);
         b.add_edge(n0, n1, 186.0);
         b.add_edge(n0, n2, 50.0);
 

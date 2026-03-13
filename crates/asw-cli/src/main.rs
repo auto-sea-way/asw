@@ -477,24 +477,20 @@ fn export_geojson(
             }
         }
 
-        // Reconstruct H3 cell: try resolutions 3-13 (includes passage zones up to Corinth)
-        let stored_lat = graph.node_lats[i];
-        let stored_lng = graph.node_lngs[i];
-        let mut found_cell = None;
-        for res in asw_core::H3_RES_BASE..=13 {
-            let res_enum = h3o::Resolution::try_from(res).unwrap();
-            if let Some(cell) = asw_core::h3::lat_lng_to_cell(lat, lng, res_enum) {
-                let (clat, clng) = asw_core::h3::cell_center(cell);
-                let clat_i32 = (clat * 1e7).round() as i32;
-                let clng_i32 = (clng * 1e7).round() as i32;
-                if clat_i32 == stored_lat && clng_i32 == stored_lng {
-                    found_cell = Some(cell);
-                    break;
-                }
-            }
+        // Look up stored H3 resolution and reconstruct the cell
+        let res = graph.node_resolutions[i];
+        if res == 0 {
+            continue; // passage node without valid H3 resolution
         }
-        let Some(cell) = found_cell else {
-            tracing::warn!("Could not reconstruct H3 cell for node {i}");
+        let res_enum = match h3o::Resolution::try_from(res) {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!("Invalid H3 resolution {} for node {i}", res);
+                continue;
+            }
+        };
+        let Some(cell) = asw_core::h3::lat_lng_to_cell(lat, lng, res_enum) else {
+            tracing::warn!("Could not reconstruct H3 cell for node {i} at res {res}");
             continue;
         };
 
