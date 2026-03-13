@@ -1,6 +1,6 @@
 use anyhow::Result;
 use asw_core::geo_index::LandIndex;
-use asw_core::h3::{cell_center, haversine_km, neighbors, parent, resolution};
+use asw_core::h3::{cell_center, haversine_nm, neighbors, parent, resolution};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
 use h3o::{CellIndex, Resolution};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use tracing::info;
 
-/// An edge: (source_node_id, target_node_id, cost_km)
+/// An edge: (source_node_id, target_node_id, cost_nm)
 pub type Edge = (u32, u32, f32);
 
 /// Build all edges: same-resolution + cross-resolution, with land-crossing removal.
@@ -37,7 +37,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
                     if let Some(&dst_id) = cells.get(&neighbor) {
                         if src_id < dst_id {
                             let (dst_lat, dst_lon) = cell_center(neighbor);
-                            let cost = haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
+                            let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
                             edges.push((src_id, dst_id, cost));
                         }
                     }
@@ -104,7 +104,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
                         if let Some(&dst_id) = cells.get(&parent_neighbor) {
                             if resolution(parent_neighbor) == *coarse_res {
                                 let (dst_lat, dst_lon) = cell_center(parent_neighbor);
-                                let cost = haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
+                                let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
                                 let (a, b) = if src_id < dst_id {
                                     (src_id, dst_id)
                                 } else {
@@ -119,7 +119,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
                     if let Some(&dst_id) = cells.get(&parent_cell) {
                         if resolution(parent_cell) == *coarse_res {
                             let (dst_lat, dst_lon) = cell_center(parent_cell);
-                            let cost = haversine_km(src_lat, src_lon, dst_lat, dst_lon) as f32;
+                            let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
                             let (a, b) = if src_id < dst_id {
                                 (src_id, dst_id)
                             } else {

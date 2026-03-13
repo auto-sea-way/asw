@@ -21,7 +21,7 @@ pub struct RouteQuery {
 
 #[derive(Serialize)]
 pub struct RouteResponse {
-    pub distance_km: f64,
+    pub distance_nm: f64,
     pub raw_hops: usize,
     pub smooth_hops: usize,
     pub geometry: serde_json::Value,
@@ -108,7 +108,7 @@ async fn route_handler(
     });
 
     Ok(Json(RouteResponse {
-        distance_km: (result.distance_km * 10.0).round() / 10.0,
+        distance_nm: (result.distance_nm * 10.0).round() / 10.0,
         raw_hops: result.raw_hops,
         smooth_hops: result.smooth_hops,
         geometry,

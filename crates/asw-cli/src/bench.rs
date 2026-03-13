@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use asw_core::graph::RoutingGraph;
-use asw_core::h3::haversine_km;
+use asw_core::h3::haversine_nm;
 use asw_core::routing::compute_route;
 use asw_serve::state::AppState;
 use serde::{Deserialize, Serialize};
@@ -13,16 +13,16 @@ const NUM_SAILING_ROUTES: usize = 10;
 
 /// Hardcoded real-world sailing routes: (name, from_lat, from_lon, to_lat, to_lon)
 const ROUTES: &[(&str, f64, f64, f64, f64)] = &[
-    // Short crossings (< 100km)
+    // Short crossings (< 54nm)
     ("English Channel", 51.11, 1.32, 50.97, 1.86),
     ("Aegean Hop", 36.85, 28.28, 36.44, 28.23),
     ("Strait of Gibraltar", 36.13, -5.35, 35.79, -5.81),
     ("Baltic Crossing", 60.14, 24.97, 59.45, 24.76),
-    // Medium passages (100-500km)
+    // Medium passages (54-270nm)
     ("Balearic Sea", 39.55, 2.64, 41.37, 2.18),
     ("Florida Strait", 24.55, -81.79, 23.15, -82.35),
     ("Malacca Route", 1.26, 103.86, 7.88, 98.38),
-    // Long haul (1000km+)
+    // Long haul (540nm+)
     ("Tasman Sea", -33.86, 151.28, -36.83, 174.78),
     ("South Atlantic", -33.92, 18.43, -22.91, -43.16),
     ("North Atlantic", 40.65, -74.03, 50.89, -1.39),
@@ -50,7 +50,7 @@ struct BenchRoute {
 
 struct RouteStats {
     name: String,
-    distance_km: f64,
+    distance_nm: f64,
     raw_hops: usize,
     smooth_hops: usize,
     timings_us: Vec<u64>,
@@ -114,7 +114,7 @@ struct GraphMeta {
 #[derive(Serialize, Deserialize)]
 struct RouteBenchResult {
     name: String,
-    distance_km: f64,
+    distance_nm: f64,
     raw_hops: usize,
     smooth_hops: usize,
     min_us: u64,
@@ -246,9 +246,9 @@ fn run_benchmark(
                 &app.coastline,
                 &knn,
             );
-            let (distance_km, raw_hops, smooth_hops, coordinates) = match &first {
+            let (distance_nm, raw_hops, smooth_hops, coordinates) = match &first {
                 Some(r) => (
-                    r.distance_km,
+                    r.distance_nm,
                     r.raw_hops,
                     r.smooth_hops,
                     r.coordinates.clone(),
@@ -275,7 +275,7 @@ fn run_benchmark(
 
             RouteStats {
                 name: route.name.clone(),
-                distance_km,
+                distance_nm,
                 raw_hops,
                 smooth_hops,
                 timings_us,
@@ -307,9 +307,9 @@ fn print_table(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize) {
 
     for s in stats {
         println!(
-            "{:<20} {:>9.1}km {:>10} {:>10} {:>10} {:>10} {:>5}>{:<4}",
+            "{:<20} {:>9.1}nm {:>10} {:>10} {:>10} {:>10} {:>5}>{:<4}",
             s.name,
-            s.distance_km,
+            s.distance_nm,
             format_time(s.min_us()),
             format_time(s.p50_us()),
             format_time(s.p95_us()),
@@ -341,7 +341,7 @@ fn build_result(
             .iter()
             .map(|s| RouteBenchResult {
                 name: s.name.clone(),
-                distance_km: s.distance_km,
+                distance_nm: s.distance_nm,
                 raw_hops: s.raw_hops,
                 smooth_hops: s.smooth_hops,
                 min_us: s.min_us(),
@@ -507,9 +507,9 @@ fn write_markdown(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize)
         md.push_str("|-------|----------|-----|-----|-----|-----|------|\n");
         for s in &sailing {
             md.push_str(&format!(
-                "| {} | {:.1}km | {} | {} | {} | {} | {}>{} |\n",
+                "| {} | {:.1}nm | {} | {} | {} | {} | {}>{} |\n",
                 s.name,
-                s.distance_km,
+                s.distance_nm,
                 format_time(s.min_us()),
                 format_time(s.p50_us()),
                 format_time(s.p95_us()),
@@ -528,9 +528,9 @@ fn write_markdown(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize)
         md.push_str("|-------|----------|-----|-----|-----|-----|------|\n");
         for s in &passages {
             md.push_str(&format!(
-                "| {} | {:.1}km | {} | {} | {} | {} | {}>{} |\n",
+                "| {} | {:.1}nm | {} | {} | {} | {} | {}>{} |\n",
                 s.name,
-                s.distance_km,
+                s.distance_nm,
                 format_time(s.min_us()),
                 format_time(s.p50_us()),
                 format_time(s.p95_us()),
@@ -576,7 +576,7 @@ fn write_geojson(stats: &[RouteStats]) -> Result<()> {
             "type": "Feature",
             "properties": {
                 "name": s.name,
-                "distance_km": format!("{:.1}", s.distance_km),
+                "distance_nm": format!("{:.1}", s.distance_nm),
                 "category": category,
                 "stroke": stroke,
                 "stroke-width": 3,
@@ -661,9 +661,9 @@ pub fn run(
     info!("Resolved {} benchmark routes", routes.len());
 
     for route in &routes {
-        let dist = haversine_km(route.from_lat, route.from_lon, route.to_lat, route.to_lon);
+        let dist = haversine_nm(route.from_lat, route.from_lon, route.to_lat, route.to_lon);
         info!(
-            "  {} ({:.1}km): ({:.4},{:.4}) -> ({:.4},{:.4}){}",
+            "  {} ({:.1}nm): ({:.4},{:.4}) -> ({:.4},{:.4}){}",
             route.name,
             dist,
             route.from_lat,

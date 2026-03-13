@@ -74,7 +74,7 @@ impl AppState {
             let node_id = candidate.data;
             if self.component_labels[node_id as usize] == self.main_component {
                 let (nlat, nlon) = self.graph.node_pos(node_id);
-                let dist = asw_core::h3::haversine_km(lat, lon, nlat, nlon);
+                let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
                 return Some((node_id, dist));
             }
         }

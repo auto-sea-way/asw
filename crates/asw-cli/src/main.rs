@@ -393,7 +393,7 @@ fn passage_feature_string(
     weight: f32,
 ) -> String {
     format!(
-        r##"{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[[{},{}],[{},{}]]}},"properties":{{"layer":"passages","stroke":"#ff00ff","stroke-width":2.5,"weight_km":{:.2}}}}}"##,
+        r##"{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[[{},{}],[{},{}]]}},"properties":{{"layer":"passages","stroke":"#ff00ff","stroke-width":2.5,"weight_nm":{:.2}}}}}"##,
         src_lon, src_lat, dst_lon, dst_lat, weight
     )
 }

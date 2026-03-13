@@ -90,7 +90,7 @@ Built on Hetzner cpx62 (16 vCPU, 32 GB RAM):
 | Components | 31,139 |
 | Peak RAM | ~7.5 GB |
 | Graph load time | ~8.5 sec |
-| Route query (NY→Marmaris, 8924 km) | 0.67 sec |
+| Route query (NY→Marmaris, 4819 nm) | 0.67 sec |
 
 ```bash
 asw cloud build --output export/planet.graph
