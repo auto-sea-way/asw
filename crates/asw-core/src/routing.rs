@@ -1,14 +1,14 @@
 use crate::geo_index::CoastlineIndex;
 use crate::graph::RoutingGraph;
-use crate::h3::haversine_km;
+use crate::h3::haversine_nm;
 use ordered_float::OrderedFloat;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 /// Result of a route computation.
 pub struct RouteResult {
-    /// Total distance in km
-    pub distance_km: f64,
+    /// Total distance in nm
+    pub distance_nm: f64,
     /// Raw A* path node count
     pub raw_hops: usize,
     /// Smoothed waypoint count
@@ -31,7 +31,7 @@ pub fn astar(graph: &RoutingGraph, start: u32, goal: u32) -> Option<(Vec<u32>, f
 
     let (goal_lat, goal_lon) = graph.node_pos(goal);
     let (start_lat, start_lon) = graph.node_pos(start);
-    let h_start = haversine_km(start_lat, start_lon, goal_lat, goal_lon) as f32;
+    let h_start = haversine_nm(start_lat, start_lon, goal_lat, goal_lon) as f32;
     open.push(Reverse((OrderedFloat(h_start), start)));
 
     while let Some(Reverse((_, current))) = open.pop() {
@@ -64,7 +64,7 @@ pub fn astar(graph: &RoutingGraph, start: u32, goal: u32) -> Option<(Vec<u32>, f
                 g_score[neighbor as usize] = tentative_g;
                 came_from[neighbor as usize] = current;
                 let (nlat, nlon) = graph.node_pos(neighbor);
-                let h = haversine_km(nlat, nlon, goal_lat, goal_lon) as f32;
+                let h = haversine_nm(nlat, nlon, goal_lat, goal_lon) as f32;
                 let f = tentative_g + h;
                 open.push(Reverse((OrderedFloat(f), neighbor)));
             }
@@ -161,7 +161,7 @@ pub fn compute_route(
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let (raw_path, _distance_km) = astar(graph, start, goal)?;
+    let (raw_path, _distance_nm) = astar(graph, start, goal)?;
     let raw_hops = raw_path.len();
 
     let smoothed = smooth(graph, &raw_path, coastline);
@@ -172,7 +172,7 @@ pub fn compute_route(
     for w in smoothed.windows(2) {
         let (lat1, lon1) = graph.node_pos(w[0]);
         let (lat2, lon2) = graph.node_pos(w[1]);
-        smooth_dist += haversine_km(lat1, lon1, lat2, lon2);
+        smooth_dist += haversine_nm(lat1, lon1, lat2, lon2);
     }
 
     let coordinates: Vec<[f64; 2]> = smoothed
@@ -184,7 +184,7 @@ pub fn compute_route(
         .collect();
 
     Some(RouteResult {
-        distance_km: smooth_dist,
+        distance_nm: smooth_dist,
         raw_hops,
         smooth_hops,
         coordinates,

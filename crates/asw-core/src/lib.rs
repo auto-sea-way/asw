@@ -14,11 +14,11 @@ pub const H3_RES_LEAF: u8 = 10;
 /// it gets refined to `resolution + 1`. The leaf resolution (9) has no entry.
 ///
 /// ```text
-/// res-3: ocean        (edge ~59km)  — threshold 0.30° (~33km)  → refine to res-4
-/// res-4: deep-mid     (edge ~22km)  — threshold 0.15° (~17km)  → refine to res-5
-/// res-5: mid          (edge ~8.4km) — threshold 0.05° (~5.5km) → refine to res-6
-/// res-6: near-mid     (edge ~3.2km) — threshold 0.025° (~2.8km)→ refine to res-7
-/// res-7: coastal      (edge ~1.2km) — threshold 0.012° (~1.3km)→ refine to res-8
+/// res-3: ocean        (edge ~32nm)  — threshold 0.30° (~18nm)   → refine to res-4
+/// res-4: deep-mid     (edge ~12nm)  — threshold 0.15° (~9.2nm)  → refine to res-5
+/// res-5: mid          (edge ~4.5nm) — threshold 0.05° (~3.0nm)  → refine to res-6
+/// res-6: near-mid     (edge ~1.7nm) — threshold 0.025° (~1.5nm) → refine to res-7
+/// res-7: coastal      (edge ~0.65nm)— threshold 0.012° (~0.70nm)→ refine to res-8
 /// res-8: near-coast   (edge ~461m)  — threshold 0.005° (~550m) → refine to res-9
 /// res-9: near-shore   (edge ~174m)  — threshold 0.002° (~220m) → refine to res-10
 /// res-10: shoreline   (edge ~66m)   — leaf level, no refinement

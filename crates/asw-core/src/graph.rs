@@ -12,7 +12,7 @@ pub struct RoutingGraph {
     pub offsets: Vec<u32>,
     /// Target node IDs (parallel to weights)
     pub adjacency: Vec<u32>,
-    /// Edge cost in km (parallel to adjacency)
+    /// Edge cost in nm (parallel to adjacency)
     pub weights: Vec<f32>,
     /// Coastline segments for smoothing: each is Vec<(lon, lat)> as f32
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
@@ -27,7 +27,7 @@ pub struct GraphBuilder {
     pub node_lats: Vec<f32>,
     pub node_lngs: Vec<f32>,
     pub node_cells: Vec<u64>,
-    /// Edges as (source, target, weight_km)
+    /// Edges as (source, target, weight_nm)
     pub edges: Vec<(u32, u32, f32)>,
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
 }
@@ -68,14 +68,14 @@ impl GraphBuilder {
     }
 
     /// Add a bidirectional edge.
-    pub fn add_edge(&mut self, src: u32, dst: u32, weight_km: f32) {
-        self.edges.push((src, dst, weight_km));
-        self.edges.push((dst, src, weight_km));
+    pub fn add_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
+        self.edges.push((src, dst, weight_nm));
+        self.edges.push((dst, src, weight_nm));
     }
 
     /// Add a directed edge.
-    pub fn add_directed_edge(&mut self, src: u32, dst: u32, weight_km: f32) {
-        self.edges.push((src, dst, weight_km));
+    pub fn add_directed_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
+        self.edges.push((src, dst, weight_nm));
     }
 
     /// Build the CSR graph.
@@ -130,7 +130,7 @@ impl RoutingGraph {
         Ok(graph)
     }
 
-    /// Get edges from a node: iterator of (target_id, weight_km).
+    /// Get edges from a node: iterator of (target_id, weight_nm).
     pub fn edges(&self, node: u32) -> &[u32] {
         let start = self.offsets[node as usize] as usize;
         let end = self.offsets[node as usize + 1] as usize;
@@ -166,7 +166,7 @@ impl RoutingGraph {
         for i in 0..self.num_nodes {
             let nlat = self.node_lats[i as usize] as f64;
             let nlng = self.node_lngs[i as usize] as f64;
-            let d = crate::h3::haversine_km(lat, lon, nlat, nlng);
+            let d = crate::h3::haversine_nm(lat, lon, nlat, nlng);
             if d < best_dist {
                 best_dist = d;
                 best_id = i;
