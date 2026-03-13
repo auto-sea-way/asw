@@ -81,6 +81,8 @@ fn neighbors(&self, node: u32) -> NeighborIter {
 }
 ```
 
+The `neighbors()` iterator replaces both `edges()` and `edges_with_weights()` as the sole graph traversal API, returning `(target: u32, weight_nm: f32)` tuples.
+
 **Estimated savings:** ~1.5–2 bytes per target (varint delta) + 2 bytes per weight = ~3.5–4 bytes per edge vs 8 bytes before. For 305M edges: ~450–600 MB vs 1,220 MB for adjacency alone, plus 610 MB already saved on weights.
 
 ### 5. Fixed-point i32 coordinates
@@ -106,6 +108,8 @@ Same 4 bytes per value, so no direct RAM savings. The benefit is compression: ne
 Write a 4-byte magic header `b"ASW\x01"` before the bincode payload (the `\x01` byte is the format version). On load, read the first 4 bytes: if they don't match `b"ASW"`, return a clear error ("not an ASW graph file or unsupported version — rebuild required"). This cleanly rejects old-format graphs (which start with a bincode length prefix) without ambiguity.
 
 Old-format graphs are not supported — a rebuild is required. This is acceptable since graph builds are routine.
+
+**Post-deserialization validation:** After loading, verify that `offsets` is monotonically increasing, `offsets[num_nodes] == edge_data.len()`, and `passage_mask.len() == (num_nodes as usize + 7) / 8`. Return an error on mismatch.
 
 **Note:** The `version` field is removed from the `RoutingGraph` struct itself. Versioning lives in the file header only, outside the bincode stream.
 
