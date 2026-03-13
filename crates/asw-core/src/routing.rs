@@ -55,7 +55,7 @@ pub fn astar(graph: &RoutingGraph, start: u32, goal: u32) -> Option<(Vec<u32>, f
 
         let current_g = g_score[current as usize];
 
-        for (neighbor, weight) in graph.edges_with_weights(current) {
+        for (neighbor, weight) in graph.neighbors(current) {
             if closed[neighbor as usize] {
                 continue;
             }
@@ -198,10 +198,10 @@ mod tests {
 
     fn diamond_graph() -> RoutingGraph {
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0); // A = 0
-        b.add_node(0.05, 0.0); // B = 1
-        b.add_node(0.0, 0.05); // C = 2
-        b.add_node(0.05, 0.05); // D = 3
+        b.add_node(0.0, 0.0, false); // A = 0
+        b.add_node(0.05, 0.0, false); // B = 1
+        b.add_node(0.0, 0.05, false); // C = 2
+        b.add_node(0.05, 0.05, false); // D = 3
         b.add_edge(0, 1, 5.0);
         b.add_edge(0, 2, 10.0);
         b.add_edge(1, 3, 5.0);
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn astar_unreachable() {
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0);
-        b.add_node(1.0, 1.0);
+        b.add_node(0.0, 0.0, false);
+        b.add_node(1.0, 1.0, false);
         let g = b.build();
         let result = astar(&g, 0, 1);
         assert!(result.is_none());

@@ -1,34 +1,59 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
+/// File layout: [b"ASW\x01" magic header][zstd-compressed bincode payload]
+///
 /// Compressed Sparse Row graph for maritime routing.
-#[derive(Serialize, Deserialize)]
+/// Coordinates are i32 fixed-point (degrees × 1e7).
+/// Edge data is interleaved delta-varint targets + u16 weights.
+#[derive(Debug, Serialize, Deserialize)]
 pub struct RoutingGraph {
-    /// Latitude of each node (degrees)
-    pub node_lats: Vec<f32>,
-    /// Longitude of each node (degrees)
-    pub node_lngs: Vec<f32>,
-    /// CSR row offsets: offsets[i]..offsets[i+1] are edges from node i
+    pub node_lats: Vec<i32>,
+    pub node_lngs: Vec<i32>,
+    pub passage_mask: Vec<u8>,
+    /// Byte offsets into `edge_data`. Length = num_nodes + 1.
+    /// Invariant: `offsets[num_nodes] == edge_data.len()`
     pub offsets: Vec<u32>,
-    /// Target node IDs (parallel to weights)
-    pub adjacency: Vec<u32>,
-    /// Edge cost in nm (parallel to adjacency)
-    pub weights: Vec<f32>,
-    /// Coastline segments for smoothing: each is Vec<(lon, lat)> as f32
+    /// Interleaved per-node: [varint target_delta][u16 weight_le] per edge.
+    /// Targets sorted ascending, stored as deltas.
+    pub edge_data: Vec<u8>,
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
-    /// H3 cell index for each node (0 = synthetic/passage node)
-    pub node_cells: Vec<u64>,
     pub num_nodes: u32,
     pub num_edges: u32,
 }
 
-/// Builder for constructing a RoutingGraph from edge lists.
+/// Iterator over a node's neighbors, decoding interleaved varint+u16 edge data.
+pub struct NeighborIter<'a> {
+    data: &'a [u8],
+    pos: usize,
+    prev_target: u32,
+}
+
+impl<'a> Iterator for NeighborIter<'a> {
+    type Item = (u32, f32);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.data.len() {
+            return None;
+        }
+        let (delta, new_pos) = crate::varint::decode(self.data, self.pos);
+        self.pos = new_pos;
+        let target = self.prev_target + delta;
+        self.prev_target = target;
+
+        let weight_raw = u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]);
+        self.pos += 2;
+        let weight_nm = weight_raw as f32 / 100.0;
+
+        Some((target, weight_nm))
+    }
+}
+
 pub struct GraphBuilder {
-    pub node_lats: Vec<f32>,
-    pub node_lngs: Vec<f32>,
-    pub node_cells: Vec<u64>,
-    /// Edges as (source, target, weight_nm)
-    pub edges: Vec<(u32, u32, f32)>,
+    /// (lat_deg, lng_deg, is_passage) per node
+    nodes: Vec<(f64, f64, bool)>,
+    /// (src, dst, weight_nm)
+    edges: Vec<(u32, u32, f32)>,
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
 }
 
@@ -41,29 +66,16 @@ impl Default for GraphBuilder {
 impl GraphBuilder {
     pub fn new() -> Self {
         Self {
-            node_lats: Vec::new(),
-            node_lngs: Vec::new(),
-            node_cells: Vec::new(),
+            nodes: Vec::new(),
             edges: Vec::new(),
             coastline_coords: Vec::new(),
         }
     }
 
-    /// Add a node, returns its ID.
-    pub fn add_node(&mut self, lat: f32, lng: f32) -> u32 {
-        let id = self.node_lats.len() as u32;
-        self.node_lats.push(lat);
-        self.node_lngs.push(lng);
-        self.node_cells.push(0);
-        id
-    }
-
-    /// Add a node with an associated H3 cell, returns its ID.
-    pub fn add_node_with_cell(&mut self, lat: f32, lng: f32, cell: u64) -> u32 {
-        let id = self.node_lats.len() as u32;
-        self.node_lats.push(lat);
-        self.node_lngs.push(lng);
-        self.node_cells.push(cell);
+    /// Add a node. Returns node ID.
+    pub fn add_node(&mut self, lat: f64, lng: f64, is_passage: bool) -> u32 {
+        let id = self.nodes.len() as u32;
+        self.nodes.push((lat, lng, is_passage));
         id
     }
 
@@ -73,42 +85,70 @@ impl GraphBuilder {
         self.edges.push((dst, src, weight_nm));
     }
 
-    /// Add a directed edge.
+    /// Add a one-way edge.
     pub fn add_directed_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
         self.edges.push((src, dst, weight_nm));
     }
 
     /// Build the CSR graph.
-    pub fn build(mut self) -> RoutingGraph {
-        let num_nodes = self.node_lats.len() as u32;
+    pub fn build(self) -> RoutingGraph {
+        let num_nodes = self.nodes.len() as u32;
         let num_edges = self.edges.len() as u32;
 
-        // Sort edges by source
-        self.edges.sort_unstable_by_key(|e| e.0);
+        // Encode coordinates as i32 fixed-point
+        let node_lats: Vec<i32> = self
+            .nodes
+            .iter()
+            .map(|(lat, _, _)| (*lat * 1e7).round() as i32)
+            .collect();
+        let node_lngs: Vec<i32> = self
+            .nodes
+            .iter()
+            .map(|(_, lng, _)| (*lng * 1e7).round() as i32)
+            .collect();
 
-        let mut offsets = vec![0u32; num_nodes as usize + 1];
-        let mut adjacency = Vec::with_capacity(self.edges.len());
-        let mut weights = Vec::with_capacity(self.edges.len());
+        // Build passage mask bitset
+        let mask_len = (num_nodes as usize + 7) / 8;
+        let mut passage_mask = vec![0u8; mask_len];
+        for (i, (_, _, is_passage)) in self.nodes.iter().enumerate() {
+            if *is_passage {
+                passage_mask[i / 8] |= 1 << (i % 8);
+            }
+        }
 
+        // Group edges by source, sort targets ascending per source
+        let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes as usize];
         for &(src, dst, w) in &self.edges {
-            offsets[src as usize + 1] += 1;
-            adjacency.push(dst);
-            weights.push(w);
+            adj[src as usize].push((dst, w));
+        }
+        for list in &mut adj {
+            list.sort_by_key(|&(target, _)| target);
         }
 
-        // Prefix sum
-        for i in 1..offsets.len() {
-            offsets[i] += offsets[i - 1];
+        // Encode edge_data: interleaved varint deltas + u16 LE weights
+        let mut edge_data = Vec::new();
+        let mut offsets = Vec::with_capacity(num_nodes as usize + 1);
+
+        for list in &adj {
+            offsets.push(edge_data.len() as u32);
+            let mut prev_target = 0u32;
+            for &(target, weight_nm) in list {
+                let delta = target - prev_target;
+                crate::varint::encode(delta, &mut edge_data);
+                let weight_u16 = (weight_nm * 100.0).round() as u16;
+                edge_data.extend_from_slice(&weight_u16.to_le_bytes());
+                prev_target = target;
+            }
         }
+        offsets.push(edge_data.len() as u32);
 
         RoutingGraph {
-            node_lats: self.node_lats,
-            node_lngs: self.node_lngs,
+            node_lats,
+            node_lngs,
+            passage_mask,
             offsets,
-            adjacency,
-            weights,
+            edge_data,
             coastline_coords: self.coastline_coords,
-            node_cells: self.node_cells,
             num_nodes,
             num_edges,
         }
@@ -116,47 +156,94 @@ impl GraphBuilder {
 }
 
 impl RoutingGraph {
-    /// Serialize to a writer via bincode + zstd compression.
-    pub fn save<W: Write>(&self, writer: W) -> anyhow::Result<()> {
-        let encoder = zstd::Encoder::new(writer, 3)?.auto_finish();
+    const MAGIC: &'static [u8; 4] = b"ASW\x01";
+
+    /// Serialize: write magic header, then bincode+zstd-19 payload.
+    pub fn save<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
+        writer.write_all(Self::MAGIC)?;
+        let encoder = zstd::Encoder::new(writer, 19)?.auto_finish();
         bincode::serialize_into(encoder, self)?;
         Ok(())
     }
 
-    /// Deserialize from a reader via bincode + zstd decompression.
-    pub fn load<R: Read>(reader: R) -> anyhow::Result<Self> {
+    /// Deserialize: verify magic header, then bincode+zstd payload.
+    pub fn load<R: Read>(mut reader: R) -> anyhow::Result<Self> {
+        let mut magic = [0u8; 4];
+        reader.read_exact(&mut magic)?;
+        if &magic[..3] != b"ASW" {
+            anyhow::bail!(
+                "Not an ASW graph file (expected ASW magic header). Rebuild required."
+            );
+        }
+        if magic[3] != 1 {
+            anyhow::bail!(
+                "Unsupported ASW graph version {} (expected 1). Rebuild required.",
+                magic[3]
+            );
+        }
         let decoder = zstd::Decoder::new(reader)?;
-        let graph = bincode::deserialize_from(decoder)?;
+        let graph: Self = bincode::deserialize_from(decoder)?;
+
+        // Post-deserialization validation
+        let n = graph.num_nodes as usize;
+        anyhow::ensure!(
+            graph.offsets.len() == n + 1,
+            "offsets length {} != num_nodes + 1 ({})",
+            graph.offsets.len(),
+            n + 1
+        );
+        anyhow::ensure!(
+            graph.offsets[n] as usize == graph.edge_data.len(),
+            "offsets sentinel {} != edge_data.len() {}",
+            graph.offsets[n],
+            graph.edge_data.len()
+        );
+        for i in 1..graph.offsets.len() {
+            anyhow::ensure!(
+                graph.offsets[i] >= graph.offsets[i - 1],
+                "offsets not monotonic at index {}: {} < {}",
+                i,
+                graph.offsets[i],
+                graph.offsets[i - 1]
+            );
+        }
+        anyhow::ensure!(
+            graph.passage_mask.len() == (n + 7) / 8,
+            "passage_mask length {} != expected {}",
+            graph.passage_mask.len(),
+            (n + 7) / 8
+        );
+
         Ok(graph)
     }
 
-    /// Get edges from a node: iterator of (target_id, weight_nm).
-    pub fn edges(&self, node: u32) -> &[u32] {
+    /// Iterate neighbors of `node` as (target_id, weight_nm) pairs.
+    pub fn neighbors(&self, node: u32) -> NeighborIter<'_> {
         let start = self.offsets[node as usize] as usize;
         let end = self.offsets[node as usize + 1] as usize;
-        &self.adjacency[start..end]
+        NeighborIter {
+            data: &self.edge_data[start..end],
+            pos: 0,
+            prev_target: 0,
+        }
     }
 
-    /// Get edges with weights from a node.
-    pub fn edges_with_weights(&self, node: u32) -> impl Iterator<Item = (u32, f32)> + '_ {
-        let start = self.offsets[node as usize] as usize;
-        let end = self.offsets[node as usize + 1] as usize;
-        self.adjacency[start..end]
-            .iter()
-            .zip(self.weights[start..end].iter())
-            .map(|(&target, &weight)| (target, weight))
+    /// Check if a node is a passage/synthetic node.
+    pub fn is_passage(&self, node: u32) -> bool {
+        let idx = node as usize;
+        self.passage_mask[idx / 8] & (1 << (idx % 8)) != 0
     }
 
-    /// Get node position as (lat, lon).
+    /// Decode i32 fixed-point coordinates to f64 (lat, lng) in degrees.
     pub fn node_pos(&self, node: u32) -> (f64, f64) {
-        (
-            self.node_lats[node as usize] as f64,
-            self.node_lngs[node as usize] as f64,
-        )
+        let i = node as usize;
+        let lat = self.node_lats[i] as f64 / 1e7;
+        let lng = self.node_lngs[i] as f64 / 1e7;
+        (lat, lng)
     }
 
     /// Find the nearest node to a given (lat, lon) by brute-force.
-    /// For the serve phase, we'll use an R-tree instead.
+    /// For the serve phase, use the R-tree in AppState instead.
     pub fn nearest_node(&self, lat: f64, lon: f64) -> Option<(u32, f64)> {
         if self.num_nodes == 0 {
             return None;
@@ -164,8 +251,7 @@ impl RoutingGraph {
         let mut best_id = 0u32;
         let mut best_dist = f64::MAX;
         for i in 0..self.num_nodes {
-            let nlat = self.node_lats[i as usize] as f64;
-            let nlng = self.node_lngs[i as usize] as f64;
+            let (nlat, nlng) = self.node_pos(i);
             let d = crate::h3::haversine_nm(lat, lon, nlat, nlng);
             if d < best_dist {
                 best_dist = d;
@@ -188,7 +274,6 @@ impl RoutingGraph {
     }
 
     /// Returns a Vec where `result[i]` is the component root for node `i`.
-    /// All nodes in the same component share the same root value.
     pub fn component_labels(&self) -> Vec<usize> {
         let n = self.num_nodes as usize;
         let mut parent: Vec<usize> = (0..n).collect();
@@ -218,12 +303,11 @@ impl RoutingGraph {
         }
 
         for node in 0..n {
-            for (target, _) in self.edges_with_weights(node as u32) {
-                union(&mut parent, &mut rank, node, target as usize);
+            for (neighbor, _) in self.neighbors(node as u32) {
+                union(&mut parent, &mut rank, node, neighbor as usize);
             }
         }
 
-        // Flatten all parents to roots
         for i in 0..n {
             find(&mut parent, i);
         }
@@ -237,14 +321,14 @@ mod tests {
 
     fn square_graph() -> RoutingGraph {
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0);
-        b.add_node(0.0, 1.0);
-        b.add_node(1.0, 1.0);
-        b.add_node(1.0, 0.0);
-        b.add_edge(0, 1, 10.0);
-        b.add_edge(1, 2, 10.0);
-        b.add_edge(2, 3, 10.0);
-        b.add_edge(3, 0, 10.0);
+        let n0 = b.add_node(0.0, 0.0, false);
+        let n1 = b.add_node(0.0, 1.0, false);
+        let n2 = b.add_node(1.0, 0.0, false);
+        let n3 = b.add_node(1.0, 1.0, false);
+        b.add_edge(n0, n1, 1.0);
+        b.add_edge(n1, n3, 1.0);
+        b.add_edge(n0, n2, 2.0);
+        b.add_edge(n2, n3, 2.0);
         b.build()
     }
 
@@ -252,58 +336,55 @@ mod tests {
     fn graph_builder_counts() {
         let g = square_graph();
         assert_eq!(g.num_nodes, 4);
-        assert_eq!(g.num_edges, 8);
+        assert_eq!(g.num_edges, 8); // 4 bidirectional = 8 directed
     }
 
     #[test]
-    fn graph_edges() {
+    fn graph_neighbors() {
         let g = square_graph();
-        let neighbors: Vec<u32> = g.edges(0).to_vec();
-        assert_eq!(neighbors.len(), 2);
-        assert!(neighbors.contains(&1));
-        assert!(neighbors.contains(&3));
+        let n0: Vec<(u32, f32)> = g.neighbors(0).collect();
+        assert_eq!(n0.len(), 2);
+        assert_eq!(n0[0].0, 1); // n1
+        assert_eq!(n0[1].0, 2); // n2
     }
 
     #[test]
-    fn graph_edges_with_weights() {
+    fn graph_neighbor_weights() {
         let g = square_graph();
-        let edges: Vec<(u32, f32)> = g.edges_with_weights(0).collect();
-        assert_eq!(edges.len(), 2);
-        for (_, w) in &edges {
-            assert!((*w - 10.0).abs() < 1e-6);
-        }
+        let n0: Vec<(u32, f32)> = g.neighbors(0).collect();
+        assert_eq!(n0[0], (1, 1.0));
+        assert_eq!(n0[1], (2, 2.0));
     }
 
     #[test]
     fn graph_node_pos_roundtrip() {
         let g = square_graph();
-        let (lat, lon) = g.node_pos(2);
+        let (lat, lng) = g.node_pos(3);
         assert!((lat - 1.0).abs() < 1e-6);
-        assert!((lon - 1.0).abs() < 1e-6);
+        assert!((lng - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn graph_connected_components_single() {
         let g = square_graph();
-        let comps = g.connected_components();
-        assert_eq!(comps, vec![4]);
+        let components = g.connected_components();
+        assert_eq!(components.len(), 1);
+        assert_eq!(components[0], 4);
     }
 
     #[test]
     fn graph_connected_components_isolated() {
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0);
-        b.add_node(0.0, 1.0);
-        b.add_node(1.0, 1.0);
-        b.add_node(1.0, 0.0);
-        b.add_node(5.0, 5.0);
-        b.add_edge(0, 1, 10.0);
-        b.add_edge(1, 2, 10.0);
-        b.add_edge(2, 3, 10.0);
-        b.add_edge(3, 0, 10.0);
+        let n0 = b.add_node(0.0, 0.0, false);
+        let n1 = b.add_node(0.0, 1.0, false);
+        b.add_edge(n0, n1, 1.0);
+        let n2 = b.add_node(1.0, 0.0, false);
+        let n3 = b.add_node(1.0, 1.0, false);
+        b.add_edge(n2, n3, 1.0);
         let g = b.build();
-        let comps = g.connected_components();
-        assert_eq!(comps, vec![4, 1]);
+        let mut components = g.connected_components();
+        components.sort();
+        assert_eq!(components, vec![2, 2]);
     }
 
     #[test]
@@ -312,13 +393,127 @@ mod tests {
         let mut buf = Vec::new();
         g.save(&mut buf).unwrap();
 
-        let g2 = RoutingGraph::load(std::io::Cursor::new(&buf)).unwrap();
-        assert_eq!(g2.num_nodes, g.num_nodes);
-        assert_eq!(g2.num_edges, g.num_edges);
-        assert_eq!(g2.node_lats, g.node_lats);
-        assert_eq!(g2.node_lngs, g.node_lngs);
-        assert_eq!(g2.adjacency, g.adjacency);
-        assert_eq!(g2.weights, g.weights);
-        assert_eq!(g2.offsets, g.offsets);
+        // Verify magic header
+        assert_eq!(&buf[0..4], b"ASW\x01");
+
+        let loaded = RoutingGraph::load(std::io::Cursor::new(&buf)).unwrap();
+        assert_eq!(loaded.num_nodes, g.num_nodes);
+        assert_eq!(loaded.num_edges, g.num_edges);
+        assert_eq!(loaded.node_lats, g.node_lats);
+        assert_eq!(loaded.node_lngs, g.node_lngs);
+        assert_eq!(loaded.passage_mask, g.passage_mask);
+        assert_eq!(loaded.offsets, g.offsets);
+        assert_eq!(loaded.edge_data, g.edge_data);
+
+        // Verify routing works after load
+        let neighbors: Vec<(u32, f32)> = loaded.neighbors(0).collect();
+        assert_eq!(neighbors.len(), 2);
+    }
+
+    #[test]
+    fn load_rejects_old_format() {
+        let fake_old = vec![4, 0, 0, 0, 0, 0, 0, 0];
+        let result = RoutingGraph::load(std::io::Cursor::new(&fake_old));
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("ASW"),
+            "Error should mention ASW format: {}",
+            err_msg
+        );
+    }
+
+    #[test]
+    fn neighbor_iter_decodes_edge_data() {
+        let mut edge_data = Vec::new();
+        crate::varint::encode(5, &mut edge_data);
+        edge_data.extend_from_slice(&150u16.to_le_bytes());
+        crate::varint::encode(5, &mut edge_data);
+        edge_data.extend_from_slice(&200u16.to_le_bytes());
+        crate::varint::encode(32, &mut edge_data);
+        edge_data.extend_from_slice(&350u16.to_le_bytes());
+
+        let end = edge_data.len() as u32;
+        let graph = RoutingGraph {
+            node_lats: vec![0; 1],
+            node_lngs: vec![0; 1],
+            passage_mask: vec![0],
+            offsets: vec![0, end],
+            edge_data,
+            coastline_coords: vec![],
+            num_nodes: 1,
+            num_edges: 3,
+        };
+
+        let neighbors: Vec<(u32, f32)> = graph.neighbors(0).collect();
+        assert_eq!(neighbors.len(), 3);
+        assert_eq!(neighbors[0], (5, 1.50));
+        assert_eq!(neighbors[1], (10, 2.00));
+        assert_eq!(neighbors[2], (42, 3.50));
+    }
+
+    #[test]
+    fn is_passage_bitset() {
+        let mut mask = vec![0u8; 1];
+        mask[0] = (1 << 0) | (1 << 5);
+        let graph = RoutingGraph {
+            node_lats: vec![0; 8],
+            node_lngs: vec![0; 8],
+            passage_mask: mask,
+            offsets: vec![0; 9],
+            edge_data: vec![],
+            coastline_coords: vec![],
+            num_nodes: 8,
+            num_edges: 0,
+        };
+        assert!(graph.is_passage(0));
+        assert!(!graph.is_passage(1));
+        assert!(!graph.is_passage(4));
+        assert!(graph.is_passage(5));
+    }
+
+    #[test]
+    fn node_pos_i32_roundtrip() {
+        let graph = RoutingGraph {
+            node_lats: vec![(36.848_f64 * 1e7).round() as i32],
+            node_lngs: vec![(28.268_f64 * 1e7).round() as i32],
+            passage_mask: vec![0],
+            offsets: vec![0, 0],
+            edge_data: vec![],
+            coastline_coords: vec![],
+            num_nodes: 1,
+            num_edges: 0,
+        };
+        let (lat, lng) = graph.node_pos(0);
+        assert!((lat - 36.848).abs() < 1e-6);
+        assert!((lng - 28.268).abs() < 1e-6);
+    }
+
+    #[test]
+    fn builder_produces_compact_format() {
+        let mut b = GraphBuilder::new();
+        let n0 = b.add_node(51.5, -0.1, false);
+        let n1 = b.add_node(48.8, 2.3, false);
+        let n2 = b.add_node(0.0, 0.0, true);
+        b.add_edge(n0, n1, 186.0);
+        b.add_edge(n0, n2, 50.0);
+
+        let g = b.build();
+
+        assert_eq!(g.node_lats[0], (51.5_f64 * 1e7).round() as i32);
+        assert_eq!(g.node_lngs[1], (2.3_f64 * 1e7).round() as i32);
+        assert!(!g.is_passage(n0));
+        assert!(!g.is_passage(n1));
+        assert!(g.is_passage(n2));
+        assert_eq!(g.num_nodes, 3);
+        assert_eq!(g.num_edges, 4);
+
+        let n0_neighbors: Vec<(u32, f32)> = g.neighbors(n0).collect();
+        assert_eq!(n0_neighbors.len(), 2);
+
+        let n1_neighbors: Vec<(u32, f32)> = g.neighbors(n1).collect();
+        assert_eq!(n1_neighbors.len(), 1);
+        assert_eq!(n1_neighbors[0].0, n0);
+        assert!((n1_neighbors[0].1 - 186.0).abs() < 0.01);
     }
 }
