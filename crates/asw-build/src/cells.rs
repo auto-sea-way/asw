@@ -13,33 +13,47 @@ use tracing::info;
 
 use crate::shapefile::Bbox;
 
-/// Resolution tier names for logging.
-const TIER_NAMES: &[&str] = &[
-    "",
-    "",
-    "",
-    "ocean",
-    "deep-mid",
-    "mid",
-    "near-mid",
-    "coastal",
-    "near-coast",
-    "near-shore",
-    "shoreline",
-    "passage-11",
-    "passage-12",
-    "passage-13",
-];
-
-fn tier_name(res: u8) -> &'static str {
-    TIER_NAMES.get(res as usize).copied().unwrap_or("unknown")
+/// Check if a cell's center falls within any passage corridor bbox.
+fn in_passage_corridor(cell: CellIndex, corridors: &[(f64, f64, f64, f64)]) -> bool {
+    if corridors.is_empty() {
+        return false;
+    }
+    let (lat, lon) = cell_center(cell);
+    corridors
+        .iter()
+        .any(|&(min_lon, min_lat, max_lon, max_lat)| {
+            lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
+        })
 }
 
-/// Generate all navigable H3 cells (res-3 through res-9 adaptive cascade),
-/// with extended cascade into passage zones at higher resolutions.
-/// Returns a map of CellIndex → node_id.
+fn tier_name(res: u8) -> &'static str {
+    match res {
+        3 => "ocean",
+        4 => "deep-mid",
+        5 => "mid",
+        6 => "near-mid",
+        7 => "coastal",
+        8 => "near-coast",
+        9 => "near-shore",
+        10 => "shoreline",
+        11 => "passage-11",
+        12 => "passage-12",
+        13 => "passage-13",
+        _ => "unknown",
+    }
+}
+
+/// Generate all navigable H3 cells via adaptive multi-resolution cascade
+/// (res-3 ocean through res-10 shoreline), with extended refinement into
+/// passage zones at even higher resolutions (up to res-13).
+///
+/// Cells in passage corridors are protected from land-elimination during the
+/// cascade, allowing narrow waterways (e.g. 25m-wide Corinth Canal) to survive
+/// until resolutions where they become visible.
+///
+/// Returns a map of `CellIndex` to sequential `node_id` (starting from 0).
 pub fn generate_cells(
-    water: &LandIndex,
+    land: &LandIndex,
     coastline: &CoastlineIndex,
     bbox: Option<Bbox>,
     passages: &[Passage],
@@ -63,7 +77,7 @@ pub fn generate_cells(
         .par_iter()
         .filter_map(|&cell| {
             pb.inc(1);
-            if !water.contains_polygon(&cell_polygon(cell)) {
+            if !land.contains_polygon(&cell_polygon(cell)) {
                 Some(cell)
             } else {
                 None
@@ -76,6 +90,14 @@ pub fn generate_cells(
         current_water.len(),
         H3_RES_BASE
     );
+
+    // Collect passage corridors for cascade-level protection.
+    // Cells inside passage corridors must not be eliminated by contains_polygon
+    // during the cascade, because narrow waterways (e.g. 25m-wide Corinth Canal)
+    // are smaller than intermediate H3 cells — the canal only becomes visible
+    // at very high resolutions (res-12/13), so ancestors must survive until then.
+    let passage_corridors: Vec<(f64, f64, f64, f64)> =
+        passages.iter().map(|p| p.corridor).collect();
 
     // Step 3: Cascade — for each tier, classify keep/refine, then expand refinements
     let mut cell_map = HashMap::new();
@@ -99,7 +121,7 @@ pub fn generate_cells(
                 let keep = if is_far {
                     // Far from coast — only keep if no land intersects this cell
                     let poly = cell_polygon(cell);
-                    !water.intersects_polygon(&poly)
+                    !land.intersects_polygon(&poly)
                 } else {
                     false // Near coast — always refine for higher resolution
                 };
@@ -129,22 +151,26 @@ pub fn generate_cells(
         }
         tier_counts.push((res, cell_map.len() - before));
 
-        // Refine to next-resolution children with hierarchical elimination
+        // Refine to next-resolution children with hierarchical elimination.
+        // NOTE: we skip the contains_polygon parent shortcut — H3 children can
+        // protrude beyond parent boundary, so an all-land parent may still have
+        // children that reach land. Each child is tested individually instead.
         let pb = make_progress(refine.len(), &format!("refining to res-{}", next_res));
+        let corridors = &passage_corridors;
         current_water = refine
             .par_iter()
             .flat_map(|&parent_cell| {
                 pb.inc(1);
                 let parent_poly = cell_polygon(parent_cell);
-                if water.contains_polygon(&parent_poly) {
-                    return Vec::new();
-                }
-                if !water.intersects_polygon(&parent_poly) {
+                if !land.intersects_polygon(&parent_poly) {
                     return children(parent_cell, next_resolution);
                 }
                 children(parent_cell, next_resolution)
                     .into_iter()
-                    .filter(|&child| !water.contains_polygon(&cell_polygon(child)))
+                    .filter(|&child| {
+                        !land.contains_polygon(&cell_polygon(child))
+                            || in_passage_corridor(child, corridors)
+                    })
                     .collect::<Vec<_>>()
             })
             .collect();
@@ -207,19 +233,17 @@ pub fn generate_cells(
         .into_par_iter()
         .flat_map(|(parent, leaf_cells)| {
             let parent_poly = cell_polygon(parent);
-            if water.contains_polygon(&parent_poly) {
-                pb.inc(leaf_cells.len() as u64);
-                return Vec::new();
-            }
-            if !water.intersects_polygon(&parent_poly) {
+            if !land.intersects_polygon(&parent_poly) {
                 pb.inc(leaf_cells.len() as u64);
                 return leaf_cells;
             }
+            // Test each leaf individually — skip contains_polygon parent shortcut
+            // because H3 children can protrude beyond parent into land.
             leaf_cells
                 .iter()
                 .filter(|&&cell| {
                     pb.inc(1);
-                    !water.intersects_polygon(&cell_polygon(cell))
+                    !land.intersects_polygon(&cell_polygon(cell))
                 })
                 .copied()
                 .collect()
@@ -247,7 +271,9 @@ pub fn generate_cells(
             by_leaf_res.entry(leaf_res).or_default().push(cell);
         }
 
-        for (leaf_res, mut current) in by_leaf_res {
+        let mut leaf_res_groups: Vec<(u8, Vec<CellIndex>)> = by_leaf_res.into_iter().collect();
+        leaf_res_groups.sort_by_key(|(res, _)| *res);
+        for (leaf_res, mut current) in leaf_res_groups {
             info!(
                 "Zone cascade: {} res-{} cells → refine to res-{}",
                 current.len(),
@@ -255,10 +281,8 @@ pub fn generate_cells(
                 leaf_res
             );
 
-            // First, filter the res-9 zone candidates through the same leaf filter
-            // (pure water check with parent grouping)
-            let leaf_res_minus_1 =
-                Resolution::try_from(H3_RES_LEAF - 1).expect("invalid resolution");
+            // Same parent-grouping strategy as normal leaf filter (above), but
+            // land-intersecting cells are refined further instead of dropped.
             let mut by_parent: HashMap<CellIndex, Vec<CellIndex>> =
                 HashMap::with_capacity(current.len() / 7);
             for &cell in &current {
@@ -268,51 +292,48 @@ pub fn generate_cells(
 
             let pb = make_progress(current.len(), &format!("zone filter res-{}", H3_RES_LEAF));
 
-            // Split into pure water (keep at res-9) and land-intersecting (refine further)
-            let (pure, straddle): (Vec<CellIndex>, Vec<CellIndex>) = by_parent
+            // Split into pure water (keep at leaf resolution) and land-intersecting (refine further).
+            // In passage zones, never drop "all land" cells — narrow waterways
+            // are smaller than cells at this resolution and only become visible
+            // at high resolutions (res-12/13).
+            let classified: Vec<(CellIndex, bool)> = by_parent
                 .into_par_iter()
                 .flat_map(|(parent, leaf_cells)| {
                     let parent_poly = cell_polygon(parent);
-                    if water.contains_polygon(&parent_poly) {
-                        pb.inc(leaf_cells.len() as u64);
-                        // All land — neither keep nor refine
-                        return leaf_cells.into_iter().map(|_| None).collect::<Vec<_>>();
-                    }
-                    if !water.intersects_polygon(&parent_poly) {
+                    if !land.intersects_polygon(&parent_poly) {
                         pb.inc(leaf_cells.len() as u64);
                         // All water — keep at this resolution
                         return leaf_cells
                             .into_iter()
-                            .map(|c| Some((c, true)))
+                            .map(|c| (c, true))
                             .collect::<Vec<_>>();
                     }
-                    // Mixed — test individually
+                    // Test individually — keep pure water, refine everything else
+                    // (including "all land" cells that may contain narrow waterways)
                     leaf_cells
                         .into_iter()
                         .map(|cell| {
                             pb.inc(1);
                             let poly = cell_polygon(cell);
-                            if !water.intersects_polygon(&poly) {
-                                Some((cell, true)) // pure water
-                            } else if !water.contains_polygon(&poly) {
-                                Some((cell, false)) // not fully land → refine
-                            } else {
-                                None // all land
-                            }
+                            let is_pure = !land.intersects_polygon(&poly);
+                            (cell, is_pure)
                         })
                         .collect::<Vec<_>>()
                 })
-                .flatten()
-                .partition_map(|(cell, is_pure)| {
-                    if is_pure {
-                        rayon::iter::Either::Left(cell)
-                    } else {
-                        rayon::iter::Either::Right(cell)
-                    }
-                });
+                .collect();
             pb.finish_and_clear();
 
-            // Add pure water cells at res-9
+            let mut pure = Vec::new();
+            let mut straddle = Vec::new();
+            for (cell, is_pure) in classified {
+                if is_pure {
+                    pure.push(cell);
+                } else {
+                    straddle.push(cell);
+                }
+            }
+
+            // Add pure water cells at leaf resolution
             let before = cell_map.len();
             for cell in &pure {
                 insert_cell(&mut cell_map, &mut node_id, *cell);
@@ -335,21 +356,13 @@ pub fn generate_cells(
                 // Expand to children
                 let pb =
                     make_progress(current.len(), &format!("zone refining to res-{}", next_res));
+                // In passage zones, keep ALL children (including "all land")
+                // because narrow waterways only become visible at high resolutions.
                 let expanded: Vec<CellIndex> = current
                     .par_iter()
                     .flat_map(|&parent_cell| {
                         pb.inc(1);
-                        let parent_poly = cell_polygon(parent_cell);
-                        if water.contains_polygon(&parent_poly) {
-                            return Vec::new();
-                        }
-                        if !water.intersects_polygon(&parent_poly) {
-                            return children(parent_cell, next_resolution);
-                        }
                         children(parent_cell, next_resolution)
-                            .into_iter()
-                            .filter(|&child| !water.contains_polygon(&cell_polygon(child)))
-                            .collect::<Vec<_>>()
                     })
                     .collect();
                 pb.finish_and_clear();
@@ -360,18 +373,14 @@ pub fn generate_cells(
                         expanded.len(),
                         &format!("zone classifying res-{}", next_res),
                     );
+                    // In passage zones, never drop "all land" cells — refine them
                     let (pure, straddle): (Vec<CellIndex>, Vec<CellIndex>) = expanded
                         .par_iter()
-                        .filter_map(|&cell| {
+                        .map(|&cell| {
                             pb.inc(1);
                             let poly = cell_polygon(cell);
-                            if !water.intersects_polygon(&poly) {
-                                Some((cell, true))
-                            } else if !water.contains_polygon(&poly) {
-                                Some((cell, false))
-                            } else {
-                                None
-                            }
+                            let is_pure = !land.intersects_polygon(&poly);
+                            (cell, is_pure)
                         })
                         .partition_map(|(cell, is_pure)| {
                             if is_pure {
@@ -404,7 +413,7 @@ pub fn generate_cells(
                         next_res
                     );
                 } else {
-                    // Leaf resolution: keep cells that are pure water or have water
+                    // Leaf resolution: keep cells that are pure water
                     let pb = make_progress(
                         expanded.len(),
                         &format!("zone leaf filter res-{}", next_res),
@@ -413,7 +422,7 @@ pub fn generate_cells(
                         .par_iter()
                         .filter(|&&cell| {
                             pb.inc(1);
-                            !water.intersects_polygon(&cell_polygon(cell))
+                            !land.intersects_polygon(&cell_polygon(cell))
                         })
                         .copied()
                         .collect();
@@ -517,14 +526,12 @@ fn cell_radius_deg(cell: CellIndex) -> f64 {
 fn cell_min_coast_dist(cell: CellIndex, coastline: &CoastlineIndex, threshold_deg: f64) -> f64 {
     let search_radius = threshold_deg + cell_radius_deg(cell);
     let (lat, lon) = cell_center(cell);
-    let mut best = coastline.min_distance_deg(lon, lat, search_radius);
-    for (vlat, vlon) in cell_boundary(cell) {
-        let d = coastline.min_distance_deg(vlon, vlat, search_radius);
-        if d < best {
-            best = d;
-        }
-    }
-    best
+    let center_dist = coastline.min_distance_deg(lon, lat, search_radius);
+    cell_boundary(cell)
+        .into_iter()
+        .fold(center_dist, |best, (vlat, vlon)| {
+            best.min(coastline.min_distance_deg(vlon, vlat, search_radius))
+        })
 }
 
 fn make_progress(len: usize, label: &str) -> ProgressBar {

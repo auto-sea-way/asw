@@ -11,9 +11,9 @@ use crate::shapefile::Bbox;
 
 /// Run the full build pipeline.
 pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()> {
-    // Step 1: Load land polygons (inverted: not-in-land = water)
-    let water = crate::shapefile::load_land_polygons(shp_path, None)?;
-    info!("Land index: {} polygons", water.polygon_count());
+    // Step 1: Load land polygons
+    let land = crate::shapefile::load_land_polygons(shp_path, None)?;
+    info!("Land index: {} polygons", land.polygon_count());
 
     // Step 2: Extract coastline (needed for coastal detection in step 3)
     info!("Extracting coastline segments...");
@@ -41,12 +41,12 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
         );
     }
 
-    // Step 3: Generate cells (main cascade res-3 through res-9, extended in passage zones)
-    let cells = crate::cells::generate_cells(&water, &coastline_index, bbox, PASSAGES)?;
+    // Step 3: Generate cells (main cascade res-3 through res-10, extended in passage zones)
+    let cells = crate::cells::generate_cells(&land, &coastline_index, bbox, PASSAGES)?;
     info!("Generated {} navigable cells", cells.len());
 
     // Step 5: Build edges (auto-detects max resolution from cells)
-    let edges = crate::edges::build_edges(&cells, &water)?;
+    let edges = crate::edges::build_edges(&cells, &land)?;
     info!("Built {} edges", edges.len());
 
     // Step 6: Build graph
