@@ -142,6 +142,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Download Linux binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: asw-linux-*
+          merge-multiple: true
+
+      - name: Make binaries executable
+        run: chmod +x asw-linux-*
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
 
@@ -165,8 +174,6 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-          cache-from: type=gha,scope=slim
-          cache-to: type=gha,mode=max,scope=slim
 
       - name: Build and push full image
         uses: docker/build-push-action@v7
@@ -180,5 +187,3 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-full
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-full
-          cache-from: type=gha,scope=full
-          cache-to: type=gha,mode=max,scope=full

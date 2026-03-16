@@ -1,28 +1,7 @@
-FROM rust:1.94.0-bookworm AS builder
-WORKDIR /src
-
-# Copy manifests only (layer caching)
-COPY Cargo.toml Cargo.lock ./
-COPY crates/asw-core/Cargo.toml crates/asw-core/Cargo.toml
-COPY crates/asw-build/Cargo.toml crates/asw-build/Cargo.toml
-COPY crates/asw-serve/Cargo.toml crates/asw-serve/Cargo.toml
-COPY crates/asw-cloud/Cargo.toml crates/asw-cloud/Cargo.toml
-COPY crates/asw-cli/Cargo.toml crates/asw-cli/Cargo.toml
-
-# Dummy source for dep caching
-RUN for crate in asw-core asw-build asw-serve asw-cloud; do \
-      mkdir -p crates/$crate/src && echo "" > crates/$crate/src/lib.rs; \
-    done && \
-    mkdir -p crates/asw-cli/src && echo "fn main() {}" > crates/asw-cli/src/main.rs
-RUN cargo build --release -p asw-cli || true
-
-# Real source
-COPY crates/ crates/
-RUN touch crates/*/src/*.rs && cargo build --release -p asw-cli
-
 FROM gcr.io/distroless/cc-debian12
-COPY --from=builder /src/target/release/asw /usr/local/bin/asw
+ARG TARGETARCH
 ARG ASW_GRAPH_URL
+COPY asw-linux-${TARGETARCH} /usr/local/bin/asw
 ADD ${ASW_GRAPH_URL} /data/asw.graph
 ENV ASW_GRAPH=/data/asw.graph
 ENV ASW_HOST=0.0.0.0
