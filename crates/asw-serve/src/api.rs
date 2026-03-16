@@ -1,13 +1,15 @@
 use asw_core::routing::compute_route;
 use axum::{
-    extract::{Query, State},
+    extract::{Query, Request, State},
     http::StatusCode,
+    middleware::{self, Next},
     response::Json,
     routing::get,
     Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 
 use crate::state::ServerState;
 
@@ -142,12 +144,42 @@ async fn info_handler(
     }))
 }
 
+async fn api_key_middleware(
+    State(state): State<Arc<ServerState>>,
+    req: Request,
+    next: Next,
+) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+    let provided = req
+        .headers()
+        .get("X-Api-Key")
+        .and_then(|v| v.to_str().ok());
+
+    match provided {
+        Some(key) if key.as_bytes().ct_eq(state.api_key.as_bytes()).into() => {
+            Ok(next.run(req).await)
+        }
+        _ => {
+            tracing::warn!("Rejected request: invalid or missing API key");
+            Err((
+                StatusCode::UNAUTHORIZED,
+                Json(ErrorResponse {
+                    error: "unauthorized".into(),
+                }),
+            ))
+        }
+    }
+}
+
 pub fn create_router(state: Arc<ServerState>) -> Router {
-    Router::new()
+    let protected = Router::new()
         .route("/route", get(route_handler))
+        .route("/info", get(info_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+
+    Router::new()
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
-        .route("/info", get(info_handler))
+        .merge(protected)
         .with_state(state)
 }
 
@@ -189,5 +221,97 @@ mod tests {
     #[test]
     fn parse_empty() {
         assert!(parse_latlng("").is_none());
+    }
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode as HyperStatus};
+    use tower::ServiceExt;
+
+    fn test_state() -> Arc<ServerState> {
+        Arc::new(ServerState::new(
+            "test.graph".into(),
+            "secret-key-1234567890".into(),
+        ))
+    }
+
+    #[tokio::test]
+    async fn health_no_auth_required() {
+        let app = create_router(test_state());
+        let req = Request::get("/health").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+    }
+
+    #[tokio::test]
+    async fn ready_no_auth_required() {
+        let app = create_router(test_state());
+        let req = Request::get("/ready").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn route_returns_401_without_key() {
+        let app = create_router(test_state());
+        let req = Request::get("/route?from=36.85,28.27&to=36.90,28.30")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn info_returns_401_without_key() {
+        let app = create_router(test_state());
+        let req = Request::get("/info").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn route_returns_401_with_wrong_key() {
+        let app = create_router(test_state());
+        let req = Request::get("/route?from=36.85,28.27&to=36.90,28.30")
+            .header("X-Api-Key", "wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::UNAUTHORIZED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json, serde_json::json!({"error": "unauthorized"}));
+    }
+
+    #[tokio::test]
+    async fn info_returns_401_with_wrong_key() {
+        let app = create_router(test_state());
+        let req = Request::get("/info")
+            .header("X-Api-Key", "wrong-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn route_passes_with_correct_key() {
+        let app = create_router(test_state());
+        let req = Request::get("/route?from=36.85,28.27&to=36.90,28.30")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn info_passes_with_correct_key() {
+        let app = create_router(test_state());
+        let req = Request::get("/info")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::SERVICE_UNAVAILABLE);
     }
 }
