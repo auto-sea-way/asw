@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-16
+
 ### Added
 
 - API key authentication for `/route` and `/info` endpoints via `X-Api-Key` header
@@ -42,5 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
-[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/auto-sea-way/asw/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/auto-sea-way/asw/releases/tag/v0.1.0
