@@ -1,5 +1,5 @@
 /// Hetzner server configuration.
-pub const HETZNER_SERVER_TYPE: &str = "cpx62";
+pub const HETZNER_SERVER_TYPE: &str = "ccx33";
 pub const HETZNER_IMAGE: &str = "ubuntu-24.04";
 pub const HETZNER_LOCATION: &str = "nbg1";
 pub const HETZNER_SERVER_NAME: &str = "asw-builder";
