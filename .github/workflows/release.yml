@@ -1,12 +1,24 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semantic version (e.g., 0.1.0)"
+        required: true
+        type: string
+      graph_url:
+        description: "Public URL to pre-built asw.graph file (e.g., from a draft release)"
+        required: true
+        type: string
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: true
+  group: release
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   check:
@@ -81,22 +93,92 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Guard — must run on main
+        run: |
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::Release must be triggered from main branch (got ${{ github.ref }})"
+            exit 1
+          fi
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
+      - name: Download graph file
+        run: curl -fSL "${{ inputs.graph_url }}" -o asw.graph
+
       - name: Collect binaries and generate checksums
         run: |
           mkdir -p release
           find artifacts -type f -name 'asw-*' -exec cp {} release/ \;
+          cp asw.graph release/
           cd release
-          sha256sum asw-* > SHA256SUMS
+          sha256sum asw-* asw.graph > SHA256SUMS
+
+      - name: Create annotated tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
 
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ inputs.version }}
           files: |
             release/asw-*
+            release/asw.graph
             release/SHA256SUMS
           generate_release_notes: true
+
+  docker:
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push slim image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,mode=max,scope=slim
+
+      - name: Build and push full image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.full
+          push: true
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            ASW_GRAPH_URL=https://github.com/${{ github.repository }}/releases/download/v${{ inputs.version }}/asw.graph
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-full
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-full
+          cache-from: type=gha,scope=full
+          cache-to: type=gha,mode=max,scope=full
