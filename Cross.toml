@@ -1,0 +1,5 @@
+[target.x86_64-unknown-linux-musl]
+pre-build = ["apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends cmake"]
+
+[target.aarch64-unknown-linux-musl]
+pre-build = ["apt-get update && DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC apt-get install -y --no-install-recommends cmake"]

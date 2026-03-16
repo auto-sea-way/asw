@@ -53,6 +53,6 @@ Rust workspace with 5 crates:
 - `.env` file in project root auto-loaded by CLI (dotenvy) — `HETZNER_TOKEN` and `ASW_API_KEY` picked up automatically
 - API key auth: `/route` and `/info` require `X-Api-Key` header; `/health` and `/ready` are public
 - `export/` directory for all output files (graphs, GeoJSON) — gitignored
-- Docker: multi-stage build (rust:bookworm → distroless), graph auto-download via `ASW_GRAPH_URL`
+- Docker: statically-linked musl binaries on distroless/static-debian12, graph auto-download via `ASW_GRAPH_URL`
 - Readiness probe: server starts TCP listener immediately, `/ready` returns 503 until graph loaded
 - CI/CD: GitHub Actions for CI, Docker push to ghcr.io, and binary releases on version tags

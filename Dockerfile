@@ -1,4 +1,4 @@
-FROM gcr.io/distroless/cc-debian12
+FROM gcr.io/distroless/static-debian12
 ARG TARGETARCH
 COPY asw-linux-${TARGETARCH} /usr/local/bin/asw
 ENV ASW_GRAPH=/data/asw.graph
