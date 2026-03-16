@@ -52,6 +52,10 @@ enum Commands {
         /// URL to download graph from if file doesn't exist
         #[arg(long, env = "ASW_GRAPH_URL")]
         graph_url: Option<String>,
+
+        /// API key for authenticating requests (required)
+        #[arg(long, env = "ASW_API_KEY")]
+        api_key: String,
     },
     /// Export graph as GeoJSON for visualization
     Geojson {
@@ -234,9 +238,15 @@ fn main() -> Result<()> {
             host,
             port,
             graph_url,
+            api_key,
         } => {
             // Download graph if missing
             download::ensure_graph(&graph, graph_url.as_deref())?;
+
+            let api_key = api_key.trim().to_string();
+            if api_key.is_empty() {
+                anyhow::bail!("ASW_API_KEY must not be empty or whitespace-only");
+            }
 
             let listen = format!("{}:{}", host, port);
             let graph_path = graph.display().to_string();
@@ -244,7 +254,7 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
                 // Create server state (graph not loaded yet)
-                let state = std::sync::Arc::new(asw_serve::state::ServerState::new(graph_path));
+                let state = std::sync::Arc::new(asw_serve::state::ServerState::new(graph_path, api_key));
 
                 let app = asw_serve::api::create_router(state.clone());
                 let listener = tokio::net::TcpListener::bind(&listen).await?;
