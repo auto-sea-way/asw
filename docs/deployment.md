@@ -11,7 +11,7 @@ The graph is baked into the image — no downloads or volumes needed.
 ```yaml
 services:
   asw:
-    image: ghcr.io/auto-sea-way/auto-sea-way:0.1.0-full
+    image: ghcr.io/auto-sea-way/asw:0.1.0-full
     ports:
       - "3000:3000"
     healthcheck:
@@ -29,11 +29,11 @@ The graph is downloaded on first start and cached in a named volume.
 ```yaml
 services:
   asw:
-    image: ghcr.io/auto-sea-way/auto-sea-way:0.1.0
+    image: ghcr.io/auto-sea-way/asw:0.1.0
     ports:
       - "3000:3000"
     environment:
-      - ASW_GRAPH_URL=https://github.com/auto-sea-way/auto-sea-way/releases/download/v0.1.0/asw.graph
+      - ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph
     volumes:
       - asw-data:/data
     healthcheck:
@@ -67,7 +67,7 @@ spec:
     spec:
       containers:
         - name: asw
-          image: ghcr.io/auto-sea-way/auto-sea-way:0.1.0-full
+          image: ghcr.io/auto-sea-way/asw:0.1.0-full
           ports:
             - containerPort: 3000
           readinessProbe:
@@ -118,12 +118,12 @@ spec:
     spec:
       containers:
         - name: asw
-          image: ghcr.io/auto-sea-way/auto-sea-way:0.1.0
+          image: ghcr.io/auto-sea-way/asw:0.1.0
           ports:
             - containerPort: 3000
           env:
             - name: ASW_GRAPH_URL
-              value: https://github.com/auto-sea-way/auto-sea-way/releases/download/v0.1.0/asw.graph
+              value: https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph
           volumeMounts:
             - name: data
               mountPath: /data
@@ -187,12 +187,12 @@ spec:
 
 ```bash
 # Download binary (pick your platform)
-gh release download v0.1.0 --repo auto-sea-way/auto-sea-way --pattern 'asw-linux-amd64'
+gh release download v0.1.0 --repo auto-sea-way/asw --pattern 'asw-linux-amd64'
 chmod +x asw-linux-amd64
 sudo mv asw-linux-amd64 /usr/local/bin/asw
 
 # Download graph
-gh release download v0.1.0 --repo auto-sea-way/auto-sea-way --pattern 'asw.graph'
+gh release download v0.1.0 --repo auto-sea-way/asw --pattern 'asw.graph'
 sudo mkdir -p /var/lib/asw
 sudo mv asw.graph /var/lib/asw/
 ```

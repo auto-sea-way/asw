@@ -20,14 +20,14 @@ asw cloud teardown
 
 ```bash
 # Full image — zero config, graph included (~870 MB)
-docker run -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way:0.1.0-full
+docker run -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
-docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/auto-sea-way/releases/download/v0.1.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way:0.1.0
+docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
 
 # Slim image — mounted graph file
-docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way:0.1.0
+docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
 ```
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
