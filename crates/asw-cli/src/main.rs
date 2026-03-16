@@ -514,7 +514,7 @@ fn export_geojson(
     }
 
     // Passage edges
-    for src in 0..graph.num_nodes as u32 {
+    for src in 0..graph.num_nodes {
         let src_is_passage = graph.is_passage(src);
         for (dst, weight_nm) in graph.neighbors(src) {
             let dst_is_passage = graph.is_passage(dst);

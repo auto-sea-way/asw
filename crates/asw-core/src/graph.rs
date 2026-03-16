@@ -115,7 +115,7 @@ impl GraphBuilder {
         let node_resolutions: Vec<u8> = self.nodes.iter().map(|(_, _, _, res)| *res).collect();
 
         // Build passage mask bitset
-        let mask_len = (num_nodes as usize + 7) / 8;
+        let mask_len = (num_nodes as usize).div_ceil(8);
         let mut passage_mask = vec![0u8; mask_len];
         for (i, (_, _, is_passage, _)) in self.nodes.iter().enumerate() {
             if *is_passage {
@@ -183,9 +183,7 @@ impl RoutingGraph {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
         if &magic[..3] != b"ASW" {
-            anyhow::bail!(
-                "Not an ASW graph file (expected ASW magic header). Rebuild required."
-            );
+            anyhow::bail!("Not an ASW graph file (expected ASW magic header). Rebuild required.");
         }
         if magic[3] != 1 {
             anyhow::bail!(
@@ -232,10 +230,10 @@ impl RoutingGraph {
             n
         );
         anyhow::ensure!(
-            graph.passage_mask.len() == (n + 7) / 8,
+            graph.passage_mask.len() == n.div_ceil(8),
             "passage_mask length {} != expected {}",
             graph.passage_mask.len(),
-            (n + 7) / 8
+            n.div_ceil(8)
         );
         anyhow::ensure!(
             graph.node_resolutions.len() == n,

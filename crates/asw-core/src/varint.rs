@@ -1,4 +1,4 @@
-/// LEB128 unsigned varint encoding/decoding for compact graph adjacency.
+//! LEB128 unsigned varint encoding/decoding for compact graph adjacency.
 
 /// Encode a u32 as LEB128 varint, appending bytes to `buf`.
 pub fn encode(mut value: u32, buf: &mut Vec<u8>) {
