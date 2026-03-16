@@ -19,17 +19,18 @@ asw cloud teardown
 ## Docker
 
 ```bash
-# Run with a mounted graph file
-docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way
+# Full image — zero config, graph included (~870 MB)
+docker run -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way:0.1.0-full
 
-# Auto-download graph on first start (cached in volume)
-docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/auto-sea-way/releases/download/v0.1.0/planet.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way
+# Slim image — auto-download graph on first start (cached in volume)
+docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/auto-sea-way/releases/download/v0.1.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way:0.1.0
 
-# Custom port
-docker run -e ASW_PORT=8080 -p 8080:8080 \
-  -v /path/to/asw.graph:/data/asw.graph ghcr.io/auto-sea-way/auto-sea-way
+# Slim image — mounted graph file
+docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/auto-sea-way:0.1.0
 ```
+
+See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
 ## How It Works
 
@@ -78,23 +79,50 @@ crates/
 
 ## Full Planet Build
 
-Built on Hetzner cpx62 (16 vCPU, 32 GB RAM):
+Built on Hetzner ccx33 (8 dedicated AMD CPUs, 32 GB RAM):
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 11,462,948 |
-| Edges | 85,631,148 |
-| Graph file size | 1.4 GB |
-| Build time | ~33 min |
-| Connectivity | 95.7% (largest component: 10.97M nodes) |
-| Components | 31,139 |
-| Peak RAM | ~7.5 GB |
-| Graph load time | ~8.5 sec |
-| Route query (NY→Marmaris, 4819 nm) | 0.67 sec |
+| Nodes | 40,397,636 |
+| Edges | 305,031,722 |
+| Graph file size | 843 MB |
+| Connectivity | 96.9% (largest component: 39.1M nodes) |
 
 ```bash
-asw cloud build --output export/planet.graph
+asw cloud build --output export/asw.graph
 ```
+
+## Routing Benchmarks
+
+20 routes, 50 iterations each.
+
+### Sailing Routes
+
+| Route | Distance | P50 | P95 | Hops |
+|-------|----------|-----|-----|------|
+| English Channel | 22.1nm | 8.5ms | 10.3ms | 32>3 |
+| Aegean Hop | 25.2nm | 8.4ms | 12.2ms | 59>5 |
+| Strait of Gibraltar | 30.4nm | 7.6ms | 8.1ms | 81>4 |
+| Baltic Crossing | 41.9nm | 8.3ms | 9.1ms | 53>5 |
+| Balearic Sea | 127.1nm | 8.6ms | 9.1ms | 123>7 |
+| Florida Strait | 90.0nm | 7.7ms | 8.3ms | 38>3 |
+| Malacca Route | 534.4nm | 35.9ms | 38.2ms | 491>19 |
+| Tasman Sea | 1265.5nm | 40.1ms | 41.3ms | 412>16 |
+| South Atlantic | 3272.9nm | 30.8ms | 31.8ms | 401>8 |
+| North Atlantic | 3040.6nm | 629.4ms | 684.4ms | 679>17 |
+
+### Passage Transits
+
+| Route | Distance | P50 | P95 | Hops |
+|-------|----------|-----|-----|------|
+| Suez Canal | 141.5nm | 14.2ms | 14.8ms | 1155>23 |
+| Corinth Canal | 6.6nm | 6.9ms | 7.7ms | 428>9 |
+| Bosphorus | 32.4nm | 7.4ms | 8.3ms | 161>10 |
+| Dardanelles | 45.7nm | 6.7ms | 7.5ms | 117>5 |
+| Malacca Strait | 28.6nm | 6.9ms | 7.3ms | 88>5 |
+| Singapore Strait | 28.1nm | 6.6ms | 7.3ms | 48>5 |
+| Messina Strait | 15.7nm | 6.4ms | 7.0ms | 70>6 |
+| Dover Strait | 18.8nm | 6.1ms | 6.6ms | 23>3 |
 
 ## API Endpoints
 
@@ -118,7 +146,8 @@ asw cloud build --output export/planet.graph
 ## Known Limitations
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.
-- **Man-made canals (Kiel, Panama).** OSM land polygon data is derived from `natural=coastline` ways only. Man-made canals tagged as `waterway=canal` are not represented as water gaps, so routing through these canals is not currently supported. Future work: integrate supplementary OSM waterway data.
+- **Panama Canal routing.** The Panama Canal passage is not correctly connected, causing routes to go around South America instead. Fix planned for a future release.
+- **Kiel Canal routing.** The Kiel Canal passage is not correctly connected, causing routes to go around Denmark instead. Fix planned for a future release.
 
 ## Data Sources
 
