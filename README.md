@@ -199,6 +199,10 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 | `ASW_API_KEY` | — | **Required.** API key for authenticating `/route` and `/info` requests |
 | `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes in each release.
+
 ## Known Limitations
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.

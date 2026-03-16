@@ -34,10 +34,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - target: x86_64-unknown-linux-gnu
+          - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             binary: asw-linux-amd64
-          - target: aarch64-unknown-linux-gnu
+            cross: true
+          - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             binary: asw-linux-arm64
             cross: true
@@ -129,15 +130,41 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          # Extract the section for the given version from CHANGELOG.md
+          # Falls back to auto-generated notes if section not found
+          VERSION="${{ inputs.version }}"
+          BODY=$(awk -v ver="$VERSION" '
+            /^## \[/ {
+              if (found) exit
+              if (index($0, "[" ver "]")) found=1; next
+            }
+            found { print }
+          ' CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            echo "generate_notes=true" >> "$GITHUB_OUTPUT"
+            echo "body=" >> "$GITHUB_OUTPUT"
+          else
+            echo "generate_notes=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "body<<CHANGELOG_EOF"
+              echo "$BODY"
+              echo "CHANGELOG_EOF"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ inputs.version }}
+          body: ${{ steps.changelog.outputs.body }}
+          generate_release_notes: ${{ steps.changelog.outputs.generate_notes == 'true' }}
           files: |
             release/asw-*
             release/asw.graph
             release/SHA256SUMS
-          generate_release_notes: true
 
   docker:
     needs: [release]
