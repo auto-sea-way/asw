@@ -148,6 +148,40 @@ docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-w
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
+## Packages
+
+### Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/auto-sea-way/asw/releases):
+
+| Platform | Binary |
+|----------|--------|
+| Linux x86_64 | `asw-linux-amd64` |
+| Linux ARM64 | `asw-linux-arm64` |
+| macOS x86_64 | `asw-darwin-amd64` |
+| macOS ARM64 (Apple Silicon) | `asw-darwin-arm64` |
+
+Each release also includes the pre-built `asw.graph` file and `SHA256SUMS` for verification.
+
+### Docker Images
+
+Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
+
+| Image | Tag | Description |
+|-------|-----|-------------|
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.1.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.1.0-full` | Full image — graph file included (~870 MB) |
+
+Both images are available for `linux/amd64` and `linux/arm64`.
+
+### Building from Source
+
+Requires Rust (see `rust-toolchain.toml` for the pinned version):
+
+```bash
+cargo build --release -p asw-cli
+```
+
 ## How It Works
 
 1. **Read** OSM land polygons shapefile

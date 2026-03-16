@@ -16,6 +16,11 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+permissions:
+  contents: write
+  packages: write
+  checks: write
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
@@ -43,8 +48,6 @@ jobs:
             os: macos-latest
             binary: asw-darwin-arm64
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
 
@@ -88,8 +91,6 @@ jobs:
   release:
     needs: [build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -136,9 +137,6 @@ jobs:
   docker:
     needs: [release]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
     steps:
       - uses: actions/checkout@v4
 
