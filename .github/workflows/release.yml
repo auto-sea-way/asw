@@ -80,7 +80,7 @@ jobs:
         run: cp target/${{ matrix.target }}/release/asw ${{ matrix.binary }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary }}
           path: ${{ matrix.binary }}
