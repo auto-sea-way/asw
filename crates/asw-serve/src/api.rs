@@ -149,10 +149,7 @@ async fn api_key_middleware(
     req: Request,
     next: Next,
 ) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
-    let provided = req
-        .headers()
-        .get("X-Api-Key")
-        .and_then(|v| v.to_str().ok());
+    let provided = req.headers().get("X-Api-Key").and_then(|v| v.to_str().ok());
 
     match provided {
         Some(key) if key.as_bytes().ct_eq(state.api_key().as_bytes()).into() => {
@@ -174,7 +171,10 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
     let protected = Router::new()
         .route("/route", get(route_handler))
         .route("/info", get(info_handler))
-        .layer(middleware::from_fn_with_state(state.clone(), api_key_middleware));
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            api_key_middleware,
+        ));
 
     Router::new()
         .route("/health", get(health_handler))
@@ -277,7 +277,9 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), HyperStatus::UNAUTHORIZED);
-        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json, serde_json::json!({"error": "unauthorized"}));
     }

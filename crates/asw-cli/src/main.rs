@@ -254,7 +254,8 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(async {
                 // Create server state (graph not loaded yet)
-                let state = std::sync::Arc::new(asw_serve::state::ServerState::new(graph_path, api_key));
+                let state =
+                    std::sync::Arc::new(asw_serve::state::ServerState::new(graph_path, api_key));
 
                 let app = asw_serve::api::create_router(state.clone());
                 let listener = tokio::net::TcpListener::bind(&listen).await?;

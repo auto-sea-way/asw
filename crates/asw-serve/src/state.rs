@@ -11,7 +11,10 @@ pub struct ServerState {
 
 impl ServerState {
     pub fn new(graph_path: String, api_key: String) -> Self {
-        assert!(!api_key.trim().is_empty(), "API key must not be empty or whitespace-only");
+        assert!(
+            !api_key.trim().is_empty(),
+            "API key must not be empty or whitespace-only"
+        );
         Self {
             inner: tokio::sync::RwLock::new(None),
             graph_path,
