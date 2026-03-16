@@ -231,10 +231,18 @@ Restart=on-failure
 RestartSec=5
 Environment=ASW_PORT=3000
 Environment=ASW_HOST=0.0.0.0
-Environment=ASW_API_KEY=your-secret-here
+EnvironmentFile=/etc/asw/env
 
 [Install]
 WantedBy=multi-user.target
+```
+
+Create the environment file with restricted permissions:
+
+```bash
+sudo mkdir -p /etc/asw
+echo 'ASW_API_KEY=your-secret-here' | sudo tee /etc/asw/env
+sudo chmod 600 /etc/asw/env
 ```
 
 Enable and start:
