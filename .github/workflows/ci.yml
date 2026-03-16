@@ -13,3 +13,6 @@ concurrency:
 jobs:
   check:
     uses: ./.github/workflows/ci-check.yml
+    permissions:
+      contents: read
+      checks: write
