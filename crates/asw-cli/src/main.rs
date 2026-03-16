@@ -3,7 +3,7 @@ mod download;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use h3o::CellIndex;
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -97,6 +97,16 @@ enum Commands {
         /// Compare against previous JSON baseline
         #[arg(long)]
         compare: Option<PathBuf>,
+    },
+    /// Health check: exit 0 if server is ready, 1 otherwise (for Docker HEALTHCHECK)
+    Healthcheck {
+        /// Server port to check
+        #[arg(long, env = "ASW_PORT", default_value = "3000")]
+        port: u16,
+
+        /// Server host to check
+        #[arg(long, env = "ASW_HOST", default_value = "127.0.0.1")]
+        host: String,
     },
 }
 
@@ -310,6 +320,13 @@ fn main() -> Result<()> {
                 compare.as_deref(),
             )?;
         }
+        Commands::Healthcheck { port, host } => {
+            let url = format!("http://{}:{}/ready", host, port);
+            match reqwest::blocking::get(&url) {
+                Ok(r) if r.status().is_success() => std::process::exit(0),
+                _ => std::process::exit(1),
+            }
+        }
         Commands::Cloud { action } => match action {
             CloudAction::Build {
                 hetzner_token,
@@ -464,21 +481,35 @@ fn export_geojson(
     // Hex polygons
     let mut hex_count: u64 = 0;
     for i in 0..graph.num_nodes as usize {
-        let cell_u64 = graph.node_cells[i];
-        if cell_u64 == 0 {
-            continue; // synthetic node
+        if graph.is_passage(i as u32) {
+            continue; // synthetic passage node, no hex
         }
-        let cell = CellIndex::try_from(cell_u64);
-        let Ok(cell) = cell else { continue };
+
+        let (lat, lng) = graph.node_pos(i as u32);
 
         // Bbox filter
         if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
-            let lat = graph.node_lats[i] as f64;
-            let lon = graph.node_lngs[i] as f64;
-            if lon < min_lon || lon > max_lon || lat < min_lat || lat > max_lat {
+            if lng < min_lon || lng > max_lon || lat < min_lat || lat > max_lat {
                 continue;
             }
         }
+
+        // Look up stored H3 resolution and reconstruct the cell
+        let res = graph.node_resolutions[i];
+        if res == 0 {
+            continue; // passage node without valid H3 resolution
+        }
+        let res_enum = match h3o::Resolution::try_from(res) {
+            Ok(r) => r,
+            Err(_) => {
+                tracing::warn!("Invalid H3 resolution {} for node {i}", res);
+                continue;
+            }
+        };
+        let Some(cell) = asw_core::h3::lat_lng_to_cell(lat, lng, res_enum) else {
+            tracing::warn!("Could not reconstruct H3 cell for node {i} at res {res}");
+            continue;
+        };
 
         let boundary = asw_core::h3::cell_boundary(cell);
         let res = cell.resolution() as u8;
@@ -500,42 +531,30 @@ fn export_geojson(
     }
 
     // Passage edges
-    for src in 0..graph.num_nodes as usize {
-        let src_synthetic = graph.node_cells[src] == 0;
-        let start = graph.offsets[src] as usize;
-        let end = graph.offsets[src + 1] as usize;
-        for idx in start..end {
-            let dst = graph.adjacency[idx] as usize;
-            let dst_synthetic = graph.node_cells[dst] == 0;
-
-            if !src_synthetic && !dst_synthetic {
+    for src in 0..graph.num_nodes {
+        let src_is_passage = graph.is_passage(src);
+        for (dst, weight_nm) in graph.neighbors(src) {
+            let dst_is_passage = graph.is_passage(dst);
+            if !src_is_passage && !dst_is_passage {
                 continue;
             }
             if src >= dst {
                 continue;
             }
 
-            let src_lat = graph.node_lats[src] as f64;
-            let src_lon = graph.node_lngs[src] as f64;
-            let dst_lat = graph.node_lats[dst] as f64;
-            let dst_lon = graph.node_lngs[dst] as f64;
+            let (src_lat, src_lon) = graph.node_pos(src);
+            let (dst_lat, dst_lon) = graph.node_pos(dst);
 
             if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
-                let src_in = src_lon >= min_lon
-                    && src_lon <= max_lon
-                    && src_lat >= min_lat
-                    && src_lat <= max_lat;
-                let dst_in = dst_lon >= min_lon
-                    && dst_lon <= max_lon
-                    && dst_lat >= min_lat
-                    && dst_lat <= max_lat;
-                if !src_in && !dst_in {
+                let in_bbox = |lat: f64, lon: f64| {
+                    lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
+                };
+                if !in_bbox(src_lat, src_lon) && !in_bbox(dst_lat, dst_lon) {
                     continue;
                 }
             }
 
-            let weight = graph.weights[idx];
-            let feat = passage_feature_string(src_lon, src_lat, dst_lon, dst_lat, weight);
+            let feat = passage_feature_string(src_lon, src_lat, dst_lon, dst_lat, weight_nm);
             layers[LAYER_PASSAGES].push(feat);
         }
     }

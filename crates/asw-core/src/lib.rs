@@ -3,6 +3,7 @@ pub mod graph;
 pub mod h3;
 pub mod passages;
 pub mod routing;
+pub mod varint;
 
 /// H3 resolution for the coarsest ocean tier
 pub const H3_RES_BASE: u8 = 3;

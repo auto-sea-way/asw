@@ -52,18 +52,22 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     // Step 6: Build graph
     let mut builder = GraphBuilder::new();
 
-    // Add all nodes sorted by their assigned ID
+    // Sort cells by H3 index for spatial ordering (better compression)
     let mut sorted_cells: Vec<(CellIndex, u32)> = cells.iter().map(|(&c, &id)| (c, id)).collect();
-    sorted_cells.sort_by_key(|&(_, id)| id);
+    sorted_cells.sort_by_key(|(cell, _)| u64::from(*cell));
 
-    for (cell, _) in &sorted_cells {
-        let (lat, lon) = cell_center(*cell);
-        builder.add_node_with_cell(lat as f32, lon as f32, u64::from(*cell));
+    // Build node ID remapping: old_id -> new_id
+    let mut id_remap = vec![0u32; sorted_cells.len()];
+    for (cell, old_id) in &sorted_cells {
+        let (lat, lng) = cell_center(*cell);
+        let res = cell.resolution() as u8;
+        let new_id = builder.add_node(lat, lng, false, res);
+        id_remap[*old_id as usize] = new_id;
     }
 
-    // Add edges
+    // Add edges with remapped IDs
     for &(src, dst, cost) in &edges {
-        builder.add_edge(src, dst, cost);
+        builder.add_edge(id_remap[src as usize], id_remap[dst as usize], cost);
     }
 
     // Store coastline

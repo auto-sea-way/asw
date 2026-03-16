@@ -52,9 +52,8 @@ impl AppState {
         // Build node position R-tree for KNN snap
         let points: Vec<GeomWithData<[f64; 2], u32>> = (0..graph.num_nodes)
             .map(|i| {
-                let lat = graph.node_lats[i as usize] as f64;
-                let lon = graph.node_lngs[i as usize] as f64;
-                GeomWithData::new([lon, lat], i)
+                let (lat, lng) = graph.node_pos(i);
+                GeomWithData::new([lng, lat], i)
             })
             .collect();
         let node_tree = RTree::bulk_load(points);
