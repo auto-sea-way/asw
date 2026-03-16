@@ -121,10 +121,13 @@ jobs:
 
       - name: Create annotated tag
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
+          SHA=$(git rev-parse HEAD)
+          gh api repos/${{ github.repository }}/git/tags -f tag="v${{ inputs.version }}" \
+            -f message="Release v${{ inputs.version }}" -f object="$SHA" -f type=commit \
+            --jq '.sha' | xargs -I{} \
+          gh api repos/${{ github.repository }}/git/refs -f ref="refs/tags/v${{ inputs.version }}" -f sha={}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create release
         uses: softprops/action-gh-release@v2
