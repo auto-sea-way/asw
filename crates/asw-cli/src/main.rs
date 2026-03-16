@@ -98,6 +98,16 @@ enum Commands {
         #[arg(long)]
         compare: Option<PathBuf>,
     },
+    /// Health check: exit 0 if server is ready, 1 otherwise (for Docker HEALTHCHECK)
+    Healthcheck {
+        /// Server port to check
+        #[arg(long, env = "ASW_PORT", default_value = "3000")]
+        port: u16,
+
+        /// Server host to check
+        #[arg(long, env = "ASW_HOST", default_value = "127.0.0.1")]
+        host: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -309,6 +319,13 @@ fn main() -> Result<()> {
                 output.as_deref(),
                 compare.as_deref(),
             )?;
+        }
+        Commands::Healthcheck { port, host } => {
+            let url = format!("http://{}:{}/ready", host, port);
+            match reqwest::blocking::get(&url) {
+                Ok(r) if r.status().is_success() => std::process::exit(0),
+                _ => std::process::exit(1),
+            }
         }
         Commands::Cloud { action } => match action {
             CloudAction::Build {
