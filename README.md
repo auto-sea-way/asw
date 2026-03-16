@@ -4,7 +4,7 @@ Open source maritime auto-routing. Generates a global water-surface routing grap
 
 ![Marmaris to Santorini — 160 nm routed through the Aegean islands](docs/route-marmaris-santorini.png)
 
-*Marmaris to Santorini (160 nm) — computed route through the Aegean. More benchmark routes in [bench-routes.geojson](benchmarks/bench-routes.geojson) (GeoJSON map preview works on GitHub desktop).*
+*Marmaris to Santorini (160 nm) — computed route through the Aegean. More benchmark routes in [bench-routes.geojson](benchmarks/bench-routes.geojson) (GeoJSON map preview works in desktop web browser).*
 
 ## Quick Start
 
@@ -32,6 +32,19 @@ docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/downloa
 
 # Slim image — mounted graph file
 docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
+```
+
+The full planet graph requires ~4 GB RAM during startup (peaks during index construction, settles to ~1.5 GB once ready). Wait for the `/ready` endpoint to return 200 before sending route queries (~60-90s for the full graph).
+
+```bash
+# Query a route (Marmaris → Santorini)
+curl 'http://localhost:3000/route?from=36.85,28.27&to=36.39,25.46'
+
+# Check server readiness
+curl http://localhost:3000/ready
+
+# Server info (node/edge counts)
+curl http://localhost:3000/info
 ```
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.

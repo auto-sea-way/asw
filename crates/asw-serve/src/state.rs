@@ -28,28 +28,36 @@ pub struct AppState {
     pub coastline: CoastlineIndex,
     pub node_tree: RTree<GeomWithData<[f64; 2], u32>>,
     /// Component root for each node; nodes in the main component share `main_component`.
-    component_labels: Vec<usize>,
-    main_component: usize,
+    component_labels: Vec<u32>,
+    main_component: u32,
 }
 
 impl AppState {
-    pub fn new(graph: RoutingGraph) -> Self {
-        // Build coastline R-tree from serialized coords
+    /// Build AppState from a RoutingGraph.
+    ///
+    /// Initialization is sequenced to minimize peak memory: each heavy
+    /// allocation is completed (and its temporaries dropped) before the
+    /// next one begins.
+    pub fn new(mut graph: RoutingGraph) -> Self {
+        // Step 1: Build coastline R-tree, then free the raw coords from the graph.
         let coastline = CoastlineIndex::from_serialized(&graph.coastline_coords);
+        graph.drop_coastline_coords();
 
-        // Precompute connected components — find the largest
+        // Step 2: Connected components (u32 parent vec = 160 MB for 40M nodes).
         let component_labels = graph.component_labels();
-        let mut comp_sizes = std::collections::HashMap::new();
-        for &root in &component_labels {
-            *comp_sizes.entry(root).or_insert(0usize) += 1;
-        }
-        let main_component = comp_sizes
-            .into_iter()
-            .max_by_key(|&(_, size)| size)
-            .map(|(root, _)| root)
-            .unwrap_or(0);
+        let main_component = {
+            let mut comp_sizes = std::collections::HashMap::new();
+            for &root in &component_labels {
+                *comp_sizes.entry(root).or_insert(0usize) += 1;
+            }
+            comp_sizes
+                .into_iter()
+                .max_by_key(|&(_, size)| size)
+                .map(|(root, _)| root)
+                .unwrap_or(0)
+        };
 
-        // Build node position R-tree for KNN snap
+        // Step 3: Node position R-tree for KNN snap.
         let points: Vec<GeomWithData<[f64; 2], u32>> = (0..graph.num_nodes)
             .map(|i| {
                 let (lat, lng) = graph.node_pos(i);

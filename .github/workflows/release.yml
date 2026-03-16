@@ -190,3 +190,13 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}-full
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest-full
+
+      - name: Make container package public
+        # Only works for org-owned repos; silently skipped otherwise.
+        run: |
+          gh api \
+            --method PUT \
+            'orgs/${{ github.repository_owner }}/packages/container/asw/visibility' \
+            -f visibility=public || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

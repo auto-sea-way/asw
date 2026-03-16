@@ -301,42 +301,59 @@ impl RoutingGraph {
         sizes
     }
 
+    /// Drop coastline coordinate data to free memory after it has been
+    /// used to build the CoastlineIndex.
+    pub fn drop_coastline_coords(&mut self) {
+        self.coastline_coords = Vec::new();
+    }
+
     /// Returns a Vec where `result[i]` is the component root for node `i`.
-    pub fn component_labels(&self) -> Vec<usize> {
+    /// Uses u32 to halve memory vs usize (40M nodes × 4 bytes = 160 MB).
+    pub fn component_labels(&self) -> Vec<u32> {
         let n = self.num_nodes as usize;
-        let mut parent: Vec<usize> = (0..n).collect();
+        debug_assert!(n <= u32::MAX as usize);
+        let mut parent: Vec<u32> = (0..n as u32).collect();
         let mut rank = vec![0u8; n];
 
-        fn find(parent: &mut [usize], x: usize) -> usize {
-            if parent[x] != x {
-                parent[x] = find(parent, parent[x]);
+        fn find(parent: &mut [u32], x: u32) -> u32 {
+            let mut root = x;
+            while parent[root as usize] != root {
+                root = parent[root as usize];
             }
-            parent[x]
+            // Path compression
+            let mut cur = x;
+            while cur != root {
+                let next = parent[cur as usize];
+                parent[cur as usize] = root;
+                cur = next;
+            }
+            root
         }
 
-        fn union(parent: &mut [usize], rank: &mut [u8], a: usize, b: usize) {
+        fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
             let ra = find(parent, a);
             let rb = find(parent, b);
             if ra == rb {
                 return;
             }
-            if rank[ra] < rank[rb] {
-                parent[ra] = rb;
-            } else if rank[ra] > rank[rb] {
-                parent[rb] = ra;
+            if rank[ra as usize] < rank[rb as usize] {
+                parent[ra as usize] = rb;
+            } else if rank[ra as usize] > rank[rb as usize] {
+                parent[rb as usize] = ra;
             } else {
-                parent[rb] = ra;
-                rank[ra] += 1;
+                parent[rb as usize] = ra;
+                rank[ra as usize] += 1;
             }
         }
 
         for node in 0..n {
             for (neighbor, _) in self.neighbors(node as u32) {
-                union(&mut parent, &mut rank, node, neighbor as usize);
+                union(&mut parent, &mut rank, node as u32, neighbor);
             }
         }
+        drop(rank);
 
-        for i in 0..n {
+        for i in 0..n as u32 {
             find(&mut parent, i);
         }
         parent
