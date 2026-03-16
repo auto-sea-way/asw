@@ -6,16 +6,21 @@ use rstar::{primitives::GeomWithData, RTree};
 pub struct ServerState {
     pub inner: tokio::sync::RwLock<Option<AppState>>,
     pub graph_path: String,
-    pub api_key: String,
+    api_key: String,
 }
 
 impl ServerState {
     pub fn new(graph_path: String, api_key: String) -> Self {
+        assert!(!api_key.trim().is_empty(), "API key must not be empty or whitespace-only");
         Self {
             inner: tokio::sync::RwLock::new(None),
             graph_path,
             api_key,
         }
+    }
+
+    pub(crate) fn api_key(&self) -> &str {
+        &self.api_key
     }
 
     pub fn set_ready(&self, app: AppState) {
@@ -31,7 +36,7 @@ mod tests {
     #[test]
     fn server_state_stores_api_key() {
         let state = ServerState::new("test.graph".into(), "test-key-1234".into());
-        assert_eq!(state.api_key, "test-key-1234");
+        assert_eq!(state.api_key(), "test-key-1234");
         assert_eq!(state.graph_path, "test.graph");
     }
 }

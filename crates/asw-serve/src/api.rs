@@ -155,7 +155,7 @@ async fn api_key_middleware(
         .and_then(|v| v.to_str().ok());
 
     match provided {
-        Some(key) if key.as_bytes().ct_eq(state.api_key.as_bytes()).into() => {
+        Some(key) if key.as_bytes().ct_eq(state.api_key().as_bytes()).into() => {
             Ok(next.run(req).await)
         }
         _ => {
