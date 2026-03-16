@@ -18,9 +18,10 @@ The server validates the header value against a stored key using constant-time c
 
 ### Configuration
 
-- **Environment variable:** `ASW_API_KEY`
+- **CLI argument:** `--api-key` on the `Serve` clap subcommand, with `env = "ASW_API_KEY"` fallback (same pattern as `--graph`, `--host`, `--port`)
 - Picked up from `.env` via dotenvy (consistent with `HETZNER_TOKEN`)
-- If `ASW_API_KEY` is not set at startup, the server exits with an error — no accidental open mode
+- Clap's required-field validation handles the "refuse to start" behavior — no custom validation needed
+- Startup validation: reject empty or whitespace-only keys with a clear error message
 
 ### Protected vs Public Endpoints
 
@@ -55,20 +56,33 @@ Router::new()
     .with_state(state)
 ```
 
-The middleware function:
+The middleware function (lives in `api.rs` alongside router construction):
 1. Extracts `X-Api-Key` header from request
-2. Compares against stored key (constant-time)
-3. Returns 401 JSON response on mismatch
-4. Passes request through on match
+2. Compares value (case-sensitive, as bytes) against stored key using constant-time eq
+3. Returns `(StatusCode::UNAUTHORIZED, Json(ErrorResponse))` on mismatch — reuses existing `ErrorResponse` struct, axum sets `Content-Type: application/json` automatically
+4. Logs auth failures at `warn` level via `tracing` (without leaking the submitted key value)
+5. Passes request through on match
 
 ### State Changes
 
-- `ServerState` gains an `api_key: String` field, set at construction from env var
-- CLI `serve` command reads `ASW_API_KEY` and passes it to `ServerState::new()`
+- `ServerState` gains an `api_key: String` field
+- `ServerState::new()` signature changes to `new(graph_path: String, api_key: String)`
+- CLI `Serve` struct gains `#[arg(long, env = "ASW_API_KEY")] api_key: String` field
+- Call site in `main.rs` updated to pass `api_key` to `ServerState::new()`
 
 ### Dependencies
 
 - `subtle` crate for constant-time comparison (or manual constant-time eq)
+
+## Testing
+
+- **Unit: 401 on missing header** — send request without `X-Api-Key`, expect 401 + JSON error body
+- **Unit: 401 on wrong key** — send request with incorrect key, expect 401
+- **Unit: 200 on correct key** — send request with valid key, expect pass-through
+- **Integration: public endpoints unaffected** — `/health` and `/ready` return 200 without any auth header
+- **Integration: protected endpoints gated** — `/route` and `/info` return 401 without auth
+
+Tests use `axum::test` (tower::ServiceExt `oneshot`) to test the router directly without spinning up a TCP server.
 
 ## Out of Scope
 
