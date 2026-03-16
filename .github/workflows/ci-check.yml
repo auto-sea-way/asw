@@ -38,8 +38,3 @@ jobs:
 
       - name: License and advisory check
         uses: EmbarkStudios/cargo-deny-action@v2
-
-      - name: Security audit
-        uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}

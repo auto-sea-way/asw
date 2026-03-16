@@ -1,6 +1,7 @@
 [advisories]
 ignore = [
     { id = "RUSTSEC-2025-0141", reason = "bincode v1 is unmaintained but no safe upgrade path exists yet" },
+    { id = "RUSTSEC-2023-0089", reason = "atomic-polyfill is a phantom lockfile entry, not compiled for any target" },
 ]
 
 [licenses]
