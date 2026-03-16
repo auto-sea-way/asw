@@ -14,3 +14,8 @@ serde_json.workspace = true
 geojson.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
+subtle = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["macros", "rt"] }

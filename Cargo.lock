@@ -203,7 +203,9 @@ dependencies = [
  "rstar 0.12.2",
  "serde",
  "serde_json",
+ "subtle",
  "tokio",
+ "tower",
  "tracing",
 ]
 
