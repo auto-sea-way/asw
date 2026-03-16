@@ -7,8 +7,8 @@ on:
         description: "Semantic version (e.g., 0.1.0)"
         required: true
         type: string
-      graph_url:
-        description: "Public URL to pre-built asw.graph file (e.g., from a draft release)"
+      graph_tag:
+        description: "Tag of the draft release containing asw.graph (e.g., draft-graph)"
         required: true
         type: string
 
@@ -107,7 +107,9 @@ jobs:
           path: artifacts
 
       - name: Download graph file
-        run: curl -fSL "${{ inputs.graph_url }}" -o asw.graph
+        run: gh release download "${{ inputs.graph_tag }}" --pattern 'asw.graph' --dir .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Collect binaries and generate checksums
         run: |
