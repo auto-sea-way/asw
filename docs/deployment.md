@@ -14,6 +14,8 @@ services:
     image: ghcr.io/auto-sea-way/asw:0.1.0-full
     ports:
       - "3000:3000"
+    environment:
+      - ASW_API_KEY=${ASW_API_KEY}
     healthcheck:
       test: ["CMD", "/usr/local/bin/asw", "healthcheck"]
       interval: 10s
@@ -33,6 +35,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      - ASW_API_KEY=${ASW_API_KEY}
       - ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph
     volumes:
       - asw-data:/data
@@ -70,6 +73,12 @@ spec:
           image: ghcr.io/auto-sea-way/asw:0.1.0-full
           ports:
             - containerPort: 3000
+          env:
+            - name: ASW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: asw-secrets
+                  key: api-key
           readinessProbe:
             httpGet:
               path: /ready
@@ -122,6 +131,11 @@ spec:
           ports:
             - containerPort: 3000
           env:
+            - name: ASW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: asw-secrets
+                  key: api-key
             - name: ASW_GRAPH_URL
               value: https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph
           volumeMounts:
@@ -200,7 +214,7 @@ sudo mv asw.graph /var/lib/asw/
 ### Run
 
 ```bash
-asw serve --graph /var/lib/asw/asw.graph --port 3000
+ASW_API_KEY=your-secret asw serve --graph /var/lib/asw/asw.graph --port 3000
 ```
 
 ### Systemd service
@@ -217,6 +231,7 @@ Restart=on-failure
 RestartSec=5
 Environment=ASW_PORT=3000
 Environment=ASW_HOST=0.0.0.0
+Environment=ASW_API_KEY=your-secret-here
 
 [Install]
 WantedBy=multi-user.target

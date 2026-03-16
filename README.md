@@ -24,27 +24,29 @@ asw cloud teardown
 
 ```bash
 # Full image — zero config, graph included (~870 MB)
-docker run -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
-docker run -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph \
+docker run -e ASW_API_KEY=your-secret \
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph \
   -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
 
 # Slim image — mounted graph file
-docker run -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
+docker run -e ASW_API_KEY=your-secret \
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
 ```
 
 The full planet graph requires ~4 GB RAM during startup (peaks during index construction, settles to ~1.5 GB once ready). Wait for the `/ready` endpoint to return 200 before sending route queries (~60-90s for the full graph).
 
 ```bash
 # Query a route (Marmaris → Santorini)
-curl 'http://localhost:3000/route?from=36.85,28.27&to=36.39,25.46'
+curl -H 'X-Api-Key: your-secret' 'http://localhost:3000/route?from=36.85,28.27&to=36.39,25.46'
 
-# Check server readiness
+# Check server readiness (no auth required)
 curl http://localhost:3000/ready
 
 # Server info (node/edge counts)
-curl http://localhost:3000/info
+curl -H 'X-Api-Key: your-secret' http://localhost:3000/info
 ```
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
@@ -106,7 +108,7 @@ asw cloud provision
 asw cloud status
 asw cloud teardown
 
-# Serve routing API
+# Serve routing API (requires ASW_API_KEY in .env or --api-key)
 asw serve --graph export/asw.graph --host 0.0.0.0 --port 3000
 
 # Export as GeoJSON for visualization
@@ -177,12 +179,14 @@ asw cloud build --output export/asw.graph
 
 ## API Endpoints
 
-| Endpoint | Purpose |
-|----------|---------|
-| `GET /route?from=lat,lon&to=lat,lon` | Compute maritime route, returns GeoJSON LineString |
-| `GET /health` | Liveness probe (always 200) |
-| `GET /ready` | Readiness probe (503 during graph load, 200 when ready) |
-| `GET /info` | Graph metadata: node/edge counts, version |
+| Endpoint | Auth | Purpose |
+|----------|------|---------|
+| `GET /route?from=lat,lon&to=lat,lon` | Required | Compute maritime route, returns GeoJSON LineString |
+| `GET /info` | Required | Graph metadata: node/edge counts, version |
+| `GET /health` | None | Liveness probe (always 200) |
+| `GET /ready` | None | Readiness probe (503 during graph load, 200 when ready) |
+
+Protected endpoints require an `X-Api-Key` header matching the configured `ASW_API_KEY`. Requests with a missing or invalid key receive `401 Unauthorized`.
 
 ## Environment Variables
 
@@ -192,6 +196,7 @@ asw cloud build --output export/asw.graph
 | `ASW_HOST` | `0.0.0.0` | Bind address |
 | `ASW_GRAPH` | `export/asw.graph` | Path to graph file |
 | `ASW_GRAPH_URL` | — | URL to download graph if file is missing |
+| `ASW_API_KEY` | — | **Required.** API key for authenticating `/route` and `/info` requests |
 | `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
 
 ## Known Limitations

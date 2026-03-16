@@ -20,7 +20,7 @@ asw cloud provision
 asw cloud teardown
 asw cloud status
 
-# Serve routing API
+# Serve routing API (ASW_API_KEY required, loaded from .env)
 asw serve --graph export/asw.graph --port 3000
 
 # Docker
@@ -50,7 +50,8 @@ Rust workspace with 5 crates:
 - Cloud builds: shell out to system `ssh`/`scp` for streaming output
 - Hetzner API via reqwest (blocking), no SDK dependency
 - Bbox presets: "dev", "dev-small", "marmaris" or custom min_lon,min_lat,max_lon,max_lat
-- `.env` file in project root auto-loaded by CLI (dotenvy) — `HETZNER_TOKEN` picked up automatically
+- `.env` file in project root auto-loaded by CLI (dotenvy) — `HETZNER_TOKEN` and `ASW_API_KEY` picked up automatically
+- API key auth: `/route` and `/info` require `X-Api-Key` header; `/health` and `/ready` are public
 - `export/` directory for all output files (graphs, GeoJSON) — gitignored
 - Docker: multi-stage build (rust:bookworm → distroless), graph auto-download via `ASW_GRAPH_URL`
 - Readiness probe: server starts TCP listener immediately, `/ready` returns 503 until graph loaded
