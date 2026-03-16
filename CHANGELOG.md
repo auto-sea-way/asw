@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `/health` and `/ready` endpoints remain public (no auth required)
 - Server refuses to start without a valid API key
+- Linux binaries now statically linked with musl (fixes GLIBC version mismatch with distroless base image)
+- Docker base image switched from `distroless/cc-debian12` to `distroless/static-debian12`
+- Release binaries stripped for smaller file size
 
 ## [0.1.0] - 2026-03-16
 
