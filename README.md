@@ -35,7 +35,7 @@ See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and b
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Add** manual edges for critical narrow passages (Suez, Panama, Bosphorus, Dover, etc.)
