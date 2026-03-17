@@ -43,10 +43,13 @@ Rust workspace with 5 crates:
 
 ## Key Design Decisions
 
-- H3 hexagonal grid: adaptive multi-resolution cascade (res-3 ocean through res-9 shoreline)
+- H3 hexagonal grid: adaptive multi-resolution cascade (res-3 ocean through res-9 shoreline, up to res-13 in passage corridors)
 - Hierarchical cell elimination: test parent cell before expanding children
 - Land polygons loaded without bbox filter — R-tree handles spatial queries efficiently
-- Critical narrow passages (Suez, Panama, etc.) get manually-added edges
+- Critical narrow passages (Suez, Panama, etc.) use resolution cascade corridors
+- Graph format v2: bitcode + zstd-19 serialization, sorted `node_h3: Vec<u64>` for O(log n) spatial lookup
+- Nearest-node snapping via H3 binary search (no R-tree) — sorted node_h3 vec is both coordinate store and spatial index
+- Pre-allocated A* buffer pool (2 buffer sets) eliminates per-request allocation spikes
 - Cloud builds: shell out to system `ssh`/`scp` for streaming output
 - Hetzner API via reqwest (blocking), no SDK dependency
 - Bbox presets: "dev", "dev-small", "marmaris" or custom min_lon,min_lat,max_lon,max_lat
