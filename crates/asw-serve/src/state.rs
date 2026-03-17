@@ -50,6 +50,8 @@ pub struct AppState {
     /// Component root for each node; nodes in the main component share `main_component`.
     component_labels: Vec<u32>,
     main_component: u32,
+    /// Pre-allocated A* search buffer pool (2 buffer sets for concurrent requests).
+    astar_pool: asw_core::astar_pool::AstarPool,
 }
 
 impl AppState {
@@ -77,11 +79,14 @@ impl AppState {
                 .unwrap_or(0)
         };
 
+        let astar_pool = asw_core::astar_pool::AstarPool::new(graph.num_nodes as usize, 2);
+
         Self {
             graph,
             coastline,
             component_labels,
             main_component,
+            astar_pool,
         }
     }
 
@@ -124,6 +129,17 @@ impl AppState {
         }
 
         None
+    }
+
+    /// Acquire a buffer set from the pool, run `f`, then release the buffer.
+    pub async fn with_astar_buffers<F, T>(&self, f: F) -> T
+    where
+        F: FnOnce(&mut asw_core::astar_pool::AstarBuffers) -> T,
+    {
+        let mut buf = self.astar_pool.acquire().await;
+        let result = f(&mut buf);
+        self.astar_pool.release(buf).await;
+        result
     }
 
     /// Binary search for an H3 cell index in the sorted `node_h3` array.

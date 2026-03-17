@@ -18,11 +18,15 @@ pub struct RouteResult {
 }
 
 /// A* pathfinding with haversine heuristic.
-pub fn astar(graph: &RoutingGraph, start: u32, goal: u32) -> Option<(Vec<u32>, f64)> {
-    let n = graph.num_nodes as usize;
-    let mut g_score = vec![f32::MAX; n];
-    let mut came_from = vec![u32::MAX; n];
-    let mut closed = vec![false; n];
+pub fn astar(
+    graph: &RoutingGraph,
+    start: u32,
+    goal: u32,
+    buffers: &mut crate::astar_pool::AstarBuffers,
+) -> Option<(Vec<u32>, f64)> {
+    let g_score = &mut buffers.g_score;
+    let came_from = &mut buffers.came_from;
+    let closed = &mut buffers.closed;
 
     g_score[start as usize] = 0.0;
 
@@ -157,11 +161,12 @@ pub fn compute_route(
     to_lon: f64,
     coastline: &CoastlineIndex,
     node_knn: &dyn Fn(f64, f64) -> Option<(u32, f64)>,
+    buffers: &mut crate::astar_pool::AstarBuffers,
 ) -> Option<RouteResult> {
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let (raw_path, _distance_nm) = astar(graph, start, goal)?;
+    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers)?;
     let raw_hops = raw_path.len();
 
     let smoothed = smooth(graph, &raw_path, coastline);
@@ -231,7 +236,8 @@ mod tests {
     #[test]
     fn astar_shortest_path() {
         let (g, node_a, node_d) = diamond_graph();
-        let result = astar(&g, node_a, node_d);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let result = astar(&g, node_a, node_d, &mut buffers);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert!((cost - 10.0).abs() < 1e-6, "cost was {cost}, expected 10.0");
@@ -243,7 +249,8 @@ mod tests {
     #[test]
     fn astar_same_node() {
         let (g, node_a, _) = diamond_graph();
-        let result = astar(&g, node_a, node_a);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let result = astar(&g, node_a, node_a, &mut buffers);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert_eq!(path, vec![node_a]);
@@ -264,7 +271,8 @@ mod tests {
             b.add_node(*h3, *lat, *lng);
         }
         let g = b.build();
-        let result = astar(&g, 0, 1);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let result = astar(&g, 0, 1, &mut buffers);
         assert!(result.is_none());
     }
 }
