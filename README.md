@@ -36,7 +36,7 @@ docker run -e ASW_API_KEY=your-secret \
   -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
 ```
 
-The full planet graph requires ~4 GB RAM during startup (peaks during index construction, settles to ~1.5 GB once ready). Wait for the `/ready` endpoint to return 200 before sending route queries (~60-90s for the full graph).
+The full planet graph requires ~4.2 GiB RAM (steady-state, no peak spike). Wait for the `/ready` endpoint to return 200 before sending route queries (~60-90s for the full graph).
 
 ```bash
 # Query a route (Marmaris → Santorini)
@@ -88,11 +88,11 @@ cargo build --release -p asw-cli
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-13 in passage corridors)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
-5. **Add** manual edges for critical narrow passages (Suez, Panama, Bosphorus, Dover, etc.)
-6. **Serialize** graph to a compact binary format
+5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
+6. **Serialize** graph to compact binary format (bitcode + zstd-19, sorted H3 indices for O(log n) spatial lookup)
 
 ## CLI Reference
 
@@ -132,14 +132,16 @@ crates/
 
 ## Full Planet Build
 
-Built on Hetzner ccx33 (8 dedicated AMD CPUs, 32 GB RAM):
+Built on Hetzner ccx53 (32 dedicated AMD CPUs, 128 GB RAM) in ~4.5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 40,397,636 |
-| Edges | 305,031,722 |
-| Graph file size | 843 MB |
+| Nodes | 40,398,071 |
+| Edges | 305,035,106 |
+| Graph file size | 712 MB |
 | Connectivity | 96.9% (largest component: 39.1M nodes) |
+| Server memory (steady) | ~4.2 GiB |
+| Server memory (peak) | ~4.2 GiB |
 
 ```bash
 asw cloud build --output export/asw.graph

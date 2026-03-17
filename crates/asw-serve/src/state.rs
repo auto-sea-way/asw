@@ -93,37 +93,36 @@ impl AppState {
     /// Find nearest node in the main connected component using H3 binary search.
     ///
     /// Iterates from finest resolution down to coarsest, checking the exact cell
-    /// and its k-ring(1) neighbors at each level.
+    /// and expanding k-ring to find nearby water cells. This handles coastal
+    /// queries where the input point may be on land.
     pub fn nearest_node(&self, lat: f64, lon: f64) -> Option<(u32, f64)> {
         let ll = h3o::LatLng::new(lat, lon).ok()?;
 
-        // Iterate from finest resolution (passage corridors) to coarsest (ocean)
+        // Iterate from finest resolution (passage corridors) to coarsest (ocean).
+        // At each resolution, expand outward (k=0,1,2,3) until a node is found.
         for res_u8 in (3..=13).rev() {
             let res = h3o::Resolution::try_from(res_u8).ok()?;
             let cell = ll.to_cell(res);
-            let h3_val = u64::from(cell);
 
-            // Check exact cell
-            if let Some(node_id) = self.h3_lookup(h3_val) {
-                if self.component_labels[node_id as usize] == self.main_component {
-                    let (nlat, nlon) = self.graph.node_pos(node_id);
-                    let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                    return Some((node_id, dist));
-                }
-            }
+            // Track best candidate at this resolution (closest by distance)
+            let mut best: Option<(u32, f64)> = None;
 
-            // Check k-ring(1) neighbors
-            for neighbor in cell.grid_disk::<Vec<_>>(1) {
-                let nh3 = u64::from(neighbor);
-                if nh3 == h3_val {
-                    continue; // Already checked
-                }
-                if let Some(node_id) = self.h3_lookup(nh3) {
-                    if self.component_labels[node_id as usize] == self.main_component {
-                        let (nlat, nlon) = self.graph.node_pos(node_id);
-                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                        return Some((node_id, dist));
+            for k in 0..=3u32 {
+                for neighbor in cell.grid_disk::<Vec<_>>(k) {
+                    let nh3 = u64::from(neighbor);
+                    if let Some(node_id) = self.h3_lookup(nh3) {
+                        if self.component_labels[node_id as usize] == self.main_component {
+                            let (nlat, nlon) = self.graph.node_pos(node_id);
+                            let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
+                            if best.is_none() || dist < best.unwrap().1 {
+                                best = Some((node_id, dist));
+                            }
+                        }
                     }
+                }
+                // If we found something at this k, return it (don't expand further)
+                if best.is_some() {
+                    return best;
                 }
             }
         }
