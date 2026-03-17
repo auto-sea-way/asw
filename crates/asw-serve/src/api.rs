@@ -101,13 +101,13 @@ async fn route_handler(
         })
         .await
         .ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "No route found between the given points".into(),
-            }),
-        )
-    })?;
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "No route found between the given points".into(),
+                }),
+            )
+        })?;
 
     let geometry = serde_json::json!({
         "type": "LineString",

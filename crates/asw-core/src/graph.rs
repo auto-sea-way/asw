@@ -313,10 +313,18 @@ mod tests {
 
     fn square_graph() -> RoutingGraph {
         // Use real H3 cells at resolution 5, sorted by H3 index
-        let c0 = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(0.0, 1.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c2 = h3o::LatLng::new(1.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c3 = h3o::LatLng::new(1.0, 1.0).unwrap().to_cell(h3o::Resolution::Five);
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(1.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c3 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
 
         let mut cells: Vec<(u64, f64, f64)> = vec![
             (u64::from(c0), 0.0, 0.0),
@@ -334,7 +342,10 @@ mod tests {
 
         // Find which sorted index corresponds to which original cell
         let idx_of = |target_h3: u64| -> u32 {
-            cells.iter().position(|(h3, _, _)| *h3 == target_h3).unwrap() as u32
+            cells
+                .iter()
+                .position(|(h3, _, _)| *h3 == target_h3)
+                .unwrap() as u32
         };
 
         let n0 = idx_of(u64::from(c0));
@@ -385,10 +396,18 @@ mod tests {
 
     #[test]
     fn graph_connected_components_isolated() {
-        let c0 = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(0.0, 1.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c2 = h3o::LatLng::new(1.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c3 = h3o::LatLng::new(1.0, 1.0).unwrap().to_cell(h3o::Resolution::Five);
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(1.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c3 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
 
         let mut cells: Vec<(u64, f64, f64)> = vec![
             (u64::from(c0), 0.0, 0.0),
@@ -404,7 +423,10 @@ mod tests {
         }
 
         let idx_of = |target_h3: u64| -> u32 {
-            cells.iter().position(|(h3, _, _)| *h3 == target_h3).unwrap() as u32
+            cells
+                .iter()
+                .position(|(h3, _, _)| *h3 == target_h3)
+                .unwrap() as u32
         };
 
         let n0 = idx_of(u64::from(c0));
@@ -467,7 +489,9 @@ mod tests {
         let end = edge_data.len() as u32;
 
         // Use a real H3 cell for the dummy node
-        let cell = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
+        let cell = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
         let graph = RoutingGraph {
             node_h3: vec![u64::from(cell)],
             offsets: vec![0, end],
@@ -486,7 +510,9 @@ mod tests {
 
     #[test]
     fn node_pos_h3_decode() {
-        let cell = h3o::LatLng::new(36.848, 28.268).unwrap().to_cell(h3o::Resolution::Five);
+        let cell = h3o::LatLng::new(36.848, 28.268)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
         let graph = RoutingGraph {
             node_h3: vec![u64::from(cell)],
             offsets: vec![0, 0],
@@ -497,15 +523,29 @@ mod tests {
         };
         let (lat, lng) = graph.node_pos(0);
         // H3 cell centers are approximate, but should be close to input
-        assert!((lat - 36.848).abs() < 0.5, "lat {} too far from 36.848", lat);
-        assert!((lng - 28.268).abs() < 0.5, "lng {} too far from 28.268", lng);
+        assert!(
+            (lat - 36.848).abs() < 0.5,
+            "lat {} too far from 36.848",
+            lat
+        );
+        assert!(
+            (lng - 28.268).abs() < 0.5,
+            "lng {} too far from 28.268",
+            lng
+        );
     }
 
     #[test]
     fn builder_produces_compact_format() {
-        let c0 = h3o::LatLng::new(51.5, -0.1).unwrap().to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(48.8, 2.3).unwrap().to_cell(h3o::Resolution::Five);
-        let c2 = h3o::LatLng::new(10.0, 10.0).unwrap().to_cell(h3o::Resolution::Five);
+        let c0 = h3o::LatLng::new(51.5, -0.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(48.8, 2.3)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(10.0, 10.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
 
         let mut cells: Vec<(u64, f64, f64)> = vec![
             (u64::from(c0), 51.5, -0.1),
@@ -521,7 +561,10 @@ mod tests {
         }
 
         let idx_of = |target_h3: u64| -> u32 {
-            cells.iter().position(|(h3, _, _)| *h3 == target_h3).unwrap() as u32
+            cells
+                .iter()
+                .position(|(h3, _, _)| *h3 == target_h3)
+                .unwrap() as u32
         };
 
         let n0 = idx_of(u64::from(c0));

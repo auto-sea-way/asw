@@ -153,6 +153,7 @@ pub fn smooth(graph: &RoutingGraph, path: &[u32], coastline: &CoastlineIndex) ->
 }
 
 /// Compute a full route: snap → A* → smooth → build result.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_route(
     graph: &RoutingGraph,
     from_lat: f64,
@@ -204,10 +205,18 @@ mod tests {
     /// Returns (graph, node_a, node_d) where A->B->D is shortest (cost 10).
     fn diamond_graph() -> (RoutingGraph, u32, u32) {
         // Points spaced far enough apart to map to distinct H3 cells at res-5
-        let c0 = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(1.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c2 = h3o::LatLng::new(0.0, 1.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c3 = h3o::LatLng::new(1.0, 1.0).unwrap().to_cell(h3o::Resolution::Five);
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(1.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c3 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
 
         let mut cells: Vec<(u64, f64, f64, &str)> = vec![
             (u64::from(c0), 0.0, 0.0, "A"),
@@ -259,12 +268,13 @@ mod tests {
 
     #[test]
     fn astar_unreachable() {
-        let c0 = h3o::LatLng::new(0.0, 0.0).unwrap().to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(10.0, 10.0).unwrap().to_cell(h3o::Resolution::Five);
-        let mut cells = vec![
-            (u64::from(c0), 0.0, 0.0),
-            (u64::from(c1), 10.0, 10.0),
-        ];
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(10.0, 10.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let mut cells = vec![(u64::from(c0), 0.0, 0.0), (u64::from(c1), 10.0, 10.0)];
         cells.sort_by_key(|(h3, _, _)| *h3);
         let mut b = GraphBuilder::new();
         for (h3, lat, lng) in &cells {
