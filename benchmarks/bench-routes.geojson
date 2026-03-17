@@ -8,15 +8,19 @@
             51.11025242983815
           ],
           [
-            1.717232128872632,
-            51.13940651517268
+            1.856513090438788,
+            50.96817733335035
+          ],
+          [
+            1.8593275053132807,
+            50.968645609113054
           ]
         ],
         "type": "LineString"
       },
       "properties": {
         "category": "sailing",
-        "distance_nm": "15.0",
+        "distance_nm": "22.1",
         "name": "English Channel",
         "stroke": "#0088ff",
         "stroke-opacity": 0.8,
@@ -60,12 +64,140 @@
       "geometry": {
         "coordinates": [
           [
-            24.970216966064473,
-            60.138796876679564
+            28.277225337201212,
+            36.850272682403386
           ],
           [
-            24.96625132449358,
-            60.12126877232547
+            28.2646739278767,
+            36.81035228568383
+          ],
+          [
+            28.270986562209462,
+            36.79488103788718
+          ],
+          [
+            28.30515929161534,
+            36.728568455003916
+          ],
+          [
+            28.251659599616843,
+            36.44248141366332
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "sailing",
+        "distance_nm": "25.1",
+        "name": "Aegean Hop",
+        "stroke": "#0088ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          28.28,
+          36.85
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Aegean Hop (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          28.23,
+          36.44
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Aegean Hop (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            -5.365083988649349,
+            36.118848888234766
+          ],
+          [
+            -5.4472283279867035,
+            36.056112442224226
+          ],
+          [
+            -5.812893356955655,
+            35.798956006973064
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "sailing",
+        "distance_nm": "29.0",
+        "name": "Strait of Gibraltar",
+        "stroke": "#0088ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -5.35,
+          36.13
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Strait of Gibraltar (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -5.81,
+          35.79
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Strait of Gibraltar (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            24.966451622801706,
+            60.13929725685457
+          ],
+          [
+            24.953425694364526,
+            60.125983267683836
           ],
           [
             24.795955330451935,
@@ -84,7 +216,7 @@
       },
       "properties": {
         "category": "sailing",
-        "distance_nm": "41.9",
+        "distance_nm": "42.0",
         "name": "Baltic Crossing",
         "stroke": "#0088ff",
         "stroke-opacity": 0.8,
@@ -128,23 +260,91 @@
       "geometry": {
         "coordinates": [
           [
-            -82.0167919388732,
-            24.968396265211275
+            2.640257194593873,
+            39.54922383013786
           ],
           [
-            -82.1763470258341,
-            24.549745244770786
+            2.522280902194799,
+            39.45568124520651
           ],
           [
-            -82.39996041241986,
-            23.213771632510486
+            2.473632930564236,
+            39.46452720715372
+          ],
+          [
+            2.36140222111856,
+            39.532681144105496
+          ],
+          [
+            2.344374912048885,
+            39.56857786514056
+          ],
+          [
+            2.201786807027569,
+            41.367577329336605
           ]
         ],
         "type": "LineString"
       },
       "properties": {
         "category": "sailing",
-        "distance_nm": "107.7",
+        "distance_nm": "127.3",
+        "name": "Balearic Sea",
+        "stroke": "#0088ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          2.64,
+          39.55
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Balearic Sea (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          2.18,
+          41.37
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Balearic Sea (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            -81.78804734032963,
+            24.541826009312075
+          ],
+          [
+            -82.35289242191757,
+            23.168466434756674
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "sailing",
+        "distance_nm": "88.1",
         "name": "Florida Strait",
         "stroke": "#0088ff",
         "stroke-opacity": 0.8,
@@ -188,32 +388,40 @@
       "geometry": {
         "coordinates": [
           [
-            103.86118046165961,
-            1.2607626203190718
+            103.85992165421787,
+            1.260860736132065
           ],
           [
-            103.83520939768857,
-            1.2353532201212465
+            103.84911414775797,
+            1.2606057043563403
           ],
           [
-            103.73221541193473,
-            1.2137394008852391
+            103.84355641029472,
+            1.2621362438776438
           ],
           [
-            103.70807120218751,
-            1.21342167101102
+            103.8299223293575,
+            1.2653936927219904
           ],
           [
-            103.63141599508448,
-            1.2084034947104616
+            103.81994333139411,
+            1.2606840986540009
           ],
           [
-            103.56979874410291,
-            1.234047352153327
+            103.80661556826773,
+            1.2606250757985331
           ],
           [
-            103.48872958197144,
-            1.2754874981428088
+            103.63971260483535,
+            1.2088565419048793
+          ],
+          [
+            103.59898212704164,
+            1.2208019368418417
+          ],
+          [
+            103.4910392260745,
+            1.273111360598663
           ],
           [
             103.43968914957769,
@@ -228,12 +436,8 @@
             1.8667763378064106
           ],
           [
-            102.33107089425766,
-            2.119864083541303
-          ],
-          [
-            102.15466333765885,
-            2.2122794567128046
+            102.14764720137633,
+            2.2194696840928008
           ],
           [
             101.81813289897364,
@@ -244,15 +448,31 @@
             2.841990131695226
           ],
           [
-            97.5155289766181,
-            7.0809217041962365
+            101.1938476244224,
+            2.955792101621583
+          ],
+          [
+            99.1850267598537,
+            6.528592730298363
+          ],
+          [
+            99.1599821882457,
+            6.549755730352113
+          ],
+          [
+            98.23904773298909,
+            7.719544788513318
+          ],
+          [
+            98.21803796527371,
+            7.800246320028881
           ]
         ],
         "type": "LineString"
       },
       "properties": {
         "category": "sailing",
-        "distance_nm": "526.9",
+        "distance_nm": "537.3",
         "name": "Malacca Route",
         "stroke": "#0088ff",
         "stroke-opacity": 0.8,
@@ -296,8 +516,8 @@
       "geometry": {
         "coordinates": [
           [
-            151.3174309171115,
-            -33.86344398130856
+            151.2916285000194,
+            -33.86196910746988
           ],
           [
             173.0181779160933,
@@ -364,7 +584,7 @@
       },
       "properties": {
         "category": "sailing",
-        "distance_nm": "1263.8",
+        "distance_nm": "1265.1",
         "name": "Tasman Sea",
         "stroke": "#0088ff",
         "stroke-opacity": 0.8,
@@ -408,12 +628,12 @@
       "geometry": {
         "coordinates": [
           [
-            18.203638465980003,
-            -33.925800469100054
+            18.437295018747232,
+            -33.865255317393164
           ],
           [
-            -43.001075767774566,
-            -22.98560026190057
+            -43.021690812788734,
+            -22.984461563921798
           ],
           [
             -43.05545277305523,
@@ -436,7 +656,7 @@
       },
       "properties": {
         "category": "sailing",
-        "distance_nm": "3260.6",
+        "distance_nm": "3272.5",
         "name": "South Atlantic",
         "stroke": "#0088ff",
         "stroke-opacity": 0.8,
@@ -480,8 +700,260 @@
       "geometry": {
         "coordinates": [
           [
-            -79.46495321735827,
-            8.816132773343925
+            -74.03062641011299,
+            40.64980493275781
+          ],
+          [
+            -74.04516445437321,
+            40.63205348511781
+          ],
+          [
+            -74.04039886714135,
+            40.612198403163845
+          ],
+          [
+            -74.00629936705212,
+            40.56714740236368
+          ],
+          [
+            -73.93917327890759,
+            40.539952600344286
+          ],
+          [
+            -73.56313997617994,
+            40.57313361308909
+          ],
+          [
+            -73.15756064035256,
+            40.6373329409041
+          ],
+          [
+            -72.96867681748468,
+            40.6910809535024
+          ],
+          [
+            -68.57876494840544,
+            41.78200223960276
+          ],
+          [
+            -5.1889592678261875,
+            49.957307624853684
+          ],
+          [
+            -3.5570658137819198,
+            50.21756779620573
+          ],
+          [
+            -1.8232324492429972,
+            50.61130652270743
+          ],
+          [
+            -1.497900491156845,
+            50.72355925050111
+          ],
+          [
+            -1.3360939977157222,
+            50.78795286708477
+          ],
+          [
+            -1.3045702576442666,
+            50.81630143302272
+          ],
+          [
+            -1.3102407246734424,
+            50.826310076166955
+          ],
+          [
+            -1.379440002561068,
+            50.88385585855285
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "sailing",
+        "distance_nm": "3040.5",
+        "name": "North Atlantic",
+        "stroke": "#0088ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -74.03,
+          40.65
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "North Atlantic (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          -1.39,
+          50.89
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "North Atlantic (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            32.70253727747368,
+            29.386199068511203
+          ],
+          [
+            32.55952890717144,
+            29.925351437098005
+          ],
+          [
+            32.559752219213266,
+            29.927024962623495
+          ],
+          [
+            32.581432893829394,
+            29.953161425365455
+          ],
+          [
+            32.5862140224469,
+            29.972171251451183
+          ],
+          [
+            32.57059956850316,
+            30.081574440231307
+          ],
+          [
+            32.567788179543435,
+            30.190462365951046
+          ],
+          [
+            32.52590807624802,
+            30.24663603991775
+          ],
+          [
+            32.499008725075235,
+            30.261773439095045
+          ],
+          [
+            32.450492934991324,
+            30.283418941258997
+          ],
+          [
+            32.36465343292489,
+            30.40778242067135
+          ],
+          [
+            32.35664021132727,
+            30.455700037844927
+          ],
+          [
+            32.33189181773964,
+            30.59230300577484
+          ],
+          [
+            32.35241523944734,
+            30.696169816097665
+          ],
+          [
+            32.34549661800997,
+            30.726998157733284
+          ],
+          [
+            32.334791145701615,
+            30.750589567324262
+          ],
+          [
+            32.31825305047851,
+            30.815490523876925
+          ],
+          [
+            32.30538077691497,
+            31.228377703120586
+          ],
+          [
+            32.309384361699465,
+            31.256344919986255
+          ],
+          [
+            32.32246797663744,
+            31.273613545479773
+          ],
+          [
+            32.32145961595434,
+            31.27456670126959
+          ],
+          [
+            31.997227070462394,
+            31.502238868894462
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "141.0",
+        "name": "Suez Canal",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          32.85,
+          29.5
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Suez Canal (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          32.0,
+          31.5
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Suez Canal (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            -79.46729465623274,
+            8.794733559851593
           ],
           [
             -80.914352359305,
@@ -676,7 +1148,7 @@
       },
       "properties": {
         "category": "passage",
-        "distance_nm": "10338.0",
+        "distance_nm": "10336.7",
         "name": "Panama Canal",
         "stroke": "#0000ff",
         "stroke-opacity": 0.8,
@@ -720,8 +1192,192 @@
       "geometry": {
         "coordinates": [
           [
-            22.950450119702538,
-            37.94848372675254
+            10.196636407650901,
+            54.40040318726802
+          ],
+          [
+            10.578710571600087,
+            54.85446641772691
+          ],
+          [
+            10.711918105130644,
+            54.95278088548644
+          ],
+          [
+            10.777213085061208,
+            55.103511206964114
+          ],
+          [
+            10.883538090586491,
+            55.34376904165882
+          ],
+          [
+            10.850575012303036,
+            56.189264002869
+          ],
+          [
+            10.960216116309308,
+            56.443969807948925
+          ],
+          [
+            10.943776853440285,
+            56.46435611205518
+          ],
+          [
+            10.320258358349431,
+            56.96716460140116
+          ],
+          [
+            10.307401221863232,
+            56.98690550361602
+          ],
+          [
+            10.24453804671329,
+            56.98578783322207
+          ],
+          [
+            10.208815217284767,
+            56.98956752776009
+          ],
+          [
+            10.022619889268865,
+            57.07816806257604
+          ],
+          [
+            9.996646793077646,
+            57.081100088100065
+          ],
+          [
+            9.965131280655257,
+            57.06405203002309
+          ],
+          [
+            9.947569306507756,
+            57.052115478091565
+          ],
+          [
+            9.913787882377203,
+            57.055645680997834
+          ],
+          [
+            9.897991851174895,
+            57.06042759399782
+          ],
+          [
+            9.874664968499337,
+            57.05869426094195
+          ],
+          [
+            9.84472114346916,
+            57.05214657579285
+          ],
+          [
+            9.75988803415266,
+            57.05337428555275
+          ],
+          [
+            9.348800048849972,
+            57.010757173972415
+          ],
+          [
+            9.294021410166444,
+            56.99883631341871
+          ],
+          [
+            8.94467228675919,
+            56.844949057894986
+          ],
+          [
+            8.810092747348499,
+            56.717679670221116
+          ],
+          [
+            8.74531046259949,
+            56.67244428340283
+          ],
+          [
+            8.55112193350009,
+            56.57565460869285
+          ],
+          [
+            8.471183856727988,
+            56.58565184126794
+          ],
+          [
+            8.213653718031443,
+            56.71155357456669
+          ],
+          [
+            8.185069048908902,
+            56.69391673320654
+          ],
+          [
+            8.098296069981654,
+            56.53608480283367
+          ],
+          [
+            8.037904720999496,
+            55.55338983222259
+          ],
+          [
+            8.299790225281365,
+            54.657405231445566
+          ],
+          [
+            8.467577389591877,
+            54.1595541192547
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "409.2",
+        "name": "Kiel Canal",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          10.2,
+          54.4
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Kiel Canal (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          9.1,
+          54.25
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Kiel Canal (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            22.95146940248889,
+            37.950526001353666
           ],
           [
             22.957942860104605,
@@ -744,23 +1400,27 @@
             37.95146700312372
           ],
           [
-            22.992412960719637,
-            37.928591118736236
+            22.978040927472385,
+            37.93882505005053
           ],
           [
-            23.00865106080511,
-            37.91699901405957
+            23.002955574506583,
+            37.92106879497101
           ],
           [
-            23.050892000073215,
-            37.88055729062267
+            23.009084313271973,
+            37.9168681879482
+          ],
+          [
+            23.043748169306237,
+            37.86626066609209
           ]
         ],
         "type": "LineString"
       },
       "properties": {
         "category": "passage",
-        "distance_nm": "6.6",
+        "distance_nm": "7.0",
         "name": "Corinth Canal",
         "stroke": "#0000ff",
         "stroke-opacity": 0.8,
@@ -840,15 +1500,19 @@
             41.21402427661251
           ],
           [
-            29.152632085922875,
-            41.34073762696848
+            29.11848664256956,
+            41.24155638182847
+          ],
+          [
+            29.103936346819655,
+            41.32484140037477
           ]
         ],
         "type": "LineString"
       },
       "properties": {
         "category": "passage",
-        "distance_nm": "32.4",
+        "distance_nm": "31.3",
         "name": "Bosphorus",
         "stroke": "#0000ff",
         "stroke-opacity": 0.8,
@@ -885,6 +1549,326 @@
         "marker-size": "small",
         "marker-symbol": "circle",
         "name": "Bosphorus (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            26.77403993482615,
+            40.454008113745346
+          ],
+          [
+            26.492811080414064,
+            40.25082690433912
+          ],
+          [
+            26.399083627269277,
+            40.19580106091648
+          ],
+          [
+            26.381882091500277,
+            40.142889641584105
+          ],
+          [
+            26.2249211996903,
+            40.03445871548559
+          ],
+          [
+            26.150932076763265,
+            39.99276121937768
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "40.4",
+        "name": "Dardanelles",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          26.72,
+          40.5
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Dardanelles (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          26.15,
+          40.0
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Dardanelles (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            103.90351530681033,
+            1.2848953690169242
+          ],
+          [
+            103.8312182556144,
+            1.2334694530711119
+          ],
+          [
+            103.72591821689657,
+            1.2142290071932675
+          ],
+          [
+            103.69179175631815,
+            1.2091998734266798
+          ],
+          [
+            103.42849153362123,
+            1.152795810610241
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "30.0",
+        "name": "Malacca Strait",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          103.9,
+          1.3
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Malacca Strait (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          103.45,
+          1.15
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Malacca Strait (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            104.769390626983,
+            1.5239939440819192
+          ],
+          [
+            104.1703820643015,
+            1.202656224398191
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "40.8",
+        "name": "Singapore Strait",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          103.8,
+          1.3
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Singapore Strait (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          104.2,
+          1.22
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Singapore Strait (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            15.651884366342122,
+            38.29345992769696
+          ],
+          [
+            15.653960053155869,
+            38.26557805629445
+          ],
+          [
+            15.628251919236446,
+            38.219065424431776
+          ],
+          [
+            15.62877425844407,
+            38.07386497603244
+          ],
+          [
+            15.64260489495242,
+            38.03975858809258
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "15.6",
+        "name": "Messina Strait",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          15.65,
+          38.3
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Messina Strait (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          15.67,
+          38.05
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Messina Strait (end)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          [
+            1.4402132022466079,
+            51.09304392806883
+          ],
+          [
+            1.522919145870629,
+            50.78165571685517
+          ]
+        ],
+        "type": "LineString"
+      },
+      "properties": {
+        "category": "passage",
+        "distance_nm": "19.0",
+        "name": "Dover Strait",
+        "stroke": "#0000ff",
+        "stroke-opacity": 0.8,
+        "stroke-width": 3
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          1.3,
+          51.15
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#00cc00",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Dover Strait (start)"
+      },
+      "type": "Feature"
+    },
+    {
+      "geometry": {
+        "coordinates": [
+          1.75,
+          50.85
+        ],
+        "type": "Point"
+      },
+      "properties": {
+        "marker-color": "#ff0000",
+        "marker-size": "small",
+        "marker-symbol": "circle",
+        "name": "Dover Strait (end)"
       },
       "type": "Feature"
     }
