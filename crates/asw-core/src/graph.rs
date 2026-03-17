@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-/// File layout: [b"ASW\x01" magic header][zstd-compressed bincode payload]
+/// File layout: [b"ASW\x02" magic header][zstd-compressed bitcode payload]
 ///
 /// Compressed Sparse Row graph for maritime routing.
 /// Coordinates are i32 fixed-point (degrees × 1e7).
@@ -168,31 +168,35 @@ impl GraphBuilder {
 }
 
 impl RoutingGraph {
-    const MAGIC: &'static [u8; 4] = b"ASW\x01";
+    const MAGIC: &'static [u8; 4] = b"ASW\x02";
 
-    /// Serialize: write magic header, then bincode+zstd-19 payload.
+    /// Serialize: write magic header, then bitcode+zstd-19 payload.
     pub fn save<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
         writer.write_all(Self::MAGIC)?;
-        let encoder = zstd::Encoder::new(writer, 19)?.auto_finish();
-        bincode::serialize_into(encoder, self)?;
+        let encoded = bitcode::serialize(self)?;
+        let mut encoder = zstd::Encoder::new(writer, 19)?;
+        encoder.write_all(&encoded)?;
+        encoder.finish()?;
         Ok(())
     }
 
-    /// Deserialize: verify magic header, then bincode+zstd payload.
+    /// Deserialize: verify magic header, then bitcode+zstd payload.
     pub fn load<R: Read>(mut reader: R) -> anyhow::Result<Self> {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
         if &magic[..3] != b"ASW" {
             anyhow::bail!("Not an ASW graph file (expected ASW magic header). Rebuild required.");
         }
-        if magic[3] != 1 {
+        if magic[3] != 2 {
             anyhow::bail!(
-                "Unsupported ASW graph version {} (expected 1). Rebuild required.",
+                "Unsupported ASW graph version {} (expected 2). Rebuild required.",
                 magic[3]
             );
         }
-        let decoder = zstd::Decoder::new(reader)?;
-        let graph: Self = bincode::deserialize_from(decoder)?;
+        let mut decoder = zstd::Decoder::new(reader)?;
+        let mut buf = Vec::new();
+        decoder.read_to_end(&mut buf)?;
+        let graph: Self = bitcode::deserialize(&buf)?;
 
         // Post-deserialization validation
         let n = graph.num_nodes as usize;
@@ -439,7 +443,7 @@ mod tests {
         g.save(&mut buf).unwrap();
 
         // Verify magic header
-        assert_eq!(&buf[0..4], b"ASW\x01");
+        assert_eq!(&buf[0..4], b"ASW\x02");
 
         let loaded = RoutingGraph::load(std::io::Cursor::new(&buf)).unwrap();
         assert_eq!(loaded.num_nodes, g.num_nodes);
