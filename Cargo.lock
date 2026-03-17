@@ -194,6 +194,7 @@ dependencies = [
  "ordered-float",
  "rstar 0.12.2",
  "serde",
+ "tokio",
  "tracing",
  "zstd",
 ]
@@ -206,7 +207,7 @@ dependencies = [
  "asw-core",
  "axum",
  "geojson",
- "rstar 0.12.2",
+ "h3o",
  "serde",
  "serde_json",
  "subtle",

@@ -16,3 +16,7 @@ geojson.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 zstd.workspace = true
+tokio = { version = "1", features = ["sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros"] }
