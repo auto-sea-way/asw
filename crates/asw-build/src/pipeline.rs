@@ -60,8 +60,7 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     let mut id_remap = vec![0u32; sorted_cells.len()];
     for (cell, old_id) in &sorted_cells {
         let (lat, lng) = cell_center(*cell);
-        let res = cell.resolution() as u8;
-        let new_id = builder.add_node(lat, lng, false, res);
+        let new_id = builder.add_node(u64::from(*cell), lat, lng);
         id_remap[*old_id as usize] = new_id;
     }
 
