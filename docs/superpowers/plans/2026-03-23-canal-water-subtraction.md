@@ -20,7 +20,7 @@
 | Modify | `crates/asw-core/src/geo_index.rs` | Add `subtract_water()` method to `LandIndex` |
 | Modify | `crates/asw-build/src/pipeline.rs` | Insert canal water step between land load and cell generation |
 | Modify | `crates/asw-cloud/src/config.rs` | Add `osmium-tool` to `BOOTSTRAP_PACKAGES` |
-| Modify | `crates/asw-cloud/src/pipeline.rs` | Add canal PBF download step for cloud builds |
+| ~~Skip~~ | ~~`crates/asw-cloud/src/pipeline.rs`~~ | Not needed — canal extraction runs inside `asw build` on the remote server |
 | Modify | `crates/asw-build/Cargo.toml` | Add `geojson` dependency |
 
 ---
