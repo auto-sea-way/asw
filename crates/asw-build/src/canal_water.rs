@@ -83,43 +83,44 @@ fn extract_single_passage(
             .connect_timeout(std::time::Duration::from_secs(30))
             .timeout(std::time::Duration::from_secs(600))
             .build()?;
-        let mut resp = client.get(url).send().context("Failed to download PBF")?;
-        let mut file = std::fs::File::create(&pbf_path)?;
+        let mut resp = client
+            .get(url)
+            .send()?
+            .error_for_status()
+            .context("Failed to download PBF")?;
+        let tmp_path = pbf_path.with_extension("pbf.tmp");
+        let mut file = std::fs::File::create(&tmp_path)?;
         let bytes = std::io::copy(&mut resp, &mut file)?;
+        std::fs::rename(&tmp_path, &pbf_path)?;
         info!("  Downloaded {} MB", bytes / 1_000_000);
     } else {
         info!("  Using cached PBF: {:?}", pbf_path);
     }
 
     // Step 2: osmium tags-filter for natural=water
-    if !water_pbf_path.exists() {
-        info!("  Filtering for natural=water...");
-        let status = Command::new("osmium")
-            .args([
-                "tags-filter",
-                pbf_path.to_str().unwrap(),
-                "nwr/natural=water",
-                "-o",
-                water_pbf_path.to_str().unwrap(),
-                "--overwrite",
-            ])
-            .status()
-            .context("Failed to run osmium tags-filter")?;
-        if !status.success() {
-            anyhow::bail!("osmium tags-filter failed for {}", passage.name);
-        }
+    // Always run — the water PBF is deleted during cleanup, so caching never applies.
+    info!("  Filtering for natural=water...");
+    let status = Command::new("osmium")
+        .arg("tags-filter")
+        .arg(pbf_path.as_os_str())
+        .arg("nwr/natural=water")
+        .arg("-o")
+        .arg(water_pbf_path.as_os_str())
+        .arg("--overwrite")
+        .status()
+        .context("Failed to run osmium tags-filter")?;
+    if !status.success() {
+        anyhow::bail!("osmium tags-filter failed for {}", passage.name);
     }
 
     // Step 3: osmium export to GeoJSON
     info!("  Exporting to GeoJSON...");
     let status = Command::new("osmium")
-        .args([
-            "export",
-            water_pbf_path.to_str().unwrap(),
-            "-o",
-            geojson_path.to_str().unwrap(),
-            "--overwrite",
-        ])
+        .arg("export")
+        .arg(water_pbf_path.as_os_str())
+        .arg("-o")
+        .arg(geojson_path.as_os_str())
+        .arg("--overwrite")
         .status()
         .context("Failed to run osmium export")?;
     if !status.success() {
@@ -139,6 +140,9 @@ fn extract_single_passage(
     if let geojson::GeoJson::FeatureCollection(fc) = geojson {
         for feature in fc.features {
             if let Some(ref props) = feature.properties {
+                // Features with `natural=water` but no `water` subtype tag are always
+                // included (e.g. unnamed water bodies). Only exclude when an explicit
+                // `water` tag is present and not in the passage's allowed water_types.
                 let water_val = props.get("water").and_then(|v| v.as_str()).unwrap_or("");
                 if !water_val.is_empty() && !water_types.contains(water_val) {
                     continue;

@@ -134,7 +134,7 @@ impl LandIndex {
                 // Subtract water from this land polygon
                 let diff = lp.polygon.difference(&water_multi);
                 diff.into_iter()
-                    .map(|p| LandPolygon::new(p))
+                    .map(LandPolygon::new)
                     .collect::<Vec<_>>()
             })
             .collect();
