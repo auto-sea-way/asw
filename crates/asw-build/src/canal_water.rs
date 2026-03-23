@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::Command;
 use tracing::info;
 
-use crate::shapefile::Bbox;
+use crate::shapefile::{polygon_intersects_bbox, Bbox};
 
 /// Extract canal water polygons for all passages that have a `geofabrik_url`.
 pub fn extract_canal_water(
@@ -200,17 +200,3 @@ fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
     Some(Polygon::new(exterior, holes))
 }
 
-fn polygon_intersects_bbox(poly: &Polygon<f64>, bbox: Bbox) -> bool {
-    let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    let mut p_min_x = f64::MAX;
-    let mut p_min_y = f64::MAX;
-    let mut p_max_x = f64::MIN;
-    let mut p_max_y = f64::MIN;
-    for coord in poly.exterior().coords() {
-        p_min_x = p_min_x.min(coord.x);
-        p_min_y = p_min_y.min(coord.y);
-        p_max_x = p_max_x.max(coord.x);
-        p_max_y = p_max_y.max(coord.y);
-    }
-    !(p_max_x < min_lon || p_min_x > max_lon || p_max_y < min_lat || p_min_y > max_lat)
-}

@@ -169,7 +169,7 @@ fn convert_shapefile_polygon(shp_poly: &shapefile::Polygon) -> Vec<Polygon<f64>>
     result
 }
 
-fn polygon_intersects_bbox(poly: &Polygon<f64>, bbox: Bbox) -> bool {
+pub fn polygon_intersects_bbox(poly: &Polygon<f64>, bbox: Bbox) -> bool {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
     let mut p_min_x = f64::MAX;
     let mut p_min_y = f64::MAX;

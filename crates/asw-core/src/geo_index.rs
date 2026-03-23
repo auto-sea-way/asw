@@ -104,20 +104,20 @@ impl LandIndex {
             return;
         }
 
-        // Compute water bounding box for quick filtering
-        let mut w_min_x = f64::MAX;
-        let mut w_min_y = f64::MAX;
-        let mut w_max_x = f64::MIN;
-        let mut w_max_y = f64::MIN;
-        for wp in water_polygons {
-            for coord in wp.exterior().coords() {
-                w_min_x = w_min_x.min(coord.x);
-                w_min_y = w_min_y.min(coord.y);
-                w_max_x = w_max_x.max(coord.x);
-                w_max_y = w_max_y.max(coord.y);
-            }
-        }
-        let water_envelope = AABB::from_corners([w_min_x, w_min_y], [w_max_x, w_max_y]);
+        // Compute water bounding box for quick filtering (reuse bounding_rect helper)
+        let water_envelope = water_polygons
+            .iter()
+            .map(bounding_rect)
+            .fold(
+                ([f64::MAX, f64::MAX], [f64::MIN, f64::MIN]),
+                |(acc_min, acc_max), (min, max)| {
+                    (
+                        [acc_min[0].min(min[0]), acc_min[1].min(min[1])],
+                        [acc_max[0].max(max[0]), acc_max[1].max(max[1])],
+                    )
+                },
+            );
+        let water_envelope = AABB::from_corners(water_envelope.0, water_envelope.1);
 
         // Create MultiPolygon for subtraction
         let water_multi = MultiPolygon::new(water_polygons.to_vec());
