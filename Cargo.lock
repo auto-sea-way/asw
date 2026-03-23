@@ -138,6 +138,7 @@ dependencies = [
  "asw-core",
  "geo",
  "geo-types",
+ "geojson",
  "h3o",
  "indicatif",
  "rayon",
