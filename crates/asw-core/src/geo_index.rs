@@ -1,5 +1,6 @@
-use geo::{Contains, Coord, Intersects, Line, LineString, Point, Polygon};
-use rstar::{RTree, RTreeObject, AABB};
+use geo::algorithm::bool_ops::BooleanOps;
+use geo::{Contains, Coord, Intersects, Line, LineString, MultiPolygon, Point, Polygon};
+use rstar::{Envelope, RTree, RTreeObject, AABB};
 
 /// A land polygon stored in the R-tree with its bounding envelope.
 #[derive(Clone, Debug)]
@@ -94,6 +95,51 @@ impl LandIndex {
 
     pub fn polygon_count(&self) -> usize {
         self.tree.size()
+    }
+
+    /// Subtract water polygons from land, creating holes where canals exist.
+    /// Only land polygons that intersect the water bounding box are modified.
+    pub fn subtract_water(&mut self, water_polygons: &[Polygon<f64>]) {
+        if water_polygons.is_empty() {
+            return;
+        }
+
+        // Compute water bounding box for quick filtering
+        let mut w_min_x = f64::MAX;
+        let mut w_min_y = f64::MAX;
+        let mut w_max_x = f64::MIN;
+        let mut w_max_y = f64::MIN;
+        for wp in water_polygons {
+            for coord in wp.exterior().coords() {
+                w_min_x = w_min_x.min(coord.x);
+                w_min_y = w_min_y.min(coord.y);
+                w_max_x = w_max_x.max(coord.x);
+                w_max_y = w_max_y.max(coord.y);
+            }
+        }
+        let water_envelope = AABB::from_corners([w_min_x, w_min_y], [w_max_x, w_max_y]);
+
+        // Create MultiPolygon for subtraction
+        let water_multi = MultiPolygon::new(water_polygons.to_vec());
+
+        // Clone all land polygons, modify those that intersect water, rebuild tree
+        let all_polys: Vec<LandPolygon> = self
+            .tree
+            .iter()
+            .cloned()
+            .flat_map(|lp| {
+                if !lp.envelope.intersects(&water_envelope) {
+                    return vec![lp];
+                }
+                // Subtract water from this land polygon
+                let diff = lp.polygon.difference(&water_multi);
+                diff.into_iter()
+                    .map(|p| LandPolygon::new(p))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        self.tree = RTree::bulk_load(all_polys);
     }
 }
 
