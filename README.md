@@ -214,9 +214,12 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes in each release.
 
 ## Data Sources
 
+Geographic data is derived from [OpenStreetMap](https://www.openstreetmap.org/), © OpenStreetMap contributors, available under the [Open Database License (ODbL) v1.0](https://opendatacommons.org/licenses/odbl/1-0/).
+
 | Dataset | Size | License |
 |---------|------|---------|
 | [OSM land polygons](https://osmdata.openstreetmap.de/data/land-polygons.html) | ~900MB | ODbL |
+| [Geofabrik regional extracts](https://download.geofabrik.de/) (canal water polygons) | varies | ODbL |
 
 ## License
 
