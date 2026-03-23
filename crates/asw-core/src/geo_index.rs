@@ -1,6 +1,8 @@
 use geo::algorithm::bool_ops::BooleanOps;
 use geo::{Contains, Coord, Intersects, Line, LineString, MultiPolygon, Point, Polygon};
+use rayon::prelude::*;
 use rstar::{Envelope, RTree, RTreeObject, AABB};
+use tracing::info;
 
 /// A land polygon stored in the R-tree with its bounding envelope.
 #[derive(Clone, Debug)]
@@ -99,6 +101,7 @@ impl LandIndex {
 
     /// Subtract water polygons from land, creating holes where canals exist.
     /// Only land polygons that intersect the water bounding box are modified.
+    /// Uses rayon for parallel BooleanOps across land polygons.
     pub fn subtract_water(&mut self, water_polygons: &[Polygon<f64>]) {
         if water_polygons.is_empty() {
             return;
@@ -122,16 +125,25 @@ impl LandIndex {
         // Create MultiPolygon for subtraction
         let water_multi = MultiPolygon::new(water_polygons.to_vec());
 
-        // Clone all land polygons, modify those that intersect water, rebuild tree
-        let all_polys: Vec<LandPolygon> = self
-            .tree
+        // Collect land polygons that need modification vs pass-through
+        let candidates: Vec<LandPolygon> = self.tree.iter().cloned().collect();
+        let total = candidates.len();
+        let intersecting = candidates
             .iter()
-            .cloned()
+            .filter(|lp| lp.envelope.intersects(&water_envelope))
+            .count();
+        info!(
+            "subtract_water: {} land polygons, {} intersect water bbox",
+            total, intersecting
+        );
+
+        // Parallel BooleanOps on intersecting polygons
+        let all_polys: Vec<LandPolygon> = candidates
+            .into_par_iter()
             .flat_map(|lp| {
                 if !lp.envelope.intersects(&water_envelope) {
                     return vec![lp];
                 }
-                // Subtract water from this land polygon
                 let diff = lp.polygon.difference(&water_multi);
                 diff.into_iter()
                     .map(LandPolygon::new)
@@ -139,6 +151,10 @@ impl LandIndex {
             })
             .collect();
 
+        info!(
+            "subtract_water: {} polygons after subtraction",
+            all_polys.len()
+        );
         self.tree = RTree::bulk_load(all_polys);
     }
 }

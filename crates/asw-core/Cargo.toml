@@ -9,6 +9,7 @@ h3o.workspace = true
 geo.workspace = true
 geo-types.workspace = true
 rstar.workspace = true
+rayon.workspace = true
 serde.workspace = true
 bitcode.workspace = true
 ordered-float.workspace = true

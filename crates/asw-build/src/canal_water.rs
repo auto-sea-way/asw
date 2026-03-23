@@ -140,15 +140,15 @@ fn extract_single_passage(
     if let geojson::GeoJson::FeatureCollection(fc) = geojson {
         for feature in fc.features {
             if let Some(ref props) = feature.properties {
-                // Features with `natural=water` but no `water` subtype tag are always
-                // included (e.g. unnamed water bodies). Only exclude when an explicit
-                // `water` tag is present and not in the passage's allowed water_types.
-                let water_val = props.get("water").and_then(|v| v.as_str()).unwrap_or("");
-                if !water_val.is_empty() && !water_types.contains(water_val) {
-                    continue;
-                }
                 let natural = props.get("natural").and_then(|v| v.as_str()).unwrap_or("");
                 if natural != "water" {
+                    continue;
+                }
+                // Require a matching water= tag. Features without a water tag
+                // (unnamed ponds, etc.) are excluded to avoid pulling in thousands
+                // of irrelevant water bodies from the regional PBF.
+                let water_val = props.get("water").and_then(|v| v.as_str()).unwrap_or("");
+                if !water_types.contains(water_val) {
                     continue;
                 }
             } else {
