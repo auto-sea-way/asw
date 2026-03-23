@@ -15,6 +15,6 @@ serde.workspace = true
 tracing.workspace = true
 indicatif.workspace = true
 anyhow.workspace = true
-shapefile = "0.7"
+shapefile = "0.8"
 reqwest = { version = "0.13", features = ["blocking"] }
 zip = "8"
