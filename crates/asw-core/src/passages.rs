@@ -110,4 +110,37 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: None,
         water_types: &[],
     },
+    // ── New canals ──────────────────────────────────────────────────────
+    Passage {
+        name: "Houston Ship Channel",
+        corridor: (-95.30, 29.30, -94.70, 29.80),
+        zone_resolution: 5,
+        leaf_resolution: 12,
+        geofabrik_url: Some("https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf"),
+        water_types: &["lock", "reservoir", "lake", "river", "canal"],
+    },
+    Passage {
+        name: "Cape Cod Canal",
+        corridor: (-70.65, 41.72, -70.48, 41.79),
+        zone_resolution: 5,
+        leaf_resolution: 12,
+        geofabrik_url: Some("https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf"),
+        water_types: &["lock", "reservoir", "lake", "river", "canal"],
+    },
+    Passage {
+        name: "Chesapeake-Delaware Canal",
+        corridor: (-75.85, 39.40, -75.55, 39.60),
+        zone_resolution: 5,
+        leaf_resolution: 12,
+        geofabrik_url: Some("https://download.geofabrik.de/north-america/us/delaware-latest.osm.pbf"),
+        water_types: &["lock", "reservoir", "lake", "river", "canal"],
+    },
+    Passage {
+        name: "Welland Canal",
+        corridor: (-79.30, 42.85, -79.15, 43.25),
+        zone_resolution: 5,
+        leaf_resolution: 13,
+        geofabrik_url: Some("https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf"),
+        water_types: &["lock", "reservoir", "lake", "river", "canal"],
+    },
 ];
