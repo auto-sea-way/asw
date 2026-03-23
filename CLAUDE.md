@@ -58,4 +58,5 @@ Rust workspace with 5 crates:
 - `export/` directory for all output files (graphs, GeoJSON) — gitignored
 - Docker: statically-linked musl binaries on distroless/static-debian12, graph auto-download via `ASW_GRAPH_URL`
 - Readiness probe: server starts TCP listener immediately, `/ready` returns 503 until graph loaded
+- Server memory: ~3.5 GiB RSS + ~750 MiB swap for planet graph. 4 GB instance works with swap file; 8 GB recommended for production
 - CI/CD: GitHub Actions for CI, Docker push to ghcr.io, and binary releases on version tags

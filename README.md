@@ -36,7 +36,7 @@ docker run -e ASW_API_KEY=your-secret \
   -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
 ```
 
-The full planet graph requires ~4.2 GiB RAM (steady-state, no peak spike). Wait for the `/ready` endpoint to return 200 before sending route queries (~60-90s for the full graph).
+The full planet graph needs ~4.2 GiB total memory (3.5 GiB RSS + ~750 MiB swap). A **4 GB instance with swap** works; an **8 GB instance** runs comfortably without swap. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
 
 ```bash
 # Query a route (Marmaris → Santorini)
@@ -140,8 +140,9 @@ Built on Hetzner ccx53 (32 dedicated AMD CPUs, 128 GB RAM) in ~4.5 hours:
 | Edges | 305,035,106 |
 | Graph file size | 712 MB |
 | Connectivity | 96.9% (largest component: 39.1M nodes) |
-| Server memory (steady) | ~4.2 GiB |
-| Server memory (peak) | ~4.2 GiB |
+| Server memory (RSS) | ~3.5 GiB |
+| Server memory (total) | ~4.2 GiB (needs swap on 4 GB nodes) |
+| Minimum instance | 4 GB RAM + swap, recommended 8 GB |
 
 ```bash
 asw cloud build --output export/asw.graph
