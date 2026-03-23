@@ -100,14 +100,22 @@ impl LandIndex {
     }
 
     /// Subtract water polygons from land, creating holes where canals exist.
-    /// Only land polygons that intersect the water bounding box are modified.
-    /// Uses rayon for parallel BooleanOps across land polygons.
+    /// Uses a water R-tree to find only the relevant water polygons per land polygon,
+    /// then applies BooleanOps difference in parallel via rayon.
     pub fn subtract_water(&mut self, water_polygons: &[Polygon<f64>]) {
         if water_polygons.is_empty() {
             return;
         }
 
-        // Compute water bounding box for quick filtering (reuse bounding_rect helper)
+        // Build R-tree of water polygons for fast spatial lookup
+        let water_entries: Vec<LandPolygon> = water_polygons
+            .iter()
+            .cloned()
+            .map(LandPolygon::new)
+            .collect();
+        let water_tree = RTree::bulk_load(water_entries);
+
+        // Compute water bounding box for quick global filtering
         let water_envelope = water_polygons
             .iter()
             .map(bounding_rect)
@@ -122,10 +130,6 @@ impl LandIndex {
             );
         let water_envelope = AABB::from_corners(water_envelope.0, water_envelope.1);
 
-        // Create MultiPolygon for subtraction
-        let water_multi = MultiPolygon::new(water_polygons.to_vec());
-
-        // Collect land polygons that need modification vs pass-through
         let candidates: Vec<LandPolygon> = self.tree.iter().cloned().collect();
         let total = candidates.len();
         let intersecting = candidates
@@ -133,17 +137,29 @@ impl LandIndex {
             .filter(|lp| lp.envelope.intersects(&water_envelope))
             .count();
         info!(
-            "subtract_water: {} land polygons, {} intersect water bbox",
-            total, intersecting
+            "subtract_water: {} land polygons, {} intersect water bbox, {} water polygons",
+            total, intersecting, water_polygons.len()
         );
 
-        // Parallel BooleanOps on intersecting polygons
+        // Parallel BooleanOps — each land polygon only subtracts nearby water polygons
         let all_polys: Vec<LandPolygon> = candidates
             .into_par_iter()
             .flat_map(|lp| {
                 if !lp.envelope.intersects(&water_envelope) {
                     return vec![lp];
                 }
+                // Find water polygons that intersect this land polygon's bbox
+                let nearby_water: Vec<&Polygon<f64>> = water_tree
+                    .locate_in_envelope_intersecting(&lp.envelope)
+                    .map(|wp| &wp.polygon)
+                    .collect();
+                if nearby_water.is_empty() {
+                    return vec![lp];
+                }
+                // Subtract only the nearby water polygons
+                let water_multi = MultiPolygon::new(
+                    nearby_water.into_iter().cloned().collect(),
+                );
                 let diff = lp.polygon.difference(&water_multi);
                 diff.into_iter()
                     .map(LandPolygon::new)
