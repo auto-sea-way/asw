@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-03-24
+
+### Fixed
+
+- Nearest-node snapping regression: routes to remote islands (Grenada, Palagruza) and coastal towns (Gallipoli, Monopoli) now resolve correctly
+- Coastal snap quality restored to v0.2.0 level — ports snap to nearby fine-resolution nodes instead of distant coarse ones
+- Adaptive two-pass snapping: fast k=3 scan handles 99% of queries, proportional refinement only when needed
+
+### Performance
+
+- Short/medium routes 2-18x faster than v0.2.0 (H3 binary search + pre-allocated A* buffers)
+- Panama Canal: 47x faster (51 nm through canal vs 10,340 nm around continent in v0.2.0)
+
 ## [0.3.0] - 2026-03-24
 
 ### Added
@@ -68,7 +81,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
-[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/auto-sea-way/asw/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/auto-sea-way/asw/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/auto-sea-way/asw/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/auto-sea-way/asw/releases/tag/v0.1.0
