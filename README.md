@@ -171,14 +171,16 @@ asw cloud build --output export/asw.graph
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.0nm | 20.0ms | 22.0ms | 1126>22 |
-| Corinth Canal | 7.0nm | 1.8ms | 2.3ms | 428>10 |
-| Bosphorus | 31.3nm | 2.4ms | 3.1ms | 162>11 |
-| Dardanelles | 40.4nm | 2.9ms | 3.6ms | 137>6 |
-| Malacca Strait | 30.0nm | 2.1ms | 2.5ms | 67>5 |
-| Singapore Strait | 40.8nm | 0.5ms | 0.6ms | 26>2 |
-| Messina Strait | 15.6nm | 0.7ms | 1.0ms | 65>5 |
-| Dover Strait | 19.0nm | 0.1ms | 0.9ms | 4>2 |
+| Suez Canal | 141.0nm | 20.4ms | 22.5ms | 1126>22 |
+| Panama Canal | 49.7nm | 72.4ms | 80.1ms | 2351>15 |
+| Kiel Canal | 409.2nm | 162.1ms | 170.6ms | 922>34 |
+| Corinth Canal | 7.0nm | 2.0ms | 2.4ms | 428>10 |
+| Bosphorus | 31.3nm | 2.8ms | 2.9ms | 162>11 |
+| Dardanelles | 40.4nm | 3.4ms | 4.0ms | 137>6 |
+| Malacca Strait | 30.0nm | 2.8ms | 3.6ms | 67>5 |
+| Singapore Strait | 40.8nm | 676us | 914us | 26>2 |
+| Messina Strait | 15.6nm | 877us | 2.0ms | 65>5 |
+| Dover Strait | 19.0nm | 157us | 238us | 4>2 |
 
 ## API Endpoints
 

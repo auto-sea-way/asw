@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-24
+
+### Added
+
+- Canal water subtraction: download Geofabrik PBFs at build time, extract inland water polygons via osmium, subtract from land index
+- Panama Canal routable (49.7 nm through canal, previously 10,337 nm around South America)
+- Kiel Canal, Houston Ship Channel, Cape Cod Canal, Chesapeake-Delaware Canal, Welland Canal passage definitions
+- `geofabrik_url` and `water_types` fields on `Passage` struct for automated canal water extraction
+- ODbL attribution for OSM-derived geographic data
+
+### Changed
+
+- Graph format v2: bitcode + zstd-19 serialization (replaces bincode)
+- Sorted `node_h3: Vec<u64>` for O(log n) spatial lookup (replaces R-tree for nearest-node)
+- Pre-allocated A* buffer pool (2 buffer sets) eliminates per-request allocation spikes
+- Panama Canal passage bumped from res-11 to res-13 (lock channels need 3.5m cell edges)
+- `osmium-tool` added to cloud build bootstrap packages
+
+### Performance
+
+- 47% server memory reduction: ~3.5 GiB RSS (was ~6.4 GiB) via H3 binary search replacing R-tree
+- `subtract_water` uses per-polygon water R-tree spatial lookup + rayon parallelization (<1s for 860K land polygons)
+- Panama Canal routing: 6.91s → 72.4ms (95x faster — no longer searching around the continent)
+
 ## [0.2.0] - 2026-03-16
 
 ### Added
@@ -44,6 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
-[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/auto-sea-way/asw/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/auto-sea-way/asw/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/auto-sea-way/asw/releases/tag/v0.1.0
