@@ -24,16 +24,16 @@ asw cloud teardown
 
 ```bash
 # Full image — zero config, graph included (~870 MB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.3.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.3.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.3.0
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.3.0
 ```
 
 The full planet graph needs ~4.2 GiB total memory (3.5 GiB RSS + ~750 MiB swap). A **4 GB instance with swap** works; an **8 GB instance** runs comfortably without swap. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
@@ -72,8 +72,8 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.1.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.1.0-full` | Full image — graph file included (~870 MB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.3.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.3.0-full` | Full image — graph file included (~750 MB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
@@ -88,7 +88,7 @@ cargo build --release -p asw-cli
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-13 in passage corridors)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline, up to res-13 in passage corridors)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
@@ -132,14 +132,14 @@ crates/
 
 ## Full Planet Build
 
-Built on Hetzner ccx53 (32 dedicated AMD CPUs, 128 GB RAM) in ~4.5 hours:
+Built on Hetzner ccx53 (32 dedicated AMD CPUs, 128 GB RAM) in ~5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 40,398,071 |
-| Edges | 305,035,106 |
-| Graph file size | 712 MB |
-| Connectivity | 96.9% (largest component: 39.1M nodes) |
+| Nodes | 41,254,319 |
+| Edges | 310,455,910 |
+| Graph file size | 753 MB |
+| Connectivity | 96.2% (largest component: 39.7M nodes) |
 | Server memory (RSS) | ~3.5 GiB |
 | Server memory (total) | ~4.2 GiB (needs swap on 4 GB nodes) |
 | Minimum instance | 4 GB RAM + swap, recommended 8 GB |
@@ -211,8 +211,7 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes in each release.
 ## Known Limitations
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.
-- **Panama Canal routing.** The Panama Canal passage is not correctly connected, causing routes to go around South America instead. Fix planned for a future release.
-- **Kiel Canal routing.** The Kiel Canal passage is not correctly connected, causing routes to go around Denmark instead. Fix planned for a future release.
+- **Kiel Canal routing.** The Kiel Canal entrance/exit hexagons need higher resolution to connect. Routes currently go around Denmark (409 nm). Fix planned for next release.
 
 ## Data Sources
 
