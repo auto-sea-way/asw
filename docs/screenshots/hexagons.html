@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>H3 Hexagons: Panama Canal</title>
+<title>H3 Hexagons: Marmaris Bay</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
@@ -43,7 +43,7 @@
     maxZoom: 19
   }).addTo(map);
 
-  fetch('panama-hexagons.geojson')
+  fetch('marmaris-hexagons.geojson')
     .then(function(r) { return r.json(); })
     .then(function(data) {
       var layer = L.geoJSON(data, {
@@ -60,7 +60,8 @@
         }
       }).addTo(map);
 
-      map.fitBounds(layer.getBounds(), { padding: [10, 10] });
+      // Zoomed into Marmaris Bay to show hex resolution cascade
+      map.setView([36.84, 28.30], 13);
     });
 </script>
 </body>
