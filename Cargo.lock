@@ -193,6 +193,7 @@ dependencies = [
  "geojson",
  "h3o",
  "ordered-float",
+ "rayon",
  "rstar 0.12.2",
  "serde",
  "tokio",
