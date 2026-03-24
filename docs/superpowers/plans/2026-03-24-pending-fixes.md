@@ -468,7 +468,40 @@ git commit -m "refactor: nearest_node cleanup — fix return type, doc comments,
 
 ---
 
-### Task 9: Final verification
+### Task 9: Kiel Canal res-13 (Group E)
+
+**Files:**
+- Modify: `crates/asw-core/src/passages.rs:28,52`
+
+- [ ] **Step 1: Bump Kiel Canal leaf_resolution to 13**
+
+In `crates/asw-core/src/passages.rs`, change the Kiel Canal passage (line 52):
+
+```rust
+        leaf_resolution: 13, // bumped from 11 — lock entrances need 3.5m edges
+```
+
+Also update the comment on line 28:
+
+```rust
+/// - ~15m locks (Kiel): res-13 (3.5m edge)
+```
+
+- [ ] **Step 2: Run tests**
+
+Run: `cargo test --workspace`
+Expected: All pass.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add crates/asw-core/src/passages.rs
+git commit -m "fix: bump Kiel Canal to res-13 for lock entrance/exit connectivity"
+```
+
+---
+
+### Task 10: Final verification
 
 **Files:** None (verification only)
 

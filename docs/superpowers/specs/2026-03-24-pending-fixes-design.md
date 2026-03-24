@@ -74,6 +74,14 @@ Coastline is extracted from raw polygons (before `subtract_water`), so canal wat
 
 This approach reuses existing `component_labels()` and `GraphBuilder`. The graph build is cheap (~seconds); the expensive work (cell generation, edge building) is already done.
 
+## Group E: Kiel Canal res-13
+
+**File:** `crates/asw-core/src/passages.rs:52`
+
+Kiel Canal entrance/exit locks are ~15m wide — too narrow for res-11 cells (25m edge). The canal body routes fine but entrance/exit connectivity fails, forcing routes around Denmark. Same issue Panama had before being bumped to res-13.
+
+**Fix:** Change `leaf_resolution: 11` to `leaf_resolution: 13` for the Kiel Canal passage. Also update the comment on line 28 from `~100m (Kiel): res-11` to `~15m locks (Kiel): res-13`.
+
 ## Group D: nearest_node Cleanup
 
 **File:** `crates/asw-serve/src/state.rs`
@@ -93,4 +101,5 @@ This approach reuses existing `component_labels()` and `GraphBuilder`. The graph
 | `crates/asw-core/src/geo_index.rs` | B | Add `LandIndex::polygons()` |
 | `crates/asw-build/src/pipeline.rs` | B, C | Post-subtraction coastline, prune components |
 | `crates/asw-serve/src/state.rs` | D | Return type, doc comments, found_at_k |
+| `crates/asw-core/src/passages.rs` | E | Kiel Canal res-11 → res-13 |
 | `CLAUDE.md` | A | Add osmium-tool prerequisite |
