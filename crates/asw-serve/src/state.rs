@@ -90,40 +90,146 @@ impl AppState {
         }
     }
 
-    /// Find nearest node in the main connected component using H3 binary search.
-    ///
-    /// Iterates from finest resolution down to coarsest, checking the exact cell
-    /// and expanding k-ring to find nearby water cells. This handles coastal
-    /// queries where the input point may be on land.
-    pub fn nearest_node(&self, lat: f64, lon: f64) -> Option<(u32, f64)> {
-        let ll = h3o::LatLng::new(lat, lon).ok()?;
+    /// Approximate H3 edge length in nautical miles, indexed by resolution (3..=13).
+    /// Used for early-termination: skip coarser resolutions when current best is already
+    /// closer than one cell edge.
+    const H3_EDGE_NM: [f64; 14] = [
+        0.0, 0.0, 0.0,   // res 0-2: unused
+        35.0,  // res 3
+        13.0,  // res 4
+        5.0,   // res 5
+        1.9,   // res 6
+        0.7,   // res 7
+        0.27,  // res 8
+        0.10,  // res 9
+        0.038, // res 10
+        0.014, // res 11
+        0.005, // res 12
+        0.002, // res 13
+    ];
 
-        // Iterate from finest resolution (passage corridors) to coarsest (ocean).
-        // At each resolution, expand outward (k=0,1,2,3) until a node is found.
-        for res_u8 in (3..=13).rev() {
-            let res = h3o::Resolution::try_from(res_u8).ok()?;
-            let cell = ll.to_cell(res);
+    /// Maximum k-ring expansion per resolution tier.
+    fn k_max(res: u8) -> u32 {
+        match res {
+            9..=13 => 30,
+            6..=8 => 20,
+            3..=5 => 15,
+            _ => 3,
+        }
+    }
 
-            // Track best candidate at this resolution (closest by distance)
-            let mut best: Option<(u32, f64)> = None;
-
-            for k in 0..=3u32 {
-                for neighbor in cell.grid_disk::<Vec<_>>(k) {
-                    let nh3 = u64::from(neighbor);
-                    if let Some(node_id) = self.h3_lookup(nh3) {
-                        if self.component_labels[node_id as usize] == self.main_component {
-                            let (nlat, nlon) = self.graph.node_pos(node_id);
-                            let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                            if best.is_none() || dist < best.unwrap().1 {
-                                best = Some((node_id, dist));
-                            }
+    /// Search a single resolution with k-ring up to `k_max`, updating `best`.
+    /// Returns true if any main-component node was found at this resolution.
+    fn search_resolution(
+        &self,
+        ll: &h3o::LatLng,
+        lat: f64,
+        lon: f64,
+        res_u8: u8,
+        k_max: u32,
+        best: &mut Option<(u32, f64)>,
+    ) -> bool {
+        let res = match h3o::Resolution::try_from(res_u8) {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        let cell = ll.to_cell(res);
+        for k in 0..=k_max {
+            let mut found_at_k = false;
+            for neighbor in cell.grid_disk::<Vec<_>>(k) {
+                let nh3 = u64::from(neighbor);
+                if let Some(node_id) = self.h3_lookup(nh3) {
+                    if self.component_labels[node_id as usize] == self.main_component {
+                        let (nlat, nlon) = self.graph.node_pos(node_id);
+                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
+                        if best.is_none_or(|(_, d)| dist < d) {
+                            *best = Some((node_id, dist));
+                            found_at_k = true;
                         }
                     }
                 }
-                // If we found something at this k, return it (don't expand further)
-                if best.is_some() {
-                    return best;
+            }
+            if found_at_k {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Find nearest node in the main connected component using H3 binary search.
+    ///
+    /// Two-pass approach:
+    /// - Pass 1 (fast): k=3 at each resolution, fine→coarse. Handles 99% of queries.
+    /// - Pass 2 (refine): adaptive k proportional to pass-1 distance, fine→coarse.
+    ///   Only does work when pass 1 found a distant candidate that finer resolutions
+    ///   could beat with larger k. Skips via early termination when pass 1 was close.
+    pub fn nearest_node(&self, lat: f64, lon: f64) -> Option<(u32, f64)> {
+        let ll = h3o::LatLng::new(lat, lon).ok()?;
+        let mut best: Option<(u32, f64)> = None;
+
+        // Pass 1: fast scan with small k
+        for res_u8 in (3..=13).rev() {
+            let edge_nm = Self::H3_EDGE_NM[res_u8 as usize];
+            if let Some((_, d)) = best {
+                if d < edge_nm * 0.4 {
+                    continue;
                 }
+            }
+            self.search_resolution(&ll, lat, lon, res_u8, 3, &mut best);
+        }
+
+        // Pass 2: adaptive k at common resolutions (3-9). Passage corridors (10-13)
+        // have tiny cells where d/edge explodes — they're covered by pass 1's k=3.
+        // Skip entirely if pass 1 found a node within 0.5nm (excellent snap).
+        let needs_pass2 = match best {
+            Some((_, d)) => d >= 0.5,
+            None => true,
+        };
+        if needs_pass2 {
+            for res_u8 in (3..=9).rev() {
+                let edge_nm = Self::H3_EDGE_NM[res_u8 as usize];
+                if let Some((_, d)) = best {
+                    if d < edge_nm * 0.4 {
+                        continue;
+                    }
+                }
+                let k_limit = if let Some((_, d)) = best {
+                    let k = ((d / edge_nm) as u32 + 2).min(Self::k_max(res_u8));
+                    if k <= 3 {
+                        continue; // Already covered by pass 1
+                    }
+                    k
+                } else {
+                    Self::k_max(res_u8) // No candidate yet: full search
+                };
+                self.search_resolution(&ll, lat, lon, res_u8, k_limit, &mut best);
+            }
+        }
+
+        if best.is_some() {
+            return best;
+        }
+
+        // Exhaustive fallback: search res-3 with large k (covers most of the planet).
+        // This only finds nodes indexed at res-3 (deep ocean cells). Production graphs
+        // always contain res-3 nodes; test graphs may not.
+        let res3 = h3o::Resolution::try_from(3u8).ok()?;
+        let cell3 = ll.to_cell(res3);
+        for k in 0..=50u32 {
+            for neighbor in cell3.grid_disk::<Vec<_>>(k) {
+                let nh3 = u64::from(neighbor);
+                if let Some(node_id) = self.h3_lookup(nh3) {
+                    if self.component_labels[node_id as usize] == self.main_component {
+                        let (nlat, nlon) = self.graph.node_pos(node_id);
+                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
+                        if best.is_none_or(|(_, d)| dist < d) {
+                            best = Some((node_id, dist));
+                        }
+                    }
+                }
+            }
+            if best.is_some() {
+                return best;
             }
         }
 
@@ -212,5 +318,158 @@ mod app_state_tests {
 
         let result = state.nearest_node(36.848, 28.268);
         assert!(result.is_none(), "empty graph should return None");
+    }
+
+    /// Build a graph with two components: a main chain and an isolated node.
+    /// The isolated node is NOT connected to the chain.
+    fn graph_with_isolated_node() -> (RoutingGraph, (f64, f64), (f64, f64)) {
+        // Main component: 3 nodes forming a chain, ~1 degree apart
+        let main_a = (36.0, 28.0);
+        let main_b = (36.5, 28.5);
+        let main_c = (37.0, 29.0);
+        // Isolated node: close to main_a but NOT connected.
+        // Offset by ~0.3° (~18nm) to ensure distinct res-5 cells.
+        let isolated = (36.3, 28.3);
+
+        let mut entries: Vec<(u64, f64, f64, bool)> = Vec::new();
+        for &(lat, lng) in &[main_a, main_b, main_c] {
+            let cell = h3o::LatLng::new(lat, lng)
+                .unwrap()
+                .to_cell(h3o::Resolution::Five);
+            entries.push((u64::from(cell), lat, lng, true));
+        }
+        {
+            let cell = h3o::LatLng::new(isolated.0, isolated.1)
+                .unwrap()
+                .to_cell(h3o::Resolution::Five);
+            entries.push((u64::from(cell), isolated.0, isolated.1, false));
+        }
+        entries.sort_by_key(|(h3, _, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _, _)| *h3);
+
+        let mut b = GraphBuilder::new();
+        let mut ids = Vec::new();
+        let mut is_main = Vec::new();
+        for &(h3, lat, lng, main) in &entries {
+            ids.push(b.add_node(h3, lat, lng));
+            is_main.push(main);
+        }
+        // Connect only the main-component nodes in a chain
+        let main_ids: Vec<u32> = ids
+            .iter()
+            .zip(is_main.iter())
+            .filter(|(_, &m)| m)
+            .map(|(&id, _)| id)
+            .collect();
+        for i in 0..main_ids.len().saturating_sub(1) {
+            b.add_edge(main_ids[i], main_ids[i + 1], 1.0);
+        }
+        (b.build(), isolated, main_a)
+    }
+
+    #[test]
+    fn skips_isolated_component_snaps_to_main() {
+        let (graph, isolated_pos, _main_pos) = graph_with_isolated_node();
+        let state = AppState::new(graph);
+
+        // Query at the isolated node's position — should snap to main component instead
+        let result = state.nearest_node(isolated_pos.0, isolated_pos.1);
+        assert!(result.is_some(), "should find a main-component node");
+        let (node_id, _dist) = result.unwrap();
+        assert_eq!(
+            state.component_labels[node_id as usize], state.main_component,
+            "snapped node must be in main component"
+        );
+    }
+
+    /// Build a graph with nodes at two different resolutions.
+    /// A res-9 node near the query and a res-5 node farther away.
+    fn graph_multi_resolution() -> RoutingGraph {
+        let mut b = GraphBuilder::new();
+
+        // Res-5 node far from query point (1 degree away)
+        let far_pos = (37.0, 29.0);
+        let far_cell = h3o::LatLng::new(far_pos.0, far_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        // Res-9 node close to query point (0.05 degrees away)
+        let near_pos = (36.05, 28.05);
+        let near_cell = h3o::LatLng::new(near_pos.0, near_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Nine);
+
+        let mut entries = vec![
+            (u64::from(far_cell), far_pos.0, far_pos.1),
+            (u64::from(near_cell), near_pos.0, near_pos.1),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(b.add_node(h3, lat, lng));
+        }
+        // Connect all so they're in the same component
+        for i in 0..ids.len().saturating_sub(1) {
+            b.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        b.build()
+    }
+
+    #[test]
+    fn prefers_closer_node_across_resolutions() {
+        let graph = graph_multi_resolution();
+        let state = AppState::new(graph);
+
+        // Query near the res-9 node
+        let query = (36.0, 28.0);
+        let result = state.nearest_node(query.0, query.1);
+        assert!(result.is_some(), "should find a node");
+        let (_, dist) = result.unwrap();
+        // Should snap to the nearby res-9 node (~3 nm away), not the far res-5 node (~60 nm away)
+        assert!(
+            dist < 10.0,
+            "distance {} nm — should snap to nearby res-9 node, not far res-5 node",
+            dist
+        );
+    }
+
+    #[test]
+    fn remote_query_finds_distant_node() {
+        // Single res-3 ocean node at (40.0, 20.0)
+        let ocean_pos = (40.0, 20.0);
+        let ocean_cell = h3o::LatLng::new(ocean_pos.0, ocean_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Three);
+
+        let mut b = GraphBuilder::new();
+        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1);
+        let graph = b.build();
+        let state = AppState::new(graph);
+
+        // Query 5 degrees away (~300 nm) — simulates a remote island
+        let result = state.nearest_node(42.0, 16.0);
+        assert!(result.is_some(), "should find a node even 300nm away");
+        let (_, dist) = result.unwrap();
+        assert!(dist < 500.0, "distance {} nm should be < 500 nm", dist);
+    }
+
+    #[test]
+    fn deep_inland_finds_ocean_node() {
+        // Single res-3 ocean node in the Mediterranean
+        let ocean_pos = (36.0, 18.0);
+        let ocean_cell = h3o::LatLng::new(ocean_pos.0, ocean_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Three);
+
+        let mut b = GraphBuilder::new();
+        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1);
+        let graph = b.build();
+        let state = AppState::new(graph);
+
+        // Query from deep inland (Belgrade, Serbia — ~400nm from Mediterranean)
+        let result = state.nearest_node(44.8, 20.5);
+        assert!(result.is_some(), "should find ocean node from inland point");
     }
 }
