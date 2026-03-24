@@ -1,5 +1,8 @@
-use geo::{Contains, Coord, Intersects, Line, LineString, Point, Polygon};
-use rstar::{RTree, RTreeObject, AABB};
+use geo::algorithm::bool_ops::BooleanOps;
+use geo::{Contains, Coord, Intersects, Line, LineString, MultiPolygon, Point, Polygon};
+use rayon::prelude::*;
+use rstar::{Envelope, RTree, RTreeObject, AABB};
+use tracing::info;
 
 /// A land polygon stored in the R-tree with its bounding envelope.
 #[derive(Clone, Debug)]
@@ -94,6 +97,76 @@ impl LandIndex {
 
     pub fn polygon_count(&self) -> usize {
         self.tree.size()
+    }
+
+    /// Subtract water polygons from land, creating holes where canals exist.
+    /// Uses a water R-tree to find only the relevant water polygons per land polygon,
+    /// then applies BooleanOps difference in parallel via rayon.
+    pub fn subtract_water(&mut self, water_polygons: &[Polygon<f64>]) {
+        if water_polygons.is_empty() {
+            return;
+        }
+
+        // Build R-tree of water polygons for fast spatial lookup
+        let water_entries: Vec<LandPolygon> = water_polygons
+            .iter()
+            .cloned()
+            .map(LandPolygon::new)
+            .collect();
+        let water_tree = RTree::bulk_load(water_entries);
+
+        // Compute water bounding box for quick global filtering
+        let water_envelope = water_polygons.iter().map(bounding_rect).fold(
+            ([f64::MAX, f64::MAX], [f64::MIN, f64::MIN]),
+            |(acc_min, acc_max), (min, max)| {
+                (
+                    [acc_min[0].min(min[0]), acc_min[1].min(min[1])],
+                    [acc_max[0].max(max[0]), acc_max[1].max(max[1])],
+                )
+            },
+        );
+        let water_envelope = AABB::from_corners(water_envelope.0, water_envelope.1);
+
+        let candidates: Vec<LandPolygon> = self.tree.iter().cloned().collect();
+        let total = candidates.len();
+        let intersecting = candidates
+            .iter()
+            .filter(|lp| lp.envelope.intersects(&water_envelope))
+            .count();
+        info!(
+            "subtract_water: {} land polygons, {} intersect water bbox, {} water polygons",
+            total,
+            intersecting,
+            water_polygons.len()
+        );
+
+        // Parallel BooleanOps — each land polygon only subtracts nearby water polygons
+        let all_polys: Vec<LandPolygon> = candidates
+            .into_par_iter()
+            .flat_map(|lp| {
+                if !lp.envelope.intersects(&water_envelope) {
+                    return vec![lp];
+                }
+                // Find water polygons that intersect this land polygon's bbox
+                let nearby_water: Vec<&Polygon<f64>> = water_tree
+                    .locate_in_envelope_intersecting(&lp.envelope)
+                    .map(|wp| &wp.polygon)
+                    .collect();
+                if nearby_water.is_empty() {
+                    return vec![lp];
+                }
+                // Subtract only the nearby water polygons
+                let water_multi = MultiPolygon::new(nearby_water.into_iter().cloned().collect());
+                let diff = lp.polygon.difference(&water_multi);
+                diff.into_iter().map(LandPolygon::new).collect::<Vec<_>>()
+            })
+            .collect();
+
+        info!(
+            "subtract_water: {} polygons after subtraction",
+            all_polys.len()
+        );
+        self.tree = RTree::bulk_load(all_polys);
     }
 }
 

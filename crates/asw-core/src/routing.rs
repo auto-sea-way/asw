@@ -18,11 +18,15 @@ pub struct RouteResult {
 }
 
 /// A* pathfinding with haversine heuristic.
-pub fn astar(graph: &RoutingGraph, start: u32, goal: u32) -> Option<(Vec<u32>, f64)> {
-    let n = graph.num_nodes as usize;
-    let mut g_score = vec![f32::MAX; n];
-    let mut came_from = vec![u32::MAX; n];
-    let mut closed = vec![false; n];
+pub fn astar(
+    graph: &RoutingGraph,
+    start: u32,
+    goal: u32,
+    buffers: &mut crate::astar_pool::AstarBuffers,
+) -> Option<(Vec<u32>, f64)> {
+    let g_score = &mut buffers.g_score;
+    let came_from = &mut buffers.came_from;
+    let closed = &mut buffers.closed;
 
     g_score[start as usize] = 0.0;
 
@@ -149,6 +153,7 @@ pub fn smooth(graph: &RoutingGraph, path: &[u32], coastline: &CoastlineIndex) ->
 }
 
 /// Compute a full route: snap → A* → smooth → build result.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_route(
     graph: &RoutingGraph,
     from_lat: f64,
@@ -157,11 +162,12 @@ pub fn compute_route(
     to_lon: f64,
     coastline: &CoastlineIndex,
     node_knn: &dyn Fn(f64, f64) -> Option<(u32, f64)>,
+    buffers: &mut crate::astar_pool::AstarBuffers,
 ) -> Option<RouteResult> {
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let (raw_path, _distance_nm) = astar(graph, start, goal)?;
+    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers)?;
     let raw_hops = raw_path.len();
 
     let smoothed = smooth(graph, &raw_path, coastline);
@@ -196,48 +202,87 @@ mod tests {
     use super::*;
     use crate::graph::GraphBuilder;
 
-    fn diamond_graph() -> RoutingGraph {
+    /// Returns (graph, node_a, node_d) where A->B->D is shortest (cost 10).
+    fn diamond_graph() -> (RoutingGraph, u32, u32) {
+        // Points spaced far enough apart to map to distinct H3 cells at res-5
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(1.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c3 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let mut cells: Vec<(u64, f64, f64, &str)> = vec![
+            (u64::from(c0), 0.0, 0.0, "A"),
+            (u64::from(c1), 1.0, 0.0, "B"),
+            (u64::from(c2), 0.0, 1.0, "C"),
+            (u64::from(c3), 1.0, 1.0, "D"),
+        ];
+        cells.sort_by_key(|(h3, _, _, _)| *h3);
+        cells.dedup_by_key(|(h3, _, _, _)| *h3);
+        assert_eq!(cells.len(), 4, "Need 4 distinct H3 cells for diamond graph");
+
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0, false, 0); // A = 0
-        b.add_node(0.05, 0.0, false, 0); // B = 1
-        b.add_node(0.0, 0.05, false, 0); // C = 2
-        b.add_node(0.05, 0.05, false, 0); // D = 3
-        b.add_edge(0, 1, 5.0);
-        b.add_edge(0, 2, 10.0);
-        b.add_edge(1, 3, 5.0);
-        b.add_edge(2, 3, 10.0);
-        b.build()
+        let mut ids = std::collections::HashMap::new();
+        for (h3, lat, lng, label) in &cells {
+            let id = b.add_node(*h3, *lat, *lng);
+            ids.insert(*label, id);
+        }
+
+        b.add_edge(ids["A"], ids["B"], 5.0);
+        b.add_edge(ids["A"], ids["C"], 10.0);
+        b.add_edge(ids["B"], ids["D"], 5.0);
+        b.add_edge(ids["C"], ids["D"], 10.0);
+        (b.build(), ids["A"], ids["D"])
     }
 
     #[test]
     fn astar_shortest_path() {
-        let g = diamond_graph();
-        let result = astar(&g, 0, 3);
+        let (g, node_a, node_d) = diamond_graph();
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let result = astar(&g, node_a, node_d, &mut buffers);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert!((cost - 10.0).abs() < 1e-6, "cost was {cost}, expected 10.0");
         assert_eq!(path.len(), 3);
-        assert_eq!(path[0], 0);
-        assert_eq!(*path.last().unwrap(), 3);
+        assert_eq!(path[0], node_a);
+        assert_eq!(*path.last().unwrap(), node_d);
     }
 
     #[test]
     fn astar_same_node() {
-        let g = diamond_graph();
-        let result = astar(&g, 0, 0);
+        let (g, node_a, _) = diamond_graph();
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let result = astar(&g, node_a, node_a, &mut buffers);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
-        assert_eq!(path, vec![0]);
+        assert_eq!(path, vec![node_a]);
         assert!((cost - 0.0).abs() < 1e-6);
     }
 
     #[test]
     fn astar_unreachable() {
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(10.0, 10.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let mut cells = vec![(u64::from(c0), 0.0, 0.0), (u64::from(c1), 10.0, 10.0)];
+        cells.sort_by_key(|(h3, _, _)| *h3);
         let mut b = GraphBuilder::new();
-        b.add_node(0.0, 0.0, false, 0);
-        b.add_node(1.0, 1.0, false, 0);
+        for (h3, lat, lng) in &cells {
+            b.add_node(*h3, *lat, *lng);
+        }
         let g = b.build();
-        let result = astar(&g, 0, 1);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let result = astar(&g, 0, 1, &mut buffers);
         assert!(result.is_none());
     }
 }

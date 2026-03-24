@@ -86,23 +86,28 @@ async fn route_handler(
 
     let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.nearest_node(lat, lon) };
 
-    let result = compute_route(
-        &app.graph,
-        from_lat,
-        from_lon,
-        to_lat,
-        to_lon,
-        &app.coastline,
-        &knn,
-    )
-    .ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "No route found between the given points".into(),
-            }),
-        )
-    })?;
+    let result = app
+        .with_astar_buffers(|buffers| {
+            compute_route(
+                &app.graph,
+                from_lat,
+                from_lon,
+                to_lat,
+                to_lon,
+                &app.coastline,
+                &knn,
+                buffers,
+            )
+        })
+        .await
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "No route found between the given points".into(),
+                }),
+            )
+        })?;
 
     let geometry = serde_json::json!({
         "type": "LineString",

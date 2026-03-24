@@ -412,20 +412,6 @@ fn hex_feature_string(boundary: &[(f64, f64)], res: u8, color: &str) -> String {
     s
 }
 
-/// Build a single GeoJSON feature string for a passage edge.
-fn passage_feature_string(
-    src_lon: f64,
-    src_lat: f64,
-    dst_lon: f64,
-    dst_lat: f64,
-    weight: f32,
-) -> String {
-    format!(
-        r##"{{"type":"Feature","geometry":{{"type":"LineString","coordinates":[[{},{}],[{},{}]]}},"properties":{{"layer":"passages","stroke":"#ff00ff","stroke-width":2.5,"weight_nm":{:.2}}}}}"##,
-        src_lon, src_lat, dst_lon, dst_lat, weight
-    )
-}
-
 /// Build a single GeoJSON feature string for a coastline segment.
 fn coastline_feature_string(seg: &[(f32, f32)]) -> String {
     let mut s = String::with_capacity(256 + seg.len() * 24);
@@ -482,19 +468,18 @@ fn export_geojson(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Collect features by layer: hex-res-0 through hex-res-15, passages, coastline
-    // Index 0..=15 for hex resolutions, 16 for passages, 17 for coastline
-    const LAYER_PASSAGES: usize = 16;
-    const LAYER_COASTLINE: usize = 17;
-    const NUM_LAYERS: usize = 18;
+    // Collect features by layer: hex-res-0 through hex-res-15, coastline
+    // Index 0..=15 for hex resolutions, 16 for coastline
+    const LAYER_COASTLINE: usize = 16;
+    const NUM_LAYERS: usize = 17;
     let mut layers: Vec<Vec<String>> = vec![Vec::new(); NUM_LAYERS];
 
     // Hex polygons
     let mut hex_count: u64 = 0;
     for i in 0..graph.num_nodes as usize {
-        if graph.is_passage(i as u32) {
-            continue; // synthetic passage node, no hex
-        }
+        let h3 = graph.node_h3[i];
+        let cell = h3o::CellIndex::try_from(h3).expect("valid H3");
+        let res = cell.resolution() as u8;
 
         let (lat, lng) = graph.node_pos(i as u32);
 
@@ -505,25 +490,7 @@ fn export_geojson(
             }
         }
 
-        // Look up stored H3 resolution and reconstruct the cell
-        let res = graph.node_resolutions[i];
-        if res == 0 {
-            continue; // passage node without valid H3 resolution
-        }
-        let res_enum = match h3o::Resolution::try_from(res) {
-            Ok(r) => r,
-            Err(_) => {
-                tracing::warn!("Invalid H3 resolution {} for node {i}", res);
-                continue;
-            }
-        };
-        let Some(cell) = asw_core::h3::lat_lng_to_cell(lat, lng, res_enum) else {
-            tracing::warn!("Could not reconstruct H3 cell for node {i} at res {res}");
-            continue;
-        };
-
         let boundary = asw_core::h3::cell_boundary(cell);
-        let res = cell.resolution() as u8;
         let color = match res {
             0..=3 => "#0088ff",
             4..=5 => "#00cc00",
@@ -539,38 +506,6 @@ fn export_geojson(
         if hex_count.is_multiple_of(1_000_000) {
             info!("  processed {} hex features...", hex_count);
         }
-    }
-
-    // Passage edges
-    for src in 0..graph.num_nodes {
-        let src_is_passage = graph.is_passage(src);
-        for (dst, weight_nm) in graph.neighbors(src) {
-            let dst_is_passage = graph.is_passage(dst);
-            if !src_is_passage && !dst_is_passage {
-                continue;
-            }
-            if src >= dst {
-                continue;
-            }
-
-            let (src_lat, src_lon) = graph.node_pos(src);
-            let (dst_lat, dst_lon) = graph.node_pos(dst);
-
-            if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
-                let in_bbox = |lat: f64, lon: f64| {
-                    lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
-                };
-                if !in_bbox(src_lat, src_lon) && !in_bbox(dst_lat, dst_lon) {
-                    continue;
-                }
-            }
-
-            let feat = passage_feature_string(src_lon, src_lat, dst_lon, dst_lat, weight_nm);
-            layers[LAYER_PASSAGES].push(feat);
-        }
-    }
-    if !layers[LAYER_PASSAGES].is_empty() {
-        info!("  {} passage edges", layers[LAYER_PASSAGES].len());
     }
 
     // Coastline segments
@@ -622,18 +557,6 @@ fn export_geojson(
         );
     }
 
-    if !layers[LAYER_PASSAGES].is_empty() {
-        let passages_path = parent.join(format!("{}-passages.geojson", stem));
-        write_feature_collection(&passages_path, &layers[LAYER_PASSAGES])?;
-        let size = std::fs::metadata(&passages_path)?.len();
-        info!(
-            "  Layer {:?}: {} features, {:.1} MB",
-            passages_path,
-            layers[LAYER_PASSAGES].len(),
-            size as f64 / 1_000_000.0
-        );
-    }
-
     if !layers[LAYER_COASTLINE].is_empty() {
         let coastline_path = parent.join(format!("{}-coastline.geojson", stem));
         write_feature_collection(&coastline_path, &layers[LAYER_COASTLINE])?;
@@ -649,7 +572,6 @@ fn export_geojson(
     // Write combined file (all features in one FeatureCollection)
     let all_features: Vec<&String> = hex_features
         .iter()
-        .chain(layers[LAYER_PASSAGES].iter())
         .chain(layers[LAYER_COASTLINE].iter())
         .collect();
 

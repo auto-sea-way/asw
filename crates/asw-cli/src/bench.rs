@@ -168,6 +168,7 @@ fn git_commit() -> String {
 /// aren't in the same connected component.
 fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
     let mut routes = Vec::new();
+    let mut buffers = asw_core::astar_pool::AstarBuffers::new(app.graph.num_nodes as usize);
 
     for (i, &(name, from_lat, from_lon, to_lat, to_lon)) in ROUTES.iter().enumerate() {
         let from_node = app.nearest_node(from_lat, from_lon);
@@ -177,6 +178,7 @@ fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
             (Some(_), Some(_)) => {
                 // Validate routability with a test computation
                 let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
+                buffers.reset();
                 if compute_route(
                     &app.graph,
                     from_lat,
@@ -185,6 +187,7 @@ fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
                     to_lon,
                     &app.coastline,
                     &knn,
+                    &mut buffers,
                 )
                 .is_none()
                 {
@@ -219,12 +222,14 @@ fn run_benchmark(
 ) -> Vec<RouteStats> {
     let warmup = 3;
     let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
+    let mut buffers = asw_core::astar_pool::AstarBuffers::new(graph.num_nodes as usize);
 
     routes
         .iter()
         .map(|route| {
             // Warmup
             for _ in 0..warmup {
+                buffers.reset();
                 let _ = compute_route(
                     graph,
                     route.from_lat,
@@ -233,10 +238,12 @@ fn run_benchmark(
                     route.to_lon,
                     &app.coastline,
                     &knn,
+                    &mut buffers,
                 );
             }
 
             // Capture metadata from first measured run
+            buffers.reset();
             let first = compute_route(
                 graph,
                 route.from_lat,
@@ -245,6 +252,7 @@ fn run_benchmark(
                 route.to_lon,
                 &app.coastline,
                 &knn,
+                &mut buffers,
             );
             let (distance_nm, raw_hops, smooth_hops, coordinates) = match &first {
                 Some(r) => (
@@ -260,6 +268,7 @@ fn run_benchmark(
             let mut timings_us = Vec::with_capacity(iterations);
 
             for _ in 0..iterations {
+                buffers.reset();
                 let start = Instant::now();
                 let _ = compute_route(
                     graph,
@@ -269,6 +278,7 @@ fn run_benchmark(
                     route.to_lon,
                     &app.coastline,
                     &knn,
+                    &mut buffers,
                 );
                 timings_us.push(start.elapsed().as_micros() as u64);
             }

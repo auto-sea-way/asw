@@ -24,19 +24,19 @@ asw cloud teardown
 
 ```bash
 # Full image — zero config, graph included (~870 MB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.3.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.1.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.3.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.3.0
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.1.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.3.0
 ```
 
-The full planet graph requires ~4 GB RAM during startup (peaks during index construction, settles to ~1.5 GB once ready). Wait for the `/ready` endpoint to return 200 before sending route queries (~60-90s for the full graph).
+The full planet graph needs ~4.2 GiB total memory (3.5 GiB RSS + ~750 MiB swap). A **4 GB instance with swap** works; an **8 GB instance** runs comfortably without swap. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
 
 ```bash
 # Query a route (Marmaris → Santorini)
@@ -72,8 +72,8 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.1.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.1.0-full` | Full image — graph file included (~870 MB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.3.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.3.0-full` | Full image — graph file included (~750 MB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
@@ -88,11 +88,11 @@ cargo build --release -p asw-cli
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline, up to res-13 in passage corridors)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
-5. **Add** manual edges for critical narrow passages (Suez, Panama, Bosphorus, Dover, etc.)
-6. **Serialize** graph to a compact binary format
+5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
+6. **Serialize** graph to compact binary format (bitcode + zstd-19, sorted H3 indices for O(log n) spatial lookup)
 
 ## CLI Reference
 
@@ -132,14 +132,17 @@ crates/
 
 ## Full Planet Build
 
-Built on Hetzner ccx33 (8 dedicated AMD CPUs, 32 GB RAM):
+Built on Hetzner ccx53 (32 dedicated AMD CPUs, 128 GB RAM) in ~5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 40,397,636 |
-| Edges | 305,031,722 |
-| Graph file size | 843 MB |
-| Connectivity | 96.9% (largest component: 39.1M nodes) |
+| Nodes | 41,254,319 |
+| Edges | 310,455,910 |
+| Graph file size | 753 MB |
+| Connectivity | 96.2% (largest component: 39.7M nodes) |
+| Server memory (RSS) | ~3.5 GiB |
+| Server memory (total) | ~4.2 GiB (needs swap on 4 GB nodes) |
+| Minimum instance | 4 GB RAM + swap, recommended 8 GB |
 
 ```bash
 asw cloud build --output export/asw.graph
@@ -147,35 +150,37 @@ asw cloud build --output export/asw.graph
 
 ## Routing Benchmarks
 
-20 routes, 50 iterations each.
+20 routes, 10 iterations each. Graph v2 format (bitcode + H3 binary search).
 
 ### Sailing Routes
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 8.5ms | 10.3ms | 32>3 |
-| Aegean Hop | 25.2nm | 8.4ms | 12.2ms | 59>5 |
-| Strait of Gibraltar | 30.4nm | 7.6ms | 8.1ms | 81>4 |
-| Baltic Crossing | 41.9nm | 8.3ms | 9.1ms | 53>5 |
-| Balearic Sea | 127.1nm | 8.6ms | 9.1ms | 123>7 |
-| Florida Strait | 90.0nm | 7.7ms | 8.3ms | 38>3 |
-| Malacca Route | 534.4nm | 35.9ms | 38.2ms | 491>19 |
-| Tasman Sea | 1265.5nm | 40.1ms | 41.3ms | 412>16 |
-| South Atlantic | 3272.9nm | 30.8ms | 31.8ms | 401>8 |
-| North Atlantic | 3040.6nm | 629.4ms | 684.4ms | 679>17 |
+| English Channel | 22.1nm | 0.4ms | 0.4ms | 33>3 |
+| Aegean Hop | 25.1nm | 1.0ms | 2.1ms | 51>5 |
+| Strait of Gibraltar | 29.0nm | 1.1ms | 1.7ms | 62>3 |
+| Baltic Crossing | 42.0nm | 2.1ms | 2.4ms | 54>5 |
+| Balearic Sea | 127.3nm | 3.0ms | 3.3ms | 111>6 |
+| Florida Strait | 88.1nm | 0.5ms | 0.7ms | 14>2 |
+| Malacca Route | 537.3nm | 45.9ms | 49.4ms | 477>20 |
+| Tasman Sea | 1265.1nm | 80.2ms | 147.8ms | 408>16 |
+| South Atlantic | 3272.5nm | 59.9ms | 208.3ms | 354>6 |
+| North Atlantic | 3040.5nm | 1.16s | 1.64s | 682>17 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.5nm | 14.2ms | 14.8ms | 1155>23 |
-| Corinth Canal | 6.6nm | 6.9ms | 7.7ms | 428>9 |
-| Bosphorus | 32.4nm | 7.4ms | 8.3ms | 161>10 |
-| Dardanelles | 45.7nm | 6.7ms | 7.5ms | 117>5 |
-| Malacca Strait | 28.6nm | 6.9ms | 7.3ms | 88>5 |
-| Singapore Strait | 28.1nm | 6.6ms | 7.3ms | 48>5 |
-| Messina Strait | 15.7nm | 6.4ms | 7.0ms | 70>6 |
-| Dover Strait | 18.8nm | 6.1ms | 6.6ms | 23>3 |
+| Suez Canal | 141.0nm | 20.4ms | 22.5ms | 1126>22 |
+| Panama Canal | 49.7nm | 72.4ms | 80.1ms | 2351>15 |
+| Kiel Canal | 409.2nm | 162.1ms | 170.6ms | 922>34 |
+| Corinth Canal | 7.0nm | 2.0ms | 2.4ms | 428>10 |
+| Bosphorus | 31.3nm | 2.8ms | 2.9ms | 162>11 |
+| Dardanelles | 40.4nm | 3.4ms | 4.0ms | 137>6 |
+| Malacca Strait | 30.0nm | 2.8ms | 3.6ms | 67>5 |
+| Singapore Strait | 40.8nm | 676us | 914us | 26>2 |
+| Messina Strait | 15.6nm | 877us | 2.0ms | 65>5 |
+| Dover Strait | 19.0nm | 157us | 238us | 4>2 |
 
 ## API Endpoints
 
@@ -206,14 +211,16 @@ See [CHANGELOG.md](CHANGELOG.md) for a detailed list of changes in each release.
 ## Known Limitations
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.
-- **Panama Canal routing.** The Panama Canal passage is not correctly connected, causing routes to go around South America instead. Fix planned for a future release.
-- **Kiel Canal routing.** The Kiel Canal passage is not correctly connected, causing routes to go around Denmark instead. Fix planned for a future release.
+- **Kiel Canal routing.** The Kiel Canal entrance/exit hexagons need higher resolution to connect. Routes currently go around Denmark (409 nm). Fix planned for next release.
 
 ## Data Sources
+
+Geographic data is derived from [OpenStreetMap](https://www.openstreetmap.org/), © OpenStreetMap contributors, available under the [Open Database License (ODbL) v1.0](https://opendatacommons.org/licenses/odbl/1-0/).
 
 | Dataset | Size | License |
 |---------|------|---------|
 | [OSM land polygons](https://osmdata.openstreetmap.de/data/land-polygons.html) | ~900MB | ODbL |
+| [Geofabrik regional extracts](https://download.geofabrik.de/) (canal water polygons) | varies | ODbL |
 
 ## License
 

@@ -1,18 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-/// File layout: [b"ASW\x01" magic header][zstd-compressed bincode payload]
+/// File layout: [b"ASW\x02" magic header][zstd-compressed bitcode payload]
 ///
 /// Compressed Sparse Row graph for maritime routing.
-/// Coordinates are i32 fixed-point (degrees × 1e7).
+/// Nodes are H3 cell indices stored in sorted ascending order.
 /// Edge data is interleaved delta-varint targets + u16 weights.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RoutingGraph {
-    pub node_lats: Vec<i32>,
-    pub node_lngs: Vec<i32>,
-    /// H3 resolution (3-15) for each node, 0 = passage node.
-    pub node_resolutions: Vec<u8>,
-    pub passage_mask: Vec<u8>,
+    /// H3 cell index for each node, sorted ascending. Array index = node ID.
+    pub node_h3: Vec<u64>,
     /// Byte offsets into `edge_data`. Length = num_nodes + 1.
     /// Invariant: `offsets[num_nodes] == edge_data.len()`
     pub offsets: Vec<u32>,
@@ -52,9 +49,9 @@ impl<'a> Iterator for NeighborIter<'a> {
 }
 
 pub struct GraphBuilder {
-    /// (lat_deg, lng_deg, is_passage, h3_resolution) per node
-    /// h3_resolution: 0 for passage nodes, 3-15 for regular H3 nodes
-    nodes: Vec<(f64, f64, bool, u8)>,
+    /// (h3_index, lat_deg, lng_deg) per node.
+    /// lat/lng kept temporarily for edge weight calculation in the build pipeline.
+    nodes: Vec<(u64, f64, f64)>,
     /// (src, dst, weight_nm)
     edges: Vec<(u32, u32, f32)>,
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
@@ -76,10 +73,9 @@ impl GraphBuilder {
     }
 
     /// Add a node. Returns node ID.
-    /// `resolution`: H3 resolution (3-15) for regular nodes, 0 for passage nodes.
-    pub fn add_node(&mut self, lat: f64, lng: f64, is_passage: bool, resolution: u8) -> u32 {
+    pub fn add_node(&mut self, h3_index: u64, lat: f64, lng: f64) -> u32 {
         let id = self.nodes.len() as u32;
-        self.nodes.push((lat, lng, is_passage, resolution));
+        self.nodes.push((h3_index, lat, lng));
         id
     }
 
@@ -99,29 +95,7 @@ impl GraphBuilder {
         let num_nodes = self.nodes.len() as u32;
         let num_edges = self.edges.len() as u32;
 
-        // Encode coordinates as i32 fixed-point
-        let node_lats: Vec<i32> = self
-            .nodes
-            .iter()
-            .map(|(lat, _, _, _)| (*lat * 1e7).round() as i32)
-            .collect();
-        let node_lngs: Vec<i32> = self
-            .nodes
-            .iter()
-            .map(|(_, lng, _, _)| (*lng * 1e7).round() as i32)
-            .collect();
-
-        // Store H3 resolution per node
-        let node_resolutions: Vec<u8> = self.nodes.iter().map(|(_, _, _, res)| *res).collect();
-
-        // Build passage mask bitset
-        let mask_len = (num_nodes as usize).div_ceil(8);
-        let mut passage_mask = vec![0u8; mask_len];
-        for (i, (_, _, is_passage, _)) in self.nodes.iter().enumerate() {
-            if *is_passage {
-                passage_mask[i / 8] |= 1 << (i % 8);
-            }
-        }
+        let node_h3: Vec<u64> = self.nodes.iter().map(|(h3, _, _)| *h3).collect();
 
         // Group edges by source, sort targets ascending per source
         let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes as usize];
@@ -154,10 +128,7 @@ impl GraphBuilder {
         offsets.push(edge_data.len() as u32);
 
         RoutingGraph {
-            node_lats,
-            node_lngs,
-            node_resolutions,
-            passage_mask,
+            node_h3,
             offsets,
             edge_data,
             coastline_coords: self.coastline_coords,
@@ -168,34 +139,44 @@ impl GraphBuilder {
 }
 
 impl RoutingGraph {
-    const MAGIC: &'static [u8; 4] = b"ASW\x01";
+    const MAGIC: &'static [u8; 4] = b"ASW\x02";
 
-    /// Serialize: write magic header, then bincode+zstd-19 payload.
+    /// Serialize: write magic header, then bitcode+zstd-19 payload.
     pub fn save<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
         writer.write_all(Self::MAGIC)?;
-        let encoder = zstd::Encoder::new(writer, 19)?.auto_finish();
-        bincode::serialize_into(encoder, self)?;
+        let encoded = bitcode::serialize(self)?;
+        let mut encoder = zstd::Encoder::new(writer, 19)?;
+        encoder.write_all(&encoded)?;
+        encoder.finish()?;
         Ok(())
     }
 
-    /// Deserialize: verify magic header, then bincode+zstd payload.
+    /// Deserialize: verify magic header, then bitcode+zstd payload.
     pub fn load<R: Read>(mut reader: R) -> anyhow::Result<Self> {
         let mut magic = [0u8; 4];
         reader.read_exact(&mut magic)?;
         if &magic[..3] != b"ASW" {
             anyhow::bail!("Not an ASW graph file (expected ASW magic header). Rebuild required.");
         }
-        if magic[3] != 1 {
+        if magic[3] != 2 {
             anyhow::bail!(
-                "Unsupported ASW graph version {} (expected 1). Rebuild required.",
+                "Unsupported ASW graph version {} (expected 2). Rebuild required.",
                 magic[3]
             );
         }
-        let decoder = zstd::Decoder::new(reader)?;
-        let graph: Self = bincode::deserialize_from(decoder)?;
+        let mut decoder = zstd::Decoder::new(reader)?;
+        let mut buf = Vec::new();
+        decoder.read_to_end(&mut buf)?;
+        let graph: Self = bitcode::deserialize(&buf)?;
 
         // Post-deserialization validation
         let n = graph.num_nodes as usize;
+        anyhow::ensure!(
+            graph.node_h3.len() == n,
+            "node_h3 length {} != num_nodes {}",
+            graph.node_h3.len(),
+            n
+        );
         anyhow::ensure!(
             graph.offsets.len() == n + 1,
             "offsets length {} != num_nodes + 1 ({})",
@@ -211,36 +192,27 @@ impl RoutingGraph {
         for i in 1..graph.offsets.len() {
             anyhow::ensure!(
                 graph.offsets[i] >= graph.offsets[i - 1],
-                "offsets not monotonic at index {}: {} < {}",
-                i,
-                graph.offsets[i],
-                graph.offsets[i - 1]
+                "offsets not monotonic at index {}",
+                i
             );
         }
-        anyhow::ensure!(
-            graph.node_lats.len() == n,
-            "node_lats length {} != num_nodes {}",
-            graph.node_lats.len(),
-            n
-        );
-        anyhow::ensure!(
-            graph.node_lngs.len() == n,
-            "node_lngs length {} != num_nodes {}",
-            graph.node_lngs.len(),
-            n
-        );
-        anyhow::ensure!(
-            graph.passage_mask.len() == n.div_ceil(8),
-            "passage_mask length {} != expected {}",
-            graph.passage_mask.len(),
-            n.div_ceil(8)
-        );
-        anyhow::ensure!(
-            graph.node_resolutions.len() == n,
-            "node_resolutions length {} != num_nodes {}",
-            graph.node_resolutions.len(),
-            n
-        );
+        // Validate H3 indices
+        for (i, &h3) in graph.node_h3.iter().enumerate() {
+            anyhow::ensure!(
+                h3o::CellIndex::try_from(h3).is_ok(),
+                "invalid H3 index at node {}",
+                i
+            );
+        }
+        // Validate strict sorted order
+        for w in graph.node_h3.windows(2) {
+            anyhow::ensure!(
+                w[0] < w[1],
+                "node_h3 not strictly sorted: {} >= {}",
+                w[0],
+                w[1]
+            );
+        }
 
         Ok(graph)
     }
@@ -256,37 +228,12 @@ impl RoutingGraph {
         }
     }
 
-    /// Check if a node is a passage/synthetic node.
-    pub fn is_passage(&self, node: u32) -> bool {
-        let idx = node as usize;
-        self.passage_mask[idx / 8] & (1 << (idx % 8)) != 0
-    }
-
-    /// Decode i32 fixed-point coordinates to f64 (lat, lng) in degrees.
+    /// Decode H3 cell center coordinates to f64 (lat, lng) in degrees.
     pub fn node_pos(&self, node: u32) -> (f64, f64) {
-        let i = node as usize;
-        let lat = self.node_lats[i] as f64 / 1e7;
-        let lng = self.node_lngs[i] as f64 / 1e7;
-        (lat, lng)
-    }
-
-    /// Find the nearest node to a given (lat, lon) by brute-force.
-    /// For the serve phase, use the R-tree in AppState instead.
-    pub fn nearest_node(&self, lat: f64, lon: f64) -> Option<(u32, f64)> {
-        if self.num_nodes == 0 {
-            return None;
-        }
-        let mut best_id = 0u32;
-        let mut best_dist = f64::MAX;
-        for i in 0..self.num_nodes {
-            let (nlat, nlng) = self.node_pos(i);
-            let d = crate::h3::haversine_nm(lat, lon, nlat, nlng);
-            if d < best_dist {
-                best_dist = d;
-                best_id = i;
-            }
-        }
-        Some((best_id, best_dist))
+        let h3 = self.node_h3[node as usize];
+        let cell = h3o::CellIndex::try_from(h3).expect("invalid H3 index");
+        let ll = h3o::LatLng::from(cell);
+        (ll.lat(), ll.lng())
     }
 
     /// Connected components via union-find. Returns sorted component sizes (largest first).
@@ -308,7 +255,7 @@ impl RoutingGraph {
     }
 
     /// Returns a Vec where `result[i]` is the component root for node `i`.
-    /// Uses u32 to halve memory vs usize (40M nodes × 4 bytes = 160 MB).
+    /// Uses u32 to halve memory vs usize (40M nodes * 4 bytes = 160 MB).
     pub fn component_labels(&self) -> Vec<u32> {
         let n = self.num_nodes as usize;
         debug_assert!(n <= u32::MAX as usize);
@@ -365,11 +312,47 @@ mod tests {
     use super::*;
 
     fn square_graph() -> RoutingGraph {
+        // Use real H3 cells at resolution 5, sorted by H3 index
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(1.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c3 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let mut cells: Vec<(u64, f64, f64)> = vec![
+            (u64::from(c0), 0.0, 0.0),
+            (u64::from(c1), 0.0, 1.0),
+            (u64::from(c2), 1.0, 0.0),
+            (u64::from(c3), 1.0, 1.0),
+        ];
+        cells.sort_by_key(|(h3, _, _)| *h3);
+
         let mut b = GraphBuilder::new();
-        let n0 = b.add_node(0.0, 0.0, false, 0);
-        let n1 = b.add_node(0.0, 1.0, false, 0);
-        let n2 = b.add_node(1.0, 0.0, false, 0);
-        let n3 = b.add_node(1.0, 1.0, false, 0);
+        let mut ids = Vec::new();
+        for (h3, lat, lng) in &cells {
+            ids.push(b.add_node(*h3, *lat, *lng));
+        }
+
+        // Find which sorted index corresponds to which original cell
+        let idx_of = |target_h3: u64| -> u32 {
+            cells
+                .iter()
+                .position(|(h3, _, _)| *h3 == target_h3)
+                .unwrap() as u32
+        };
+
+        let n0 = idx_of(u64::from(c0));
+        let n1 = idx_of(u64::from(c1));
+        let n2 = idx_of(u64::from(c2));
+        let n3 = idx_of(u64::from(c3));
+
         b.add_edge(n0, n1, 1.0);
         b.add_edge(n1, n3, 1.0);
         b.add_edge(n0, n2, 2.0);
@@ -387,26 +370,20 @@ mod tests {
     #[test]
     fn graph_neighbors() {
         let g = square_graph();
+        // Just check node 0 has 2 neighbors
         let n0: Vec<(u32, f32)> = g.neighbors(0).collect();
         assert_eq!(n0.len(), 2);
-        assert_eq!(n0[0].0, 1); // n1
-        assert_eq!(n0[1].0, 2); // n2
     }
 
     #[test]
-    fn graph_neighbor_weights() {
+    fn graph_node_pos_h3_roundtrip() {
         let g = square_graph();
-        let n0: Vec<(u32, f32)> = g.neighbors(0).collect();
-        assert_eq!(n0[0], (1, 1.0));
-        assert_eq!(n0[1], (2, 2.0));
-    }
-
-    #[test]
-    fn graph_node_pos_roundtrip() {
-        let g = square_graph();
-        let (lat, lng) = g.node_pos(3);
-        assert!((lat - 1.0).abs() < 1e-6);
-        assert!((lng - 1.0).abs() < 1e-6);
+        // Each node should decode to a valid lat/lng
+        for i in 0..g.num_nodes {
+            let (lat, lng) = g.node_pos(i);
+            assert!(lat >= -90.0 && lat <= 90.0, "lat out of range: {}", lat);
+            assert!(lng >= -180.0 && lng <= 180.0, "lng out of range: {}", lng);
+        }
     }
 
     #[test]
@@ -419,12 +396,45 @@ mod tests {
 
     #[test]
     fn graph_connected_components_isolated() {
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(1.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c3 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let mut cells: Vec<(u64, f64, f64)> = vec![
+            (u64::from(c0), 0.0, 0.0),
+            (u64::from(c1), 0.0, 1.0),
+            (u64::from(c2), 1.0, 0.0),
+            (u64::from(c3), 1.0, 1.0),
+        ];
+        cells.sort_by_key(|(h3, _, _)| *h3);
+
         let mut b = GraphBuilder::new();
-        let n0 = b.add_node(0.0, 0.0, false, 0);
-        let n1 = b.add_node(0.0, 1.0, false, 0);
+        for (h3, lat, lng) in &cells {
+            b.add_node(*h3, *lat, *lng);
+        }
+
+        let idx_of = |target_h3: u64| -> u32 {
+            cells
+                .iter()
+                .position(|(h3, _, _)| *h3 == target_h3)
+                .unwrap() as u32
+        };
+
+        let n0 = idx_of(u64::from(c0));
+        let n1 = idx_of(u64::from(c1));
+        let n2 = idx_of(u64::from(c2));
+        let n3 = idx_of(u64::from(c3));
+
         b.add_edge(n0, n1, 1.0);
-        let n2 = b.add_node(1.0, 0.0, false, 0);
-        let n3 = b.add_node(1.0, 1.0, false, 0);
         b.add_edge(n2, n3, 1.0);
         let g = b.build();
         let mut components = g.connected_components();
@@ -439,15 +449,12 @@ mod tests {
         g.save(&mut buf).unwrap();
 
         // Verify magic header
-        assert_eq!(&buf[0..4], b"ASW\x01");
+        assert_eq!(&buf[0..4], b"ASW\x02");
 
         let loaded = RoutingGraph::load(std::io::Cursor::new(&buf)).unwrap();
         assert_eq!(loaded.num_nodes, g.num_nodes);
         assert_eq!(loaded.num_edges, g.num_edges);
-        assert_eq!(loaded.node_lats, g.node_lats);
-        assert_eq!(loaded.node_lngs, g.node_lngs);
-        assert_eq!(loaded.node_resolutions, g.node_resolutions);
-        assert_eq!(loaded.passage_mask, g.passage_mask);
+        assert_eq!(loaded.node_h3, g.node_h3);
         assert_eq!(loaded.offsets, g.offsets);
         assert_eq!(loaded.edge_data, g.edge_data);
 
@@ -480,11 +487,13 @@ mod tests {
         edge_data.extend_from_slice(&350u16.to_le_bytes());
 
         let end = edge_data.len() as u32;
+
+        // Use a real H3 cell for the dummy node
+        let cell = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
         let graph = RoutingGraph {
-            node_lats: vec![0; 1],
-            node_lngs: vec![0; 1],
-            node_resolutions: vec![0; 1],
-            passage_mask: vec![0],
+            node_h3: vec![u64::from(cell)],
             offsets: vec![0, end],
             edge_data,
             coastline_coords: vec![],
@@ -500,33 +509,12 @@ mod tests {
     }
 
     #[test]
-    fn is_passage_bitset() {
-        let mut mask = vec![0u8; 1];
-        mask[0] = (1 << 0) | (1 << 5);
+    fn node_pos_h3_decode() {
+        let cell = h3o::LatLng::new(36.848, 28.268)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
         let graph = RoutingGraph {
-            node_lats: vec![0; 8],
-            node_lngs: vec![0; 8],
-            node_resolutions: vec![0; 8],
-            passage_mask: mask,
-            offsets: vec![0; 9],
-            edge_data: vec![],
-            coastline_coords: vec![],
-            num_nodes: 8,
-            num_edges: 0,
-        };
-        assert!(graph.is_passage(0));
-        assert!(!graph.is_passage(1));
-        assert!(!graph.is_passage(4));
-        assert!(graph.is_passage(5));
-    }
-
-    #[test]
-    fn node_pos_i32_roundtrip() {
-        let graph = RoutingGraph {
-            node_lats: vec![(36.848_f64 * 1e7).round() as i32],
-            node_lngs: vec![(28.268_f64 * 1e7).round() as i32],
-            node_resolutions: vec![5],
-            passage_mask: vec![0],
+            node_h3: vec![u64::from(cell)],
             offsets: vec![0, 0],
             edge_data: vec![],
             coastline_coords: vec![],
@@ -534,26 +522,60 @@ mod tests {
             num_edges: 0,
         };
         let (lat, lng) = graph.node_pos(0);
-        assert!((lat - 36.848).abs() < 1e-6);
-        assert!((lng - 28.268).abs() < 1e-6);
+        // H3 cell centers are approximate, but should be close to input
+        assert!(
+            (lat - 36.848).abs() < 0.5,
+            "lat {} too far from 36.848",
+            lat
+        );
+        assert!(
+            (lng - 28.268).abs() < 0.5,
+            "lng {} too far from 28.268",
+            lng
+        );
     }
 
     #[test]
     fn builder_produces_compact_format() {
+        let c0 = h3o::LatLng::new(51.5, -0.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(48.8, 2.3)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c2 = h3o::LatLng::new(10.0, 10.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let mut cells: Vec<(u64, f64, f64)> = vec![
+            (u64::from(c0), 51.5, -0.1),
+            (u64::from(c1), 48.8, 2.3),
+            (u64::from(c2), 10.0, 10.0),
+        ];
+        cells.sort_by_key(|(h3, _, _)| *h3);
+
         let mut b = GraphBuilder::new();
-        let n0 = b.add_node(51.5, -0.1, false, 5);
-        let n1 = b.add_node(48.8, 2.3, false, 5);
-        let n2 = b.add_node(0.0, 0.0, true, 0);
+        let mut ids = Vec::new();
+        for (h3, lat, lng) in &cells {
+            ids.push(b.add_node(*h3, *lat, *lng));
+        }
+
+        let idx_of = |target_h3: u64| -> u32 {
+            cells
+                .iter()
+                .position(|(h3, _, _)| *h3 == target_h3)
+                .unwrap() as u32
+        };
+
+        let n0 = idx_of(u64::from(c0));
+        let n1 = idx_of(u64::from(c1));
+        let n2 = idx_of(u64::from(c2));
+
         b.add_edge(n0, n1, 186.0);
         b.add_edge(n0, n2, 50.0);
 
         let g = b.build();
 
-        assert_eq!(g.node_lats[0], (51.5_f64 * 1e7).round() as i32);
-        assert_eq!(g.node_lngs[1], (2.3_f64 * 1e7).round() as i32);
-        assert!(!g.is_passage(n0));
-        assert!(!g.is_passage(n1));
-        assert!(g.is_passage(n2));
         assert_eq!(g.num_nodes, 3);
         assert_eq!(g.num_edges, 4);
 

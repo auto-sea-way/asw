@@ -6,7 +6,7 @@ license = "MIT OR Apache-2.0"
 
 [dependencies]
 asw-core = { path = "../asw-core" }
-rstar.workspace = true
+h3o.workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde.workspace = true

@@ -12,8 +12,23 @@ use crate::shapefile::Bbox;
 /// Run the full build pipeline.
 pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()> {
     // Step 1: Load land polygons
-    let land = crate::shapefile::load_land_polygons(shp_path, None)?;
+    let mut land = crate::shapefile::load_land_polygons(shp_path, None)?;
     info!("Land index: {} polygons", land.polygon_count());
+
+    // Step 1b: Extract canal water and subtract from land
+    let work_dir = output_path.parent().unwrap_or(Path::new("."));
+    let canal_water = crate::canal_water::extract_canal_water(PASSAGES, bbox, work_dir)?;
+    if !canal_water.is_empty() {
+        info!(
+            "Subtracting {} canal water polygons from land...",
+            canal_water.len()
+        );
+        land.subtract_water(&canal_water);
+        info!(
+            "Land index after subtraction: {} polygons",
+            land.polygon_count()
+        );
+    }
 
     // Step 2: Extract coastline (needed for coastal detection in step 3)
     info!("Extracting coastline segments...");
@@ -60,8 +75,7 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     let mut id_remap = vec![0u32; sorted_cells.len()];
     for (cell, old_id) in &sorted_cells {
         let (lat, lng) = cell_center(*cell);
-        let res = cell.resolution() as u8;
-        let new_id = builder.add_node(lat, lng, false, res);
+        let new_id = builder.add_node(u64::from(*cell), lat, lng);
         id_remap[*old_id as usize] = new_id;
     }
 

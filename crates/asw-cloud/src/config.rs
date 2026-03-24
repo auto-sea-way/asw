@@ -1,5 +1,5 @@
 /// Hetzner server configuration.
-pub const HETZNER_SERVER_TYPE: &str = "ccx33";
+pub const HETZNER_SERVER_TYPE: &str = "ccx53";
 pub const HETZNER_IMAGE: &str = "ubuntu-24.04";
 pub const HETZNER_LOCATION: &str = "nbg1";
 pub const HETZNER_SERVER_NAME: &str = "asw-builder";
@@ -17,7 +17,8 @@ pub const LAND_POLYGONS_URL: &str =
     "https://osmdata.openstreetmap.de/download/land-polygons-split-4326.zip";
 
 /// Packages to install during bootstrap.
-pub const BOOTSTRAP_PACKAGES: &str = "wget unzip curl build-essential pkg-config libssl-dev";
+pub const BOOTSTRAP_PACKAGES: &str =
+    "wget unzip curl build-essential pkg-config libssl-dev osmium-tool";
 
 /// Bounding box presets: (min_lon, min_lat, max_lon, max_lat).
 pub const DEV_BBOX: (f64, f64, f64, f64) = (-5.0, 48.0, 10.0, 62.0);
