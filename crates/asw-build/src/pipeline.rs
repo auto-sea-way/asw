@@ -19,9 +19,15 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     let work_dir = output_path.parent().unwrap_or(Path::new("."));
     let canal_water = crate::canal_water::extract_canal_water(PASSAGES, bbox, work_dir)?;
     if !canal_water.is_empty() {
-        info!("Subtracting {} canal water polygons from land...", canal_water.len());
+        info!(
+            "Subtracting {} canal water polygons from land...",
+            canal_water.len()
+        );
         land.subtract_water(&canal_water);
-        info!("Land index after subtraction: {} polygons", land.polygon_count());
+        info!(
+            "Land index after subtraction: {} polygons",
+            land.polygon_count()
+        );
     }
 
     // Step 2: Extract coastline (needed for coastal detection in step 3)

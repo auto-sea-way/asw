@@ -199,4 +199,3 @@ fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
         .collect();
     Some(Polygon::new(exterior, holes))
 }
-

@@ -50,7 +50,9 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (9.05, 53.85, 10.20, 54.40),
         zone_resolution: 5,
         leaf_resolution: 11,
-        geofabrik_url: Some("https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf"),
+        geofabrik_url: Some(
+            "https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf",
+        ),
         water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
@@ -124,7 +126,9 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (-70.65, 41.72, -70.48, 41.79),
         zone_resolution: 5,
         leaf_resolution: 12,
-        geofabrik_url: Some("https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf"),
+        geofabrik_url: Some(
+            "https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf",
+        ),
         water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
@@ -132,7 +136,9 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (-75.85, 39.40, -75.55, 39.60),
         zone_resolution: 5,
         leaf_resolution: 12,
-        geofabrik_url: Some("https://download.geofabrik.de/north-america/us/delaware-latest.osm.pbf"),
+        geofabrik_url: Some(
+            "https://download.geofabrik.de/north-america/us/delaware-latest.osm.pbf",
+        ),
         water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
@@ -140,7 +146,9 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (-79.30, 42.85, -79.15, 43.25),
         zone_resolution: 5,
         leaf_resolution: 13,
-        geofabrik_url: Some("https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf"),
+        geofabrik_url: Some(
+            "https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf",
+        ),
         water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
 ];

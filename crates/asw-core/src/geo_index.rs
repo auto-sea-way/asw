@@ -116,18 +116,15 @@ impl LandIndex {
         let water_tree = RTree::bulk_load(water_entries);
 
         // Compute water bounding box for quick global filtering
-        let water_envelope = water_polygons
-            .iter()
-            .map(bounding_rect)
-            .fold(
-                ([f64::MAX, f64::MAX], [f64::MIN, f64::MIN]),
-                |(acc_min, acc_max), (min, max)| {
-                    (
-                        [acc_min[0].min(min[0]), acc_min[1].min(min[1])],
-                        [acc_max[0].max(max[0]), acc_max[1].max(max[1])],
-                    )
-                },
-            );
+        let water_envelope = water_polygons.iter().map(bounding_rect).fold(
+            ([f64::MAX, f64::MAX], [f64::MIN, f64::MIN]),
+            |(acc_min, acc_max), (min, max)| {
+                (
+                    [acc_min[0].min(min[0]), acc_min[1].min(min[1])],
+                    [acc_max[0].max(max[0]), acc_max[1].max(max[1])],
+                )
+            },
+        );
         let water_envelope = AABB::from_corners(water_envelope.0, water_envelope.1);
 
         let candidates: Vec<LandPolygon> = self.tree.iter().cloned().collect();
@@ -138,7 +135,9 @@ impl LandIndex {
             .count();
         info!(
             "subtract_water: {} land polygons, {} intersect water bbox, {} water polygons",
-            total, intersecting, water_polygons.len()
+            total,
+            intersecting,
+            water_polygons.len()
         );
 
         // Parallel BooleanOps — each land polygon only subtracts nearby water polygons
@@ -157,13 +156,9 @@ impl LandIndex {
                     return vec![lp];
                 }
                 // Subtract only the nearby water polygons
-                let water_multi = MultiPolygon::new(
-                    nearby_water.into_iter().cloned().collect(),
-                );
+                let water_multi = MultiPolygon::new(nearby_water.into_iter().cloned().collect());
                 let diff = lp.polygon.difference(&water_multi);
-                diff.into_iter()
-                    .map(LandPolygon::new)
-                    .collect::<Vec<_>>()
+                diff.into_iter().map(LandPolygon::new).collect::<Vec<_>>()
             })
             .collect();
 
