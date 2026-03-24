@@ -49,7 +49,7 @@ pub static PASSAGES: &[Passage] = &[
         name: "Kiel Canal",
         corridor: (9.05, 53.85, 10.20, 54.40),
         zone_resolution: 5,
-        leaf_resolution: 11,
+        leaf_resolution: 13, // bumped from 11 — entrance/exit need 3.5m edges to connect
         geofabrik_url: Some("https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf"),
         water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
