@@ -13,7 +13,7 @@ pub const H3_RES_LEAF: u8 = 10;
 
 /// Adaptive refinement cascade: (resolution, distance_threshold_deg).
 /// If a cell at `resolution` is closer than `threshold` to the coastline,
-/// it gets refined to `resolution + 1`. The leaf resolution (9) has no entry.
+/// it gets refined to `resolution + 1`. The leaf resolution (10) has no entry.
 ///
 /// ```text
 /// res-3: ocean        (edge ~32nm)  — threshold 0.30° (~18nm)   → refine to res-4

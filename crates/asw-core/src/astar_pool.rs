@@ -21,37 +21,35 @@ impl AstarBuffers {
     }
 }
 
-/// Pool of reusable A* buffer sets backed by a tokio mpsc channel.
+/// Pool of reusable A* buffer sets.
+/// Uses a simple Mutex<Vec> so multiple callers can acquire concurrently
+/// without serializing behind a channel receiver lock.
 pub struct AstarPool {
-    tx: tokio::sync::mpsc::Sender<AstarBuffers>,
-    rx: tokio::sync::Mutex<tokio::sync::mpsc::Receiver<AstarBuffers>>,
+    buffers: std::sync::Mutex<Vec<AstarBuffers>>,
+    num_nodes: usize,
 }
 
 impl AstarPool {
     pub fn new(num_nodes: usize, size: usize) -> Self {
-        let (tx, rx) = tokio::sync::mpsc::channel(size);
-        for _ in 0..size {
-            tx.try_send(AstarBuffers::new(num_nodes))
-                .expect("channel has capacity");
-        }
+        let buffers: Vec<AstarBuffers> = (0..size).map(|_| AstarBuffers::new(num_nodes)).collect();
         Self {
-            tx,
-            rx: tokio::sync::Mutex::new(rx),
+            buffers: std::sync::Mutex::new(buffers),
+            num_nodes,
         }
     }
 
-    pub async fn acquire(&self) -> AstarBuffers {
-        self.rx
-            .lock()
-            .await
-            .recv()
-            .await
-            .expect("pool channel closed")
+    /// Acquire a buffer set. If the pool is empty, allocates a new one.
+    pub fn acquire(&self) -> AstarBuffers {
+        let mut pool = self.buffers.lock().expect("pool lock poisoned");
+        pool.pop()
+            .unwrap_or_else(|| AstarBuffers::new(self.num_nodes))
     }
 
-    pub async fn release(&self, mut buf: AstarBuffers) {
+    /// Return a buffer set to the pool after resetting it.
+    pub fn release(&self, mut buf: AstarBuffers) {
         buf.reset();
-        let _ = self.tx.send(buf).await;
+        let mut pool = self.buffers.lock().expect("pool lock poisoned");
+        pool.push(buf);
     }
 }
 
@@ -84,12 +82,12 @@ mod tests {
         assert!(!buf.closed[0]);
     }
 
-    #[tokio::test]
-    async fn pool_acquire_and_release() {
+    #[test]
+    fn pool_acquire_and_release() {
         let pool = AstarPool::new(50, 2);
 
         // Acquire a buffer
-        let mut buf = pool.acquire().await;
+        let mut buf = pool.acquire();
         assert_eq!(buf.g_score.len(), 50);
 
         // Mutate it
@@ -97,11 +95,31 @@ mod tests {
         buf.closed[0] = true;
 
         // Release resets the buffer
-        pool.release(buf).await;
+        pool.release(buf);
 
         // Re-acquire — should be reset
-        let buf2 = pool.acquire().await;
+        let buf2 = pool.acquire();
         assert_eq!(buf2.g_score[0], f32::MAX);
         assert!(!buf2.closed[0]);
+    }
+
+    #[test]
+    fn pool_concurrent_acquire() {
+        let pool = std::sync::Arc::new(AstarPool::new(10, 2));
+        let mut handles = vec![];
+
+        for _ in 0..4 {
+            let p = pool.clone();
+            handles.push(std::thread::spawn(move || {
+                let buf = p.acquire();
+                assert_eq!(buf.g_score.len(), 10);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                p.release(buf);
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
     }
 }

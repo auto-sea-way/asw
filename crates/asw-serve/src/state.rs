@@ -135,9 +135,9 @@ impl AppState {
     where
         F: FnOnce(&mut asw_core::astar_pool::AstarBuffers) -> T,
     {
-        let mut buf = self.astar_pool.acquire().await;
+        let mut buf = self.astar_pool.acquire();
         let result = f(&mut buf);
-        self.astar_pool.release(buf).await;
+        self.astar_pool.release(buf);
         result
     }
 
