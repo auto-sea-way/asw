@@ -196,7 +196,6 @@ dependencies = [
  "rayon",
  "rstar 0.12.2",
  "serde",
- "tokio",
  "tracing",
  "zstd",
 ]
