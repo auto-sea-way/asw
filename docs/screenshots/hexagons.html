@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>H3 Hexagons: Panama Canal</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { margin: 0; padding: 0; }
+  #map { width: 1200px; height: 500px; }
+  .leaflet-control-zoom,
+  .leaflet-control-attribution { display: none !important; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  var resColors = {
+    3:  '#1a5276',
+    4:  '#1f618d',
+    5:  '#2471a3',
+    6:  '#2e86c1',
+    7:  '#5dade2',
+    8:  '#85c1e9',
+    9:  '#aed6f1',
+    10: '#f39c12',
+    11: '#e67e22',
+    12: '#d35400',
+    13: '#c0392b'
+  };
+
+  function getResolution(layer) {
+    var m = layer.match(/hex-res-(\d+)/);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  var map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false
+  });
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19
+  }).addTo(map);
+
+  fetch('panama-hexagons.geojson')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var layer = L.geoJSON(data, {
+        style: function(feature) {
+          var res = getResolution(feature.properties.layer);
+          var color = (res !== null && resColors[res]) ? resColors[res] : feature.properties.fill;
+          return {
+            fillColor: color,
+            fillOpacity: 0.45,
+            color: color,
+            weight: 0.8,
+            opacity: 0.7
+          };
+        }
+      }).addTo(map);
+
+      map.fitBounds(layer.getBounds(), { padding: [10, 10] });
+    });
+</script>
+</body>
+</html>

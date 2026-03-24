@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Route: San Francisco to Mykolaiv</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  * { margin: 0; padding: 0; }
+  #map { width: 1200px; height: 500px; }
+  .leaflet-control-zoom,
+  .leaflet-control-attribution { display: none !important; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+  var map = L.map('map', {
+    zoomControl: false,
+    attributionControl: false
+  });
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19
+  }).addTo(map);
+
+  fetch('route-sf-mykolaiv.geojson')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var coords = data.geometry.coordinates;
+      var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+
+      L.polyline(latlngs, {
+        color: '#2d8a4e',
+        weight: 3,
+        opacity: 0.9
+      }).addTo(map);
+
+      var start = latlngs[0];
+      var end = latlngs[latlngs.length - 1];
+
+      L.circleMarker(start, {
+        radius: 6,
+        color: '#d32f2f',
+        fillColor: '#d32f2f',
+        fillOpacity: 1,
+        weight: 0
+      }).addTo(map);
+
+      L.circleMarker(end, {
+        radius: 6,
+        color: '#d32f2f',
+        fillColor: '#d32f2f',
+        fillOpacity: 1,
+        weight: 0
+      }).addTo(map);
+
+      map.fitBounds(L.latLngBounds(latlngs), { padding: [20, 20] });
+    });
+</script>
+</body>
+</html>
