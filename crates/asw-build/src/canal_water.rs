@@ -94,7 +94,11 @@ fn extract_single_passage(
             .context("Failed to download PBF")?;
         let tmp_path = pbf_path.with_extension("pbf.tmp");
         let mut file = std::fs::File::create(&tmp_path)?;
-        let bytes = std::io::copy(&mut resp, &mut file)?;
+        let result = std::io::copy(&mut resp, &mut file);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+        let bytes = result?;
         std::fs::rename(&tmp_path, &pbf_path)?;
         info!("  Downloaded {} MB", bytes / 1_000_000);
     } else {
