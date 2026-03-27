@@ -18,15 +18,7 @@ pub fn extract_canal_water(
     let canal_dir = work_dir.join("canal-water");
     std::fs::create_dir_all(&canal_dir)?;
 
-    // Check osmium is available
-    let osmium_check = Command::new("osmium").arg("--version").output();
-    if osmium_check.is_err() || !osmium_check.unwrap().status.success() {
-        anyhow::bail!(
-            "osmium-tool is required for canal water extraction. \
-             Install: apt install osmium-tool (Linux) or brew install osmium-tool (macOS)"
-        );
-    }
-
+    let mut osmium_checked = false;
     let mut all_water = Vec::new();
 
     for passage in passages {
@@ -51,6 +43,18 @@ pub fn extract_canal_water(
                 info!("Skipping canal '{}' — outside build bbox", passage.name);
                 continue;
             }
+        }
+
+        // Lazy osmium check — only on first passage that needs PBF processing
+        if !osmium_checked {
+            let osmium_check = Command::new("osmium").arg("--version").output();
+            if osmium_check.is_err() || !osmium_check.unwrap().status.success() {
+                anyhow::bail!(
+                    "osmium-tool is required for canal water extraction. \
+                     Install: apt install osmium-tool (Linux) or brew install osmium-tool (macOS)"
+                );
+            }
+            osmium_checked = true;
         }
 
         info!("Processing canal water for '{}'...", passage.name);
