@@ -199,7 +199,7 @@ fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
         coords[0]
             .iter()
             .filter_map(|c| {
-                let x = *c.get(0)?;
+                let x = *c.first()?;
                 let y = *c.get(1)?;
                 Some(Coord { x, y })
             })
@@ -214,7 +214,7 @@ fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
             LineString::new(
                 ring.iter()
                     .filter_map(|c| {
-                        let x = *c.get(0)?;
+                        let x = *c.first()?;
                         let y = *c.get(1)?;
                         Some(Coord { x, y })
                     })
