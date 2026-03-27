@@ -10,6 +10,7 @@ auto-sea-way — open source maritime auto-routing. Generates a global water-sur
 
 ```bash
 # Local build (requires land_polygons.shp or directory of split shapefiles)
+# Canal water extraction also requires osmium-tool: apt install osmium-tool (Linux) or brew install osmium-tool (macOS)
 cargo build --release -p asw-cli
 ./target/release/asw build --shp path/to/land-polygons-split-4326 --output export/asw.graph
 
