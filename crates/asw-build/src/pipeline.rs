@@ -30,11 +30,11 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
         );
     }
 
-    // Step 2: Extract coastline (needed for coastal detection in step 3)
+    // Step 2: Extract coastline from post-subtraction land (includes canal waterway boundaries)
     info!("Extracting coastline segments...");
-    let raw_polygons = crate::shapefile::load_raw_polygons(shp_path, None)?;
+    let land_polygons = land.polygons();
     let (coastline_segments, mut coastline_coords) =
-        crate::coastline::extract_coastline(&raw_polygons);
+        crate::coastline::extract_coastline(&land_polygons);
     let coastline_index = CoastlineIndex::new(coastline_segments);
     info!("Coastline: {} segments", coastline_index.segment_count());
 
