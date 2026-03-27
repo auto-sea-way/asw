@@ -194,12 +194,30 @@ fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
     let exterior = LineString::new(
         coords[0]
             .iter()
-            .map(|c| Coord { x: c[0], y: c[1] })
+            .filter_map(|c| {
+                let x = *c.get(0)?;
+                let y = *c.get(1)?;
+                Some(Coord { x, y })
+            })
             .collect(),
     );
+    if exterior.0.len() < 3 {
+        return None;
+    }
     let holes: Vec<LineString<f64>> = coords[1..]
         .iter()
-        .map(|ring| LineString::new(ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect()))
+        .map(|ring| {
+            LineString::new(
+                ring.iter()
+                    .filter_map(|c| {
+                        let x = *c.get(0)?;
+                        let y = *c.get(1)?;
+                        Some(Coord { x, y })
+                    })
+                    .collect(),
+            )
+        })
+        .filter(|ls| ls.0.len() >= 3)
         .collect();
     Some(Polygon::new(exterior, holes))
 }
