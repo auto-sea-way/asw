@@ -91,8 +91,8 @@ impl AppState {
     }
 
     /// Approximate H3 edge length in nautical miles, indexed by resolution (3..=13).
-    /// Used for early-termination: skip coarser resolutions when current best is already
-    /// closer than one cell edge.
+    /// Used for early-termination: skip this resolution if current best is already
+    /// closer than the cell edge length.
     const H3_EDGE_NM: [f64; 14] = [
         0.0, 0.0, 0.0,   // res 0-2: unused
         35.0,  // res 3
@@ -119,7 +119,6 @@ impl AppState {
     }
 
     /// Search a single resolution with k-ring up to `k_max`, updating `best`.
-    /// Returns true if any main-component node was found at this resolution.
     fn search_resolution(
         &self,
         ll: &h3o::LatLng,
@@ -128,10 +127,10 @@ impl AppState {
         res_u8: u8,
         k_max: u32,
         best: &mut Option<(u32, f64)>,
-    ) -> bool {
+    ) {
         let res = match h3o::Resolution::try_from(res_u8) {
             Ok(r) => r,
-            Err(_) => return false,
+            Err(_) => return,
         };
         let cell = ll.to_cell(res);
         for k in 0..=k_max {
@@ -140,23 +139,22 @@ impl AppState {
                 let nh3 = u64::from(neighbor);
                 if let Some(node_id) = self.h3_lookup(nh3) {
                     if self.component_labels[node_id as usize] == self.main_component {
+                        found_at_k = true;
                         let (nlat, nlon) = self.graph.node_pos(node_id);
                         let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
                         if best.is_none_or(|(_, d)| dist < d) {
                             *best = Some((node_id, dist));
-                            found_at_k = true;
                         }
                     }
                 }
             }
             if found_at_k {
-                return true;
+                return;
             }
         }
-        false
     }
 
-    /// Find nearest node in the main connected component using H3 binary search.
+    /// Find nearest node in the main connected component via two-pass adaptive k-ring expansion.
     ///
     /// Two-pass approach:
     /// - Pass 1 (fast): k=3 at each resolution, fine→coarse. Handles 99% of queries.

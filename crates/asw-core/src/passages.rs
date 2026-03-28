@@ -25,7 +25,7 @@ pub struct Passage {
 /// Leaf resolution guidelines by canal width:
 /// - ~200m+ (Suez): res-11 (25m edge)
 /// - ~33m (Panama locks): res-13 (3.5m edge)
-/// - ~100m (Kiel): res-11 (25m edge)
+/// - ~15m locks (Kiel): res-13 (3.5m edge)
 /// - ~25m (Corinth): res-13 (3.5m edge)
 /// - Wide straits (Bosphorus, Dover, etc.): res-10
 pub static PASSAGES: &[Passage] = &[
@@ -49,7 +49,7 @@ pub static PASSAGES: &[Passage] = &[
         name: "Kiel Canal",
         corridor: (9.05, 53.85, 10.20, 54.40),
         zone_resolution: 5,
-        leaf_resolution: 11,
+        leaf_resolution: 13, // bumped from 11 — lock entrances need 3.5m edges
         geofabrik_url: Some(
             "https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf",
         ),

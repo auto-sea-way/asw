@@ -99,6 +99,12 @@ impl LandIndex {
         self.tree.size()
     }
 
+    /// Extract all land polygons from the R-tree.
+    /// Used to get post-subtraction polygons for coastline extraction.
+    pub fn polygons(&self) -> Vec<Polygon<f64>> {
+        self.tree.iter().map(|lp| lp.polygon.clone()).collect()
+    }
+
     /// Subtract water polygons from land, creating holes where canals exist.
     /// Uses a water R-tree to find only the relevant water polygons per land polygon,
     /// then applies BooleanOps difference in parallel via rayon.

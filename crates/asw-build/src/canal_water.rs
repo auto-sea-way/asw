@@ -18,15 +18,7 @@ pub fn extract_canal_water(
     let canal_dir = work_dir.join("canal-water");
     std::fs::create_dir_all(&canal_dir)?;
 
-    // Check osmium is available
-    let osmium_check = Command::new("osmium").arg("--version").output();
-    if osmium_check.is_err() || !osmium_check.unwrap().status.success() {
-        anyhow::bail!(
-            "osmium-tool is required for canal water extraction. \
-             Install: apt install osmium-tool (Linux) or brew install osmium-tool (macOS)"
-        );
-    }
-
+    let mut osmium_checked = false;
     let mut all_water = Vec::new();
 
     for passage in passages {
@@ -51,6 +43,18 @@ pub fn extract_canal_water(
                 info!("Skipping canal '{}' — outside build bbox", passage.name);
                 continue;
             }
+        }
+
+        // Lazy osmium check — only on first passage that needs PBF processing
+        if !osmium_checked {
+            let osmium_check = Command::new("osmium").arg("--version").output();
+            if osmium_check.is_err() || !osmium_check.unwrap().status.success() {
+                anyhow::bail!(
+                    "osmium-tool is required for canal water extraction. \
+                     Install: apt install osmium-tool (Linux) or brew install osmium-tool (macOS)"
+                );
+            }
+            osmium_checked = true;
         }
 
         info!("Processing canal water for '{}'...", passage.name);
@@ -90,7 +94,11 @@ fn extract_single_passage(
             .context("Failed to download PBF")?;
         let tmp_path = pbf_path.with_extension("pbf.tmp");
         let mut file = std::fs::File::create(&tmp_path)?;
-        let bytes = std::io::copy(&mut resp, &mut file)?;
+        let result = std::io::copy(&mut resp, &mut file);
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+        let bytes = result?;
         std::fs::rename(&tmp_path, &pbf_path)?;
         info!("  Downloaded {} MB", bytes / 1_000_000);
     } else {
@@ -190,12 +198,30 @@ fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
     let exterior = LineString::new(
         coords[0]
             .iter()
-            .map(|c| Coord { x: c[0], y: c[1] })
+            .filter_map(|c| {
+                let x = *c.first()?;
+                let y = *c.get(1)?;
+                Some(Coord { x, y })
+            })
             .collect(),
     );
+    if exterior.0.len() < 3 {
+        return None;
+    }
     let holes: Vec<LineString<f64>> = coords[1..]
         .iter()
-        .map(|ring| LineString::new(ring.iter().map(|c| Coord { x: c[0], y: c[1] }).collect()))
+        .map(|ring| {
+            LineString::new(
+                ring.iter()
+                    .filter_map(|c| {
+                        let x = *c.first()?;
+                        let y = *c.get(1)?;
+                        Some(Coord { x, y })
+                    })
+                    .collect(),
+            )
+        })
+        .filter(|ls| ls.0.len() >= 3)
         .collect();
     Some(Polygon::new(exterior, holes))
 }
