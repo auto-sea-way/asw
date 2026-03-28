@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-28
+
+### Added
+
+- Build-time component pruning: keep only the largest connected component, removing ~1.65M disconnected nodes in ~91.5K small components
+- `LandIndex::polygons()` method for accessing post-subtraction land polygons
+
+### Fixed
+
+- Kiel Canal routing: bumped from res-11 to res-13 for lock entrance/exit connectivity (was routing around Denmark at 409 nm, now 84 nm through canal)
+- Coastline extraction now uses post-subtraction land polygons — canal waterway boundaries included in coastline index, fixing route over-smoothing near canals
+- Safe coordinate parsing in `coords_to_polygon` — skip malformed GeoJSON instead of panicking on short coordinate arrays
+- Deferred osmium availability check — builds without osmium-tool no longer fail when no canals are in the build region
+- Partial `.pbf.tmp` cleanup on download failure
+- `nearest_node` `found_at_k` semantics: stop k-ring expansion when any main-component node is found, not only when improving best distance
+
+### Changed
+
+- Planet graph: 39.8M nodes / 302M edges (was 41.3M / 310M — pruned nodes were disconnected fragments)
+- `search_resolution` returns `()` instead of unused `bool`
+- Updated doc comments for `nearest_node` (two-pass adaptive k-ring, not "H3 binary search") and `H3_EDGE_NM`
+
+### Documentation
+
+- Added osmium-tool prerequisite to CLAUDE.md build instructions
+
 ## [0.3.1] - 2026-03-24
 
 ### Fixed
