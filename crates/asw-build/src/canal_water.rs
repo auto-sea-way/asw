@@ -181,46 +181,37 @@ fn extract_single_passage(
     Ok(polygons)
 }
 
-fn geojson_geometry_to_polygons(value: &geojson::Value) -> Vec<Polygon<f64>> {
+fn geojson_geometry_to_polygons(value: &geojson::GeometryValue) -> Vec<Polygon<f64>> {
     match value {
-        geojson::Value::Polygon(coords) => coords_to_polygon(coords).into_iter().collect(),
-        geojson::Value::MultiPolygon(multi) => {
-            multi.iter().filter_map(|c| coords_to_polygon(c)).collect()
+        geojson::GeometryValue::Polygon { coordinates } => {
+            coords_to_polygon(coordinates).into_iter().collect()
         }
+        geojson::GeometryValue::MultiPolygon { coordinates } => coordinates
+            .iter()
+            .filter_map(|c| coords_to_polygon(c))
+            .collect(),
         _ => vec![],
     }
 }
 
-fn coords_to_polygon(coords: &[Vec<Vec<f64>>]) -> Option<Polygon<f64>> {
+fn position_to_coord(p: &geojson::Position) -> Option<Coord<f64>> {
+    if p.len() < 2 {
+        return None;
+    }
+    Some(Coord { x: p[0], y: p[1] })
+}
+
+fn coords_to_polygon(coords: &[Vec<geojson::Position>]) -> Option<Polygon<f64>> {
     if coords.is_empty() {
         return None;
     }
-    let exterior = LineString::new(
-        coords[0]
-            .iter()
-            .filter_map(|c| {
-                let x = *c.first()?;
-                let y = *c.get(1)?;
-                Some(Coord { x, y })
-            })
-            .collect(),
-    );
+    let exterior = LineString::new(coords[0].iter().filter_map(position_to_coord).collect());
     if exterior.0.len() < 3 {
         return None;
     }
     let holes: Vec<LineString<f64>> = coords[1..]
         .iter()
-        .map(|ring| {
-            LineString::new(
-                ring.iter()
-                    .filter_map(|c| {
-                        let x = *c.first()?;
-                        let y = *c.get(1)?;
-                        Some(Coord { x, y })
-                    })
-                    .collect(),
-            )
-        })
+        .map(|ring| LineString::new(ring.iter().filter_map(position_to_coord).collect()))
         .filter(|ls| ls.0.len() >= 3)
         .collect();
     Some(Polygon::new(exterior, holes))
