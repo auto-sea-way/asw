@@ -165,6 +165,20 @@
             permanent: true, direction: 'right', className: 'cum-label', offset: [8, 0]
           });
         }
+
+        marker.on('click', (e) => {
+          if (!routeToolActive) return;
+          L.DomEvent.stopPropagation(e);
+          waypoints.splice(i, 1);
+          recompute();
+        });
+
+        marker.on('dragend', (e) => {
+          if (!routeToolActive) return;
+          const { lat, lng } = e.target.getLatLng();
+          waypoints[i] = { lat, lon: lng };
+          recompute();
+        });
       });
 
       segments.forEach((seg, i) => {
