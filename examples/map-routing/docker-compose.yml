@@ -1,0 +1,11 @@
+services:
+  asw:
+    build:
+      context: ../..
+      dockerfile: examples/map-routing/Dockerfile
+    volumes:
+      - ../../export/planet.graph:/data/asw.graph:ro
+    ports:
+      - "3000:3000"
+    env_file:
+      - ../../.env
