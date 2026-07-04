@@ -214,6 +214,7 @@ dependencies = [
  "subtle",
  "tokio",
  "tower",
+ "tower-http",
  "tracing",
 ]
 

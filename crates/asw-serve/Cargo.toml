@@ -15,6 +15,7 @@ geojson.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 subtle = "2"
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
