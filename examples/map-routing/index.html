@@ -52,6 +52,24 @@
 
     let waypoints = [];
     let routeToolActive = false;
+    let history = [];
+
+    function pushHistory() {
+      history.push(waypoints.map((w) => ({ ...w })));
+    }
+
+    function undo() {
+      if (history.length === 0) return;
+      waypoints = history.pop();
+      recompute();
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        undo();
+      }
+    });
     const layerGroup = L.layerGroup().addTo(map);
 
     const wpIcon = L.divIcon({
@@ -72,12 +90,14 @@
     });
 
     clearBtn.addEventListener('click', () => {
+      pushHistory();
       waypoints = [];
       recompute();
     });
 
     map.on('click', (e) => {
       if (!routeToolActive) return;
+      pushHistory();
       waypoints.push({ lat: e.latlng.lat, lon: e.latlng.lng });
       recompute();
     });
@@ -169,12 +189,14 @@
         marker.on('click', (e) => {
           if (!routeToolActive) return;
           L.DomEvent.stopPropagation(e);
+          pushHistory();
           waypoints.splice(i, 1);
           recompute();
         });
 
         marker.on('dragend', (e) => {
           if (!routeToolActive) return;
+          pushHistory();
           const { lat, lng } = e.target.getLatLng();
           waypoints[i] = { lat, lon: lng };
           recompute();
