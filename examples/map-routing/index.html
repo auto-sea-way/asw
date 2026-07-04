@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>ASW Sea Route Demo</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; }
+    #map { position: absolute; top: 0; bottom: 0; left: 0; right: 0; }
+    .panel {
+      position: absolute; top: 10px; left: 10px; z-index: 1000;
+      background: white; padding: 10px 14px; border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2); font-family: sans-serif; font-size: 13px;
+    }
+    .panel button {
+      margin-right: 6px; padding: 4px 10px; cursor: pointer;
+      border: 1px solid #999; border-radius: 4px; background: #f5f5f5;
+    }
+    .panel button.active { background: #0066ff; color: white; border-color: #0066ff; }
+    .wp-marker .wp-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #0066ff; border: 2px solid #fff;
+      box-shadow: 0 0 2px rgba(0,0,0,0.6);
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="panel">
+    <button id="toggleBtn">Route Tool: Off</button>
+    <button id="clearBtn">Clear</button>
+  </div>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const API_BASE = 'http://localhost:3000';
+    const API_KEY = 'dev-local-key';
+
+    const map = L.map('map').setView([36.75, 28.7], 8);
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    }).addTo(map);
+    L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
+      maxZoom: 18,
+      attribution: '&copy; OpenSeaMap'
+    }).addTo(map);
+
+    let waypoints = [];
+    let routeToolActive = false;
+    const layerGroup = L.layerGroup().addTo(map);
+
+    const wpIcon = L.divIcon({
+      className: 'wp-marker',
+      html: '<div class="wp-dot"></div>',
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+
+    const toggleBtn = document.getElementById('toggleBtn');
+    const clearBtn = document.getElementById('clearBtn');
+
+    toggleBtn.addEventListener('click', () => {
+      routeToolActive = !routeToolActive;
+      toggleBtn.textContent = 'Route Tool: ' + (routeToolActive ? 'On' : 'Off');
+      toggleBtn.classList.toggle('active', routeToolActive);
+      recompute();
+    });
+
+    clearBtn.addEventListener('click', () => {
+      waypoints = [];
+      recompute();
+    });
+
+    map.on('click', (e) => {
+      if (!routeToolActive) return;
+      waypoints.push({ lat: e.latlng.lat, lon: e.latlng.lng });
+      recompute();
+    });
+
+    function recompute() {
+      layerGroup.clearLayers();
+      waypoints.forEach((wp) => {
+        L.marker([wp.lat, wp.lon], { icon: wpIcon, draggable: routeToolActive }).addTo(layerGroup);
+      });
+    }
+  </script>
+</body>
+</html>
