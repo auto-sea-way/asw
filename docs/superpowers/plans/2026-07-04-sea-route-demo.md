@@ -146,6 +146,8 @@ git commit -m "feat(serve): add permissive CORS layer for local browser demos"
 
 The root `Dockerfile` only `COPY`s a pre-built `asw-linux-${TARGETARCH}` binary produced by CI's cross-compilation matrix — it isn't buildable standalone with `docker build .` on a dev machine, and the published `ghcr.io/auto-sea-way/asw` images predate the Task 1 CORS patch. This Dockerfile builds `asw-cli` from source instead, inside the Linux build container, so no cross-compilation toolchain is needed on the host.
 
+Note the runtime base image differs from the root Dockerfile's `gcr.io/distroless/static-debian12`. That image only runs **statically-linked** binaries — the root Dockerfile's binaries are cross-compiled to the `*-unknown-linux-musl` target specifically to produce one (see `.github/workflows/release.yml`'s release matrix, which uses `cross build --target x86_64/aarch64-unknown-linux-musl`). A plain `cargo build --release` here produces an ordinary dynamically-linked glibc binary, which needs `gcr.io/distroless/cc-debian12` (glibc + libgcc included) instead. Using `static-debian12` with a glibc binary fails at container start with `exec ... no such file or directory` (the glibc dynamic loader is missing). Don't introduce a musl/`cross` toolchain to match the root Dockerfile exactly — for a single-machine local demo, the plain glibc build + `cc-debian12` is simpler and correct.
+
 - [ ] **Step 1: Write the Dockerfile**
 
 ```dockerfile
@@ -154,7 +156,7 @@ WORKDIR /build
 COPY . .
 RUN cargo build --release -p asw-cli
 
-FROM gcr.io/distroless/static-debian12
+FROM gcr.io/distroless/cc-debian12
 COPY --from=builder /build/target/release/asw /usr/local/bin/asw
 ENV ASW_GRAPH=/data/asw.graph
 ENV ASW_HOST=0.0.0.0
