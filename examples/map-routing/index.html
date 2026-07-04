@@ -22,6 +22,11 @@
       background: #0066ff; border: 2px solid #fff;
       box-shadow: 0 0 2px rgba(0,0,0,0.6);
     }
+    .cum-label, .seg-label {
+      background: white; border: 1px solid #333; border-radius: 4px;
+      padding: 1px 5px; font-size: 11px; font-family: monospace; white-space: nowrap;
+    }
+    .seg-label.error { color: #d32f2f; border-color: #d32f2f; }
   </style>
 </head>
 <body>
@@ -33,7 +38,7 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script>
     const API_BASE = 'http://localhost:3000';
-    const API_KEY = 'dev-local-key';
+    const API_KEY = 'test-api-key';
 
     const map = L.map('map').setView([36.75, 28.7], 8);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
@@ -77,10 +82,111 @@
       recompute();
     });
 
-    function recompute() {
+    function haversineNm(lat1, lon1, lat2, lon2) {
+      const R_NM = 3440.065;
+      const toRad = (d) => d * Math.PI / 180;
+      const dLat = toRad(lat2 - lat1);
+      const dLon = toRad(lon2 - lon1);
+      const a = Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+      return R_NM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // coords: GeoJSON LineString coordinates, [[lon, lat], ...].
+    // Returns [lat, lon] at the point halfway along the polyline's own
+    // length (arc-length midpoint), not the straight line between its ends.
+    function midpointAlongLine(coords) {
+      if (coords.length === 1) return [coords[0][1], coords[0][0]];
+      const segLens = [];
+      let total = 0;
+      for (let i = 0; i < coords.length - 1; i++) {
+        const [lon1, lat1] = coords[i];
+        const [lon2, lat2] = coords[i + 1];
+        const d = haversineNm(lat1, lon1, lat2, lon2);
+        segLens.push(d);
+        total += d;
+      }
+      let target = total / 2;
+      for (let i = 0; i < segLens.length; i++) {
+        if (target <= segLens[i] || i === segLens.length - 1) {
+          const t = segLens[i] === 0 ? 0 : target / segLens[i];
+          const [lon1, lat1] = coords[i];
+          const [lon2, lat2] = coords[i + 1];
+          return [lat1 + (lat2 - lat1) * t, lon1 + (lon2 - lon1) * t];
+        }
+        target -= segLens[i];
+      }
+      const last = coords[coords.length - 1];
+      return [last[1], last[0]];
+    }
+
+    async function fetchSegment(from, to) {
+      const url = `${API_BASE}/route?from=${from.lat},${from.lon}&to=${to.lat},${to.lon}`;
+      try {
+        const resp = await fetch(url, { headers: { 'X-Api-Key': API_KEY } });
+        if (!resp.ok) return { ok: false };
+        const data = await resp.json();
+        return { ok: true, distanceNm: data.distance_nm, coordinates: data.geometry.coordinates };
+      } catch (err) {
+        return { ok: false };
+      }
+    }
+
+    async function recompute() {
       layerGroup.clearLayers();
-      waypoints.forEach((wp) => {
-        L.marker([wp.lat, wp.lon], { icon: wpIcon, draggable: routeToolActive }).addTo(layerGroup);
+      if (waypoints.length === 0) return;
+
+      const segmentPromises = [];
+      for (let i = 0; i < waypoints.length - 1; i++) {
+        segmentPromises.push(fetchSegment(waypoints[i], waypoints[i + 1]));
+      }
+      const segments = await Promise.all(segmentPromises);
+
+      let cumulative = 0;
+      let broken = false;
+      const cumulativeAtPoint = [0];
+      for (let i = 0; i < segments.length; i++) {
+        if (!broken && segments[i].ok) {
+          cumulative += segments[i].distanceNm;
+          cumulativeAtPoint.push(cumulative);
+        } else {
+          broken = true;
+          cumulativeAtPoint.push(null);
+        }
+      }
+
+      waypoints.forEach((wp, i) => {
+        const marker = L.marker([wp.lat, wp.lon], { icon: wpIcon, draggable: routeToolActive })
+          .addTo(layerGroup);
+
+        if (i > 0) {
+          const label = cumulativeAtPoint[i] === null ? '—' : `${cumulativeAtPoint[i].toFixed(1)} nm`;
+          marker.bindTooltip(label, {
+            permanent: true, direction: 'right', className: 'cum-label', offset: [8, 0]
+          });
+        }
+      });
+
+      segments.forEach((seg, i) => {
+        if (seg.ok) {
+          const latlngs = seg.coordinates.map((c) => [c[1], c[0]]);
+          L.polyline(latlngs, { color: '#0066ff', weight: 4, opacity: 0.9 }).addTo(layerGroup);
+          const mid = midpointAlongLine(seg.coordinates);
+          L.marker(mid, {
+            icon: L.divIcon({ className: 'seg-label', html: `${seg.distanceNm.toFixed(1)} nm`, iconSize: null })
+          }).addTo(layerGroup);
+        } else {
+          const latlngs = [
+            [waypoints[i].lat, waypoints[i].lon],
+            [waypoints[i + 1].lat, waypoints[i + 1].lon]
+          ];
+          L.polyline(latlngs, { color: '#d32f2f', weight: 3, opacity: 0.9, dashArray: '6 6' }).addTo(layerGroup);
+          const midLat = (waypoints[i].lat + waypoints[i + 1].lat) / 2;
+          const midLon = (waypoints[i].lon + waypoints[i + 1].lon) / 2;
+          L.marker([midLat, midLon], {
+            icon: L.divIcon({ className: 'seg-label error', html: 'no route found', iconSize: null })
+          }).addTo(layerGroup);
+        }
       });
     }
   </script>
