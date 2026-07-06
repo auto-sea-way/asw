@@ -289,6 +289,27 @@ mod distance_tests {
         let d = coast().segment_min_distance_nm(27.9, 36.5, 28.1, 36.5, 5.1);
         assert_eq!(d, 0.0);
     }
+
+    #[test]
+    fn point_distance_across_antimeridian() {
+        // Coastline just west of the seam; query point just east of it.
+        let line = LineString::from(vec![(179.98, -0.5), (179.98, 0.5)]);
+        let idx = CoastlineIndex::new(vec![CoastlineSegment::new(line)]);
+        // 0.03 deg of longitude at the equator = 1.8 nm, across the seam
+        let d = idx.min_distance_nm(-179.99, 0.0, 5.1);
+        assert!((d - 1.8).abs() < 0.05, "got {d}, expected 1.8");
+    }
+
+    #[test]
+    fn segment_distance_across_antimeridian() {
+        // Coastline north of a seam-crossing query segment.
+        let line = LineString::from(vec![(179.98, 0.05), (179.98, 0.2)]);
+        let idx = CoastlineIndex::new(vec![CoastlineSegment::new(line)]);
+        // Horizontal query at the equator crossing the seam: closest approach
+        // is the coastline's south endpoint, 0.05 deg lat = 3.0 nm.
+        let d = idx.segment_min_distance_nm(179.9, 0.0, -179.9, 0.0, 5.1);
+        assert!((d - 3.0).abs() < 0.05, "got {d}, expected 3.0");
+    }
 }
 ```
 
@@ -317,14 +338,29 @@ fn nm_frame(c: Coord<f64>, ref_lon: f64, ref_lat: f64, coslat: f64) -> Coord<f64
 }
 ```
 
-Add to `impl CoastlineIndex`:
+Add to `impl CoastlineIndex`. **Antimeridian handling is required** — follow the patterns commit `747c757` established in this file: stored segments always live within [-180, 180], `split_at_antimeridian(lon1, lat1, lon2, lat2)` (existing free function) splits a seam-crossing query segment, and shifted-by-±360 retries mirror `transmeridian_variants`. Iterate candidate segments via `seg.line.lines()` (allocation-free), not by collecting coords.
 
 ```rust
     /// Minimum distance in nautical miles from (lon, lat) to any coastline
     /// segment, capped at `max_nm`. Returns `max_nm` when no segment lies
     /// within the search envelope.
+    ///
+    /// Antimeridian-aware: when the buffer-expanded envelope overflows
+    /// lon +/-180, the query also runs shifted by -/+360 (stored segments
+    /// always live within [-180, 180]) and the minimum is taken.
     pub fn min_distance_nm(&self, lon: f64, lat: f64, max_nm: f64) -> f64 {
         let coslat = cos_lat_clamped(lat);
+        let dlon = max_nm / (60.0 * coslat);
+        let mut best = self.min_distance_nm_planar(lon, lat, max_nm, coslat);
+        if lon + dlon > 180.0 {
+            best = best.min(self.min_distance_nm_planar(lon - 360.0, lat, max_nm, coslat));
+        } else if lon - dlon < -180.0 {
+            best = best.min(self.min_distance_nm_planar(lon + 360.0, lat, max_nm, coslat));
+        }
+        best
+    }
+
+    fn min_distance_nm_planar(&self, lon: f64, lat: f64, max_nm: f64, coslat: f64) -> f64 {
         let dlat = max_nm / 60.0;
         let dlon = max_nm / (60.0 * coslat);
         let envelope =
@@ -333,10 +369,9 @@ Add to `impl CoastlineIndex`:
         let origin = Coord { x: 0.0, y: 0.0 };
         let mut best = max_nm;
         for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
-            let coords: Vec<_> = seg.line.coords().collect();
-            for w in coords.windows(2) {
-                let a = nm_frame(*w[0], lon, lat, coslat);
-                let b = nm_frame(*w[1], lon, lat, coslat);
+            for line in seg.line.lines() {
+                let a = nm_frame(line.start, lon, lat, coslat);
+                let b = nm_frame(line.end, lon, lat, coslat);
                 let d = point_to_segment_dist(origin, a, b);
                 if d < best {
                     best = d;
@@ -350,7 +385,59 @@ Add to `impl CoastlineIndex`:
     /// coastline segment, capped at `max_nm`. Returns 0.0 on intersection.
     /// For non-intersecting segments the minimum is attained at an endpoint,
     /// so the four endpoint-to-segment distances are exact.
+    ///
+    /// Seam-crossing query segments are split at lon +/-180 first (same
+    /// predicate as `crosses_land`); each half also retries shifted by
+    /// -/+360 when its buffer-expanded envelope overflows the seam.
     pub fn segment_min_distance_nm(
+        &self,
+        lon1: f64,
+        lat1: f64,
+        lon2: f64,
+        lat2: f64,
+        max_nm: f64,
+    ) -> f64 {
+        if (lon1 - lon2).abs() > 180.0 {
+            let (a, b) = split_at_antimeridian(lon1, lat1, lon2, lat2);
+            return self
+                .segment_min_distance_nm_wrapped(a.0, a.1, a.2, a.3, max_nm)
+                .min(self.segment_min_distance_nm_wrapped(b.0, b.1, b.2, b.3, max_nm));
+        }
+        self.segment_min_distance_nm_wrapped(lon1, lat1, lon2, lat2, max_nm)
+    }
+
+    fn segment_min_distance_nm_wrapped(
+        &self,
+        lon1: f64,
+        lat1: f64,
+        lon2: f64,
+        lat2: f64,
+        max_nm: f64,
+    ) -> f64 {
+        let coslat = cos_lat_clamped((lat1 + lat2) / 2.0);
+        let dlon = max_nm / (60.0 * coslat);
+        let mut best = self.segment_min_distance_nm_planar(lon1, lat1, lon2, lat2, max_nm);
+        if lon1.max(lon2) + dlon > 180.0 {
+            best = best.min(self.segment_min_distance_nm_planar(
+                lon1 - 360.0,
+                lat1,
+                lon2 - 360.0,
+                lat2,
+                max_nm,
+            ));
+        } else if lon1.min(lon2) - dlon < -180.0 {
+            best = best.min(self.segment_min_distance_nm_planar(
+                lon1 + 360.0,
+                lat1,
+                lon2 + 360.0,
+                lat2,
+                max_nm,
+            ));
+        }
+        best
+    }
+
+    fn segment_min_distance_nm_planar(
         &self,
         lon1: f64,
         lat1: f64,
@@ -373,10 +460,9 @@ Add to `impl CoastlineIndex`:
 
         let mut best = max_nm;
         for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
-            let coords: Vec<_> = seg.line.coords().collect();
-            for w in coords.windows(2) {
-                let ca = nm_frame(*w[0], lon1, ref_lat, coslat);
-                let cb = nm_frame(*w[1], lon1, ref_lat, coslat);
+            for line in seg.line.lines() {
+                let ca = nm_frame(line.start, lon1, ref_lat, coslat);
+                let cb = nm_frame(line.end, lon1, ref_lat, coslat);
                 if query.intersects(&Line::new(ca, cb)) {
                     return 0.0;
                 }
@@ -398,7 +484,7 @@ Add to `impl CoastlineIndex`:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p asw-core distance_tests 2>&1 | tail -10`
-Expected: 6 tests PASS.
+Expected: 8 tests PASS.
 
 - [ ] **Step 5: Commit**
 

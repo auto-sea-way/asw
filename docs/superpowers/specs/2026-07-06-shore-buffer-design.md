@@ -66,6 +66,9 @@ pub fn min_distance_nm(&self, lon: f64, lat: f64, max_nm: f64) -> f64
 
 - Envelope query on the segment R-tree, search box expanded by `max_nm`
   converted to degrees with **cos(lat) correction** for longitude.
+- **Antimeridian-aware**, following the existing patterns in `geo_index.rs`:
+  seam-crossing query segments split at lon ±180 (as `crosses_land` does),
+  and queries whose expanded envelope overflows ±180 retry shifted by ∓360.
 - Exact point-to-segment distance in a local equirectangular projection:
   `dx = Δlon·cos(lat)·60`, `dy = Δlat·60` (nm). At ≤ 5 nm scale the
   approximation error is far below one quantization step.
