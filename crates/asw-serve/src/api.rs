@@ -87,6 +87,26 @@ async fn route_handler(
         )
     })?;
 
+    // Bound concurrent A* computations to the buffer pool's capacity before
+    // handing off to the blocking pool: without this, `spawn_blocking` can
+    // spin up to Tokio's 512-thread blocking pool, and each thread beyond the
+    // pool's pre-allocated buffer sets forces `AstarPool::acquire` to
+    // allocate a fresh full-size buffer set (hundreds of MB at planet scale),
+    // which can OOM a small instance under a handful of concurrent long
+    // routes (see finding 1 in the 2026-07-06 project review). Acquiring is
+    // `async`, so requests beyond the limit queue here instead of consuming a
+    // blocking-pool thread. `acquire()` only errs if the semaphore has been
+    // closed, which this server never does — map defensively to 503 rather
+    // than panicking via `unwrap`/`expect`.
+    let _permit = state.route_permits.acquire().await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Server is at capacity, please retry".into(),
+            }),
+        )
+    })?;
+
     // Run nearest-node snapping + A* + smoothing on a blocking-pool thread:
     // this is CPU-bound work (tens of ms to >1s for long routes) that must
     // not occupy a tokio worker thread, or it starves other tasks scheduled
@@ -413,6 +433,39 @@ mod tests {
         );
         assert!(json["raw_hops"].as_u64().unwrap() >= 1);
         assert_eq!(json["geometry"]["type"], "LineString");
+    }
+
+    /// More concurrent `/route` requests than the A* buffer pool holds
+    /// (`DEFAULT_POOL_SIZE` buffer sets) must all still complete successfully
+    /// — the `route_permits` semaphore queues the surplus request(s) rather
+    /// than letting them fail, panic, or force the pool to allocate beyond
+    /// its capacity (finding 1, 2026-07-06 review).
+    #[tokio::test]
+    async fn concurrent_route_requests_beyond_pool_capacity_all_succeed() {
+        let state = ready_state_with_small_graph().await;
+        let app = create_router(state);
+
+        let concurrency = asw_core::astar_pool::DEFAULT_POOL_SIZE + 1;
+        let mut handles = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let app = app.clone();
+            handles.push(tokio::spawn(async move {
+                let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")
+                    .header("X-Api-Key", "secret-key-1234567890")
+                    .body(Body::empty())
+                    .unwrap();
+                app.oneshot(req).await.unwrap()
+            }));
+        }
+
+        for handle in handles {
+            let resp = handle.await.expect("request task must not panic");
+            assert_eq!(
+                resp.status(),
+                HyperStatus::OK,
+                "every request must complete successfully, queueing rather than failing"
+            );
+        }
     }
 
     /// A query point with no reachable node (empty ready graph) must still

@@ -14,6 +14,18 @@ pub struct ServerState {
     pub inner: tokio::sync::RwLock<Option<Arc<AppState>>>,
     pub graph_path: String,
     api_key: String,
+    /// Bounds the number of `/route` requests concurrently running A* search
+    /// to the A* buffer pool's capacity (`asw_core::astar_pool::DEFAULT_POOL_SIZE`).
+    ///
+    /// Without this, `spawn_blocking` (used to run route computation off the
+    /// async executor) can spin up to Tokio's 512-thread blocking pool, and
+    /// each thread beyond the pool's pre-allocated buffer sets forces
+    /// `AstarPool::acquire` to allocate a fresh full-size buffer set
+    /// (hundreds of MB at planet scale) — a handful of concurrent long routes
+    /// can OOM a small instance. Acquiring this permit is `async`, so
+    /// requests beyond the limit queue on the `.await` point without
+    /// occupying a blocking-pool thread; see `api::route_handler`.
+    pub route_permits: tokio::sync::Semaphore,
 }
 
 impl ServerState {
@@ -26,6 +38,7 @@ impl ServerState {
             inner: tokio::sync::RwLock::new(None),
             graph_path,
             api_key,
+            route_permits: tokio::sync::Semaphore::new(asw_core::astar_pool::DEFAULT_POOL_SIZE),
         }
     }
 
@@ -66,7 +79,11 @@ pub struct AppState {
     /// Component root for each node; nodes in the main component share `main_component`.
     component_labels: Vec<u32>,
     main_component: u32,
-    /// Pre-allocated A* search buffer pool (2 buffer sets for concurrent requests).
+    /// Pre-allocated A* search buffer pool. Sized to
+    /// `asw_core::astar_pool::DEFAULT_POOL_SIZE` buffer sets; concurrent
+    /// access above that capacity is prevented upstream by
+    /// `ServerState::route_permits`, a semaphore sized to match, so requests
+    /// beyond the pool's capacity queue instead of forcing it to grow.
     astar_pool: asw_core::astar_pool::AstarPool,
 }
 
@@ -95,7 +112,10 @@ impl AppState {
                 .unwrap_or(0)
         };
 
-        let astar_pool = asw_core::astar_pool::AstarPool::new(graph.num_nodes as usize, 2);
+        let astar_pool = asw_core::astar_pool::AstarPool::new(
+            graph.num_nodes as usize,
+            asw_core::astar_pool::DEFAULT_POOL_SIZE,
+        );
 
         Self {
             graph,
