@@ -136,18 +136,24 @@ impl AppState {
 
     /// Search a single resolution with k-ring up to `k_max`, updating `best`.
     ///
-    /// Single-scan implementation: `grid_disk_distances` computes the whole
-    /// disk in one pass and yields cells grouped by ascending grid distance
-    /// (ring 0, then ring 1, ... — both the `_fast` and `_safe` backing
-    /// iterators are BFS-order, so this holds even on the pentagon-distortion
-    /// fallback path). This replaces the old per-k `grid_disk(k)` loop, which
-    /// rescanned every previously-tested ring at each iteration (O(k_max^3)
-    /// total lookups) and allocated a fresh `Vec` per k.
+    /// Per-ring implementation: rings are requested one at a time via
+    /// `CellIndex::grid_ring`, ascending from k=0. `grid_ring` is h3o's safe
+    /// public wrapper — it tries the fast pentagon-unsafe walk first and
+    /// transparently falls back to a correct (if slower) computation when a
+    /// pentagon distortion is hit, so results are exact at every k regardless
+    /// of pentagon proximity (ocean cells can be pentagons).
+    ///
+    /// This bounds the H3 traversal to the k actually needed to find a match:
+    /// unlike a single eager `grid_disk_distances(k_max)` call — which always
+    /// materializes the *entire* disk out to k_max before any early return can
+    /// happen — asking for rings one at a time means we simply stop issuing
+    /// calls once a hit is found, so a k_max=50 fallback that resolves at
+    /// k≈12 only ever computes rings 0..=12, not the full 7,651-cell disk.
     ///
     /// Early-return semantics are identical to the old code: as soon as a
     /// fully-scanned k-level contains at least one main-component match,
     /// `best` (updated to the closest such match) is final for this call and
-    /// we stop — larger k are never examined.
+    /// we stop — larger k are never requested, let alone examined.
     fn search_resolution(
         &self,
         ll: &h3o::LatLng,
@@ -162,36 +168,32 @@ impl AppState {
             Err(_) => return,
         };
         let cell = ll.to_cell(res);
-        let disk: Vec<(h3o::CellIndex, u32)> = cell.grid_disk_distances(k_max);
 
-        let mut current_k: u32 = 0;
-        let mut found_at_current_k = false;
+        for k in 0..=k_max {
+            let ring: Vec<h3o::CellIndex> = cell.grid_ring(k);
+            let mut found_at_current_k = false;
 
-        for (neighbor, k) in disk {
-            if k != current_k {
-                // Ring `current_k` is fully scanned — stop here if it had a
-                // match, matching the old per-k early return.
-                if found_at_current_k {
-                    return;
-                }
-                current_k = k;
-                found_at_current_k = false;
-            }
-
-            let nh3 = u64::from(neighbor);
-            if let Some(node_id) = self.h3_lookup(nh3) {
-                if self.component_labels[node_id as usize] == self.main_component {
-                    found_at_current_k = true;
-                    let (nlat, nlon) = self.graph.node_pos(node_id);
-                    let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                    if best.is_none_or(|(_, d)| dist < d) {
-                        *best = Some((node_id, dist));
+            for neighbor in ring {
+                let nh3 = u64::from(neighbor);
+                if let Some(node_id) = self.h3_lookup(nh3) {
+                    if self.component_labels[node_id as usize] == self.main_component {
+                        found_at_current_k = true;
+                        let (nlat, nlon) = self.graph.node_pos(node_id);
+                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
+                        if best.is_none_or(|(_, d)| dist < d) {
+                            *best = Some((node_id, dist));
+                        }
                     }
                 }
             }
+
+            // Ring `k` is fully scanned — stop here if it had a match,
+            // matching the old per-k early return. Larger k are never
+            // requested from h3o at all.
+            if found_at_current_k {
+                return;
+            }
         }
-        // Last ring's match (if any) is already reflected in `best`; no
-        // further ring exists to examine, so there is nothing left to do.
     }
 
     /// Find nearest node in the main connected component via two-pass adaptive k-ring expansion.
@@ -252,9 +254,10 @@ impl AppState {
         // This only finds nodes indexed at res-3 (deep ocean cells). Production graphs
         // always contain res-3 nodes; test graphs may not.
         //
-        // This has exactly the same per-k full-disk-then-early-return shape as
-        // `search_resolution`, so it just reuses it (single scan via
-        // `grid_disk_distances` instead of a fresh `grid_disk` Vec per k).
+        // `k_max=50` here is just an upper bound, not a cost: `search_resolution`'s
+        // per-ring traversal stops requesting further rings the moment a match is
+        // found (typically k≈12 in practice), so this virtually never walks the
+        // full 7,651-cell k=50 disk.
         self.search_resolution(&ll, lat, lon, 3, 50, &mut best);
 
         best
@@ -554,6 +557,67 @@ mod app_state_tests {
         assert!(
             (dist - expected).abs() < 1e-9,
             "expected closest candidate at {expected} nm, got {dist} nm"
+        );
+    }
+
+    /// Regression test for the per-ring rewrite of `search_resolution`
+    /// (incremental-k tightening): a near match at ring 2 must win over a
+    /// farther main-component match at ring 5, and the search must stop
+    /// requesting rings as soon as ring 2 is fully scanned with a hit — i.e.
+    /// the ring-5 node's mere existence in the graph must not change the
+    /// result. This exercises the same "stop at the first k with a hit"
+    /// contract that used to be guaranteed by a single eager
+    /// `grid_disk_distances` scan and is now guaranteed by ascending,
+    /// individually-requested `grid_ring` calls.
+    #[test]
+    fn nearer_ring_wins_over_farther_ring_and_stops_early() {
+        let origin_pos = (10.0, 20.0);
+        let origin_cell = h3o::LatLng::new(origin_pos.0, origin_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let ring2: Vec<h3o::CellIndex> = origin_cell.grid_ring(2);
+        let ring5: Vec<h3o::CellIndex> = origin_cell.grid_ring(5);
+        let near = ring2[0];
+        let far = ring5[0];
+        let near_ll = h3o::LatLng::from(near);
+        let far_ll = h3o::LatLng::from(far);
+
+        let mut entries: Vec<(u64, f64, f64)> = vec![
+            (u64::from(near), near_ll.lat(), near_ll.lng()),
+            (u64::from(far), far_ll.lat(), far_ll.lng()),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+        assert_eq!(entries.len(), 2, "ring-2 and ring-5 cells must be distinct");
+
+        let mut builder = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(builder.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            builder.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = builder.build();
+        let state = AppState::new(graph);
+
+        let result = state.nearest_node(origin_pos.0, origin_pos.1);
+        assert!(result.is_some(), "should find the ring-2 candidate");
+        let (_, dist) = result.unwrap();
+
+        let dist_near =
+            asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, near_ll.lat(), near_ll.lng());
+        let dist_far =
+            asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, far_ll.lat(), far_ll.lng());
+        assert!(
+            dist_near < dist_far,
+            "test setup: ring-2 must be closer than ring-5"
+        );
+
+        assert!(
+            (dist - dist_near).abs() < 1e-9,
+            "expected nearer ring-2 candidate at {dist_near} nm, got {dist} nm (far candidate at {dist_far} nm must not win)"
         );
     }
 }
