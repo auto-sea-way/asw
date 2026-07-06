@@ -79,29 +79,29 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 0.2ms | 0.2ms | 33>3 |
-| Aegean Hop | 25.3nm | 0.7ms | 0.7ms | 54>5 |
+| English Channel | 22.1nm | 0.3ms | 0.3ms | 33>3 |
+| Aegean Hop | 25.3nm | 0.7ms | 0.8ms | 54>5 |
 | Strait of Gibraltar | 29.4nm | 0.7ms | 0.7ms | 63>3 |
-| Baltic Crossing | 41.9nm | 1.6ms | 1.6ms | 53>5 |
-| Balearic Sea | 127.6nm | 2.2ms | 2.4ms | 114>6 |
-| Florida Strait | 89.0nm | 0.3ms | 0.4ms | 22>2 |
-| Malacca Route | 534.2nm | 39.8ms | 40.1ms | 486>19 |
-| Tasman Sea | 1265.1nm | 57.4ms | 60.6ms | 408>16 |
-| South Atlantic | 3272.3nm | 31.5ms | 31.7ms | 392>7 |
-| North Atlantic | 3040.5nm | 868ms | 903ms | 682>17 |
+| Baltic Crossing | 41.9nm | 1.5ms | 1.7ms | 53>5 |
+| Balearic Sea | 127.6nm | 2.2ms | 2.2ms | 114>6 |
+| Florida Strait | 89.0nm | 0.4ms | 0.4ms | 22>2 |
+| Malacca Route | 534.3nm | 42.2ms | 58.9ms | 497>20 |
+| Tasman Sea | 1265.1nm | 59.8ms | 76.4ms | 408>16 |
+| South Atlantic | 3272.3nm | 32.8ms | 38.7ms | 392>7 |
+| North Atlantic | 3040.5nm | 865ms | 934ms | 682>17 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.5nm | 13.4ms | 13.5ms | 1155>23 |
-| Panama Canal | 53.6nm | 47.4ms | 49.1ms | 2557>73 |
-| Kiel Canal | 84.4nm | 40.9ms | 41.7ms | 5769>80 |
-| Corinth Canal | 6.6nm | 1.1ms | 1.2ms | 428>9 |
-| Bosphorus | 32.3nm | 1.8ms | 1.8ms | 163>11 |
+| Suez Canal | 141.5nm | 13.2ms | 13.8ms | 1155>23 |
+| Panama Canal | 53.4nm | 78.6ms | 84.8ms | 1029>53 |
+| Kiel Canal | 84.4nm | 39.6ms | 42.6ms | 1976>56 |
+| Corinth Canal | 6.6nm | 1.5ms | 1.5ms | 364>8 |
+| Bosphorus | 32.3nm | 1.8ms | 1.9ms | 163>11 |
 | Dardanelles | 45.5nm | 1.3ms | 1.4ms | 116>5 |
-| Malacca Strait | 28.5nm | 1.3ms | 1.4ms | 86>5 |
-| Singapore Strait | 27.9nm | 1.0ms | 1.0ms | 46>5 |
+| Malacca Strait | 28.5nm | 1.3ms | 1.4ms | 89>5 |
+| Singapore Strait | 27.9nm | 1.0ms | 1.1ms | 46>5 |
 | Messina Strait | 15.7nm | 0.5ms | 0.5ms | 68>5 |
 | Dover Strait | 18.4nm | 0.4ms | 0.4ms | 17>3 |
 
@@ -166,9 +166,9 @@ Built on Hetzner cpx62 (32 vCPU, 64 GB RAM) in ~5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 39,824,170 |
-| Edges | 302,483,040 |
-| Graph file size | 704 MB |
+| Nodes | 39,412,823 |
+| Edges | 299,517,836 |
+| Graph file size | 702 MB |
 | Connectivity | 100% (single connected component after build-time pruning) |
 | Server memory (RSS) | ~3.5 GiB after load, up to ~4.1 GiB under sustained global traffic |
 | Server memory (total) | up to ~4.9 GiB (needs swap below 8 GB) |
