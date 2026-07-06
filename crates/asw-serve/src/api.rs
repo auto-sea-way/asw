@@ -10,6 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::state::ServerState;
 
@@ -173,6 +174,11 @@ async fn api_key_middleware(
 }
 
 pub fn create_router(state: Arc<ServerState>) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([axum::http::Method::GET])
+        .allow_headers(Any);
+
     let protected = Router::new()
         .route("/route", get(route_handler))
         .route("/info", get(info_handler))
@@ -185,6 +191,7 @@ pub fn create_router(state: Arc<ServerState>) -> Router {
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
         .merge(protected)
+        .layer(cors)
         .with_state(state)
 }
 
@@ -320,5 +327,39 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), HyperStatus::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn health_includes_cors_header() {
+        let app = create_router(test_state());
+        let req = Request::get("/health")
+            .header("Origin", "http://localhost:8080")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+        assert!(
+            resp.headers().contains_key("access-control-allow-origin"),
+            "expected Access-Control-Allow-Origin header on response"
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_allows_api_key_header() {
+        let app = create_router(test_state());
+        let req = Request::builder()
+            .method("OPTIONS")
+            .uri("/route")
+            .header("Origin", "http://localhost:8080")
+            .header("Access-Control-Request-Method", "GET")
+            .header("Access-Control-Request-Headers", "x-api-key")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+        assert!(
+            resp.headers().contains_key("access-control-allow-headers"),
+            "expected Access-Control-Allow-Headers on preflight response"
+        );
     }
 }
