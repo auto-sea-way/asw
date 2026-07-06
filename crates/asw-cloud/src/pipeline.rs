@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 use crate::config::*;
@@ -21,6 +21,28 @@ struct Step {
     number: usize,
     name: &'static str,
     description: &'static str,
+}
+
+/// Derive a filesystem-safe slug identifying a bbox, used both for the
+/// remote graph filename and the local download-cache sidecar marker. This
+/// is what makes the step cache input-aware: a run with a different bbox
+/// gets a different remote filename and a different sidecar value, so it
+/// can never be mistaken for "already built"/"already downloaded".
+pub fn bbox_slug(bbox: Option<(f64, f64, f64, f64)>) -> String {
+    match bbox {
+        None => "full".to_string(),
+        Some((min_lon, min_lat, max_lon, max_lat)) => {
+            format!("{}_{}_{}_{}", min_lon, min_lat, max_lon, max_lat)
+        }
+    }
+}
+
+/// Path of the sidecar marker file recording which bbox produced the local
+/// output file, e.g. `export/asw.graph` -> `export/asw.graph.bbox`.
+fn bbox_sidecar_path(output_path: &Path) -> PathBuf {
+    let mut name = output_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".bbox");
+    output_path.with_file_name(name)
 }
 
 const STEPS: &[Step] = &[
@@ -108,20 +130,43 @@ impl Pipeline {
             "download_shp" => {
                 self.remote_dir_exists(&format!("{}/land-polygons-split-4326", REMOTE_DATA_DIR))
             }
-            "build_graph" => self.remote_file_exists(&format!("{}/asw.graph", REMOTE_DATA_DIR)),
+            "build_graph" => self.remote_file_exists(&self.remote_graph_path()),
             "download" => {
                 return self.output_path.exists()
                     && self
                         .output_path
                         .metadata()
                         .map(|m| m.len() > 1024)
-                        .unwrap_or(false);
+                        .unwrap_or(false)
+                    && self.local_download_cache_matches();
             }
             _ => return false,
         };
         result.unwrap_or(false)
     }
 
+    /// Remote path of the graph file for this run's bbox. Including the
+    /// bbox slug in the filename means a build for a different bbox can
+    /// never be mistaken (by `check_cache`) for a previous build's output.
+    fn remote_graph_path(&self) -> String {
+        format!("{}/asw-{}.graph", REMOTE_DATA_DIR, bbox_slug(self.bbox))
+    }
+
+    /// True if the local output file was downloaded for the *same* bbox as
+    /// this run — read from a sidecar marker written by `step_download`.
+    /// A missing or mismatched marker (including files predating this check)
+    /// means "not cached", so a stale local file is never silently reused.
+    fn local_download_cache_matches(&self) -> bool {
+        let sidecar = bbox_sidecar_path(&self.output_path);
+        std::fs::read_to_string(sidecar)
+            .map(|s| s.trim() == bbox_slug(self.bbox))
+            .unwrap_or(false)
+    }
+
+    /// Probe: does the remote binary run at all? Relies on the CLI defining
+    /// a `--version` flag (see asw-cli's `#[command(..., version, ...)]`) —
+    /// without it clap rejects the unknown argument and this always reports
+    /// "no", making the compile-step cache permanently dead.
     fn remote_binary_works(&self) -> Result<bool> {
         let cfg = self.ssh_cfg();
         let output = ssh::run_ssh(
@@ -281,7 +326,7 @@ impl Pipeline {
     fn step_build_graph(&self) -> Result<()> {
         let cfg = self.ssh_cfg();
         let shp_path = format!("{}/land-polygons-split-4326", REMOTE_DATA_DIR);
-        let graph_path = format!("{}/asw.graph", REMOTE_DATA_DIR);
+        let graph_path = self.remote_graph_path();
 
         let mut cmd = format!(
             "{} build --shp {} --output {}",
@@ -303,9 +348,15 @@ impl Pipeline {
 
     fn step_download(&self) -> Result<()> {
         let cfg = self.ssh_cfg();
-        let remote_graph = format!("{}/asw.graph", REMOTE_DATA_DIR);
+        let remote_graph = self.remote_graph_path();
 
         ssh::scp_download(&cfg, &remote_graph, &self.output_path)?;
+
+        // Record which bbox produced this local file, so a later run with a
+        // different bbox can't mistake it for "already downloaded".
+        let sidecar = bbox_sidecar_path(&self.output_path);
+        std::fs::write(&sidecar, bbox_slug(self.bbox))
+            .with_context(|| format!("Failed to write bbox cache marker {:?}", sidecar))?;
 
         Ok(())
     }
@@ -315,5 +366,138 @@ impl Pipeline {
             hetzner::teardown(token)?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "asw-pipeline-test-{}-{}-{}",
+            tag,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn test_pipeline(output_path: PathBuf, bbox: Option<(f64, f64, f64, f64)>) -> Pipeline {
+        Pipeline {
+            host: None,
+            ssh_key_path: PathBuf::new(),
+            output_path,
+            keep_server: false,
+            hetzner_token: None,
+            bbox,
+            rust_src_dir: PathBuf::new(),
+        }
+    }
+
+    // ── Finding 7: bbox-aware cache key / filename derivation ──────────────
+
+    #[test]
+    fn bbox_slug_none_is_full() {
+        assert_eq!(bbox_slug(None), "full");
+    }
+
+    #[test]
+    fn bbox_slug_differs_by_bbox() {
+        let marmaris = bbox_slug(Some((27.5, 36.0, 30.0, 37.0)));
+        let dev = bbox_slug(Some((-5.0, 48.0, 10.0, 62.0)));
+        assert_ne!(marmaris, dev);
+        assert_ne!(marmaris, "full");
+    }
+
+    #[test]
+    fn bbox_slug_is_deterministic() {
+        let a = bbox_slug(Some((27.5, 36.0, 30.0, 37.0)));
+        let b = bbox_slug(Some((27.5, 36.0, 30.0, 37.0)));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn remote_graph_path_includes_bbox_slug() {
+        let marmaris = test_pipeline(PathBuf::new(), Some((27.5, 36.0, 30.0, 37.0)));
+        let dev = test_pipeline(PathBuf::new(), Some((-5.0, 48.0, 10.0, 62.0)));
+        let full = test_pipeline(PathBuf::new(), None);
+
+        assert_ne!(marmaris.remote_graph_path(), dev.remote_graph_path());
+        assert_ne!(marmaris.remote_graph_path(), full.remote_graph_path());
+        assert!(marmaris
+            .remote_graph_path()
+            .contains(&bbox_slug(marmaris.bbox)));
+    }
+
+    #[test]
+    fn bbox_sidecar_path_is_alongside_output() {
+        let out = PathBuf::from("/tmp/export/asw.graph");
+        let sidecar = bbox_sidecar_path(&out);
+        assert_eq!(sidecar, PathBuf::from("/tmp/export/asw.graph.bbox"));
+    }
+
+    // Scenario A from finding 7: build for "marmaris", then build for "dev"
+    // with the same default output path. The stale local file (and its
+    // stale sidecar) must NOT be reported as cached for the new bbox.
+    #[test]
+    fn download_cache_does_not_hit_for_a_different_bbox() {
+        let dir = unique_tmp_dir("cache-diff-bbox");
+        let output_path = dir.join("asw.graph");
+        std::fs::write(&output_path, vec![0u8; 2048]).unwrap();
+
+        let marmaris_bbox = Some((27.5, 36.0, 30.0, 37.0));
+        let dev_bbox = Some((-5.0, 48.0, 10.0, 62.0));
+
+        // Simulate step_download having completed for "marmaris".
+        let marmaris_pipeline = test_pipeline(output_path.clone(), marmaris_bbox);
+        std::fs::write(
+            bbox_sidecar_path(&output_path),
+            bbox_slug(marmaris_pipeline.bbox),
+        )
+        .unwrap();
+        assert!(marmaris_pipeline.local_download_cache_matches());
+
+        // Now the user asks for "dev" with the same (default) output path.
+        let dev_pipeline = test_pipeline(output_path.clone(), dev_bbox);
+        assert!(
+            !dev_pipeline.local_download_cache_matches(),
+            "a stale sidecar from a different bbox must not be treated as cached"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_cache_misses_when_sidecar_is_missing() {
+        let dir = unique_tmp_dir("cache-no-sidecar");
+        let output_path = dir.join("asw.graph");
+        std::fs::write(&output_path, vec![0u8; 2048]).unwrap();
+        // No sidecar written — e.g. a file left over from before this fix,
+        // or a file from an entirely unrelated source.
+
+        let pipeline = test_pipeline(output_path.clone(), Some((27.5, 36.0, 30.0, 37.0)));
+        assert!(!pipeline.local_download_cache_matches());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn download_cache_hits_for_matching_bbox() {
+        let dir = unique_tmp_dir("cache-match");
+        let output_path = dir.join("asw.graph");
+        std::fs::write(&output_path, vec![0u8; 2048]).unwrap();
+
+        let bbox = Some((27.5, 36.0, 30.0, 37.0));
+        let pipeline = test_pipeline(output_path.clone(), bbox);
+        std::fs::write(bbox_sidecar_path(&output_path), bbox_slug(bbox)).unwrap();
+
+        assert!(pipeline.local_download_cache_matches());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

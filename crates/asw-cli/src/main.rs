@@ -1,5 +1,6 @@
 mod bench;
 mod download;
+mod srcdir;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -9,7 +10,11 @@ use std::path::{Path, PathBuf};
 use tracing::info;
 
 #[derive(Parser)]
-#[command(name = "asw", about = "Maritime routing graph builder and server")]
+#[command(
+    name = "asw",
+    version,
+    about = "Maritime routing graph builder and server"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -137,6 +142,13 @@ enum CloudAction {
         /// SSH private key path (auto-detected if not specified)
         #[arg(long)]
         ssh_key: Option<PathBuf>,
+
+        /// Path to the workspace root to upload for the remote build.
+        /// Defaults to the current directory if it looks like the asw
+        /// workspace, else the checkout this binary was built from (dev
+        /// builds only — meaningless for a distributed release binary).
+        #[arg(long)]
+        src: Option<PathBuf>,
     },
     /// Provision a Hetzner server (create + bootstrap)
     Provision {
@@ -187,11 +199,14 @@ fn resolve_ssh_key(ssh_key: Option<PathBuf>) -> Result<PathBuf> {
     }
 }
 
-/// Locate the workspace root relative to the CLI binary's compiled location.
-fn rust_src_dir() -> PathBuf {
-    // At compile time, CARGO_MANIFEST_DIR points to crates/asw-cli
+/// Workspace root baked in at compile time (`CARGO_MANIFEST_DIR` points to
+/// crates/asw-cli, so the workspace root is two levels up). Only meaningful
+/// for binaries built and run from a local checkout — a binary built on a
+/// CI runner and distributed as a release asset has no such directory on
+/// the end user's machine. Used only as a last-resort fallback; see
+/// `srcdir::resolve_src_dir`.
+fn compile_time_src_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // Go up to workspace root
     manifest_dir
         .parent() // crates/
         .and_then(|p| p.parent()) // workspace root
@@ -345,9 +360,14 @@ fn main() -> Result<()> {
                 output,
                 keep_server,
                 ssh_key,
+                src,
             } => {
                 let ssh_key_path = resolve_ssh_key(ssh_key)?;
                 let bbox = bbox.map(|b| parse_bbox(&b)).transpose()?;
+
+                let cwd = std::env::current_dir().context("Failed to get current directory")?;
+                let src_dir = srcdir::resolve_src_dir(src, &cwd, &compile_time_src_dir());
+                srcdir::warn_if_dirty(&src_dir);
 
                 let mut pipeline = asw_cloud::pipeline::Pipeline {
                     host: None,
@@ -356,7 +376,7 @@ fn main() -> Result<()> {
                     keep_server,
                     hetzner_token: Some(hetzner_token),
                     bbox,
-                    rust_src_dir: rust_src_dir(),
+                    rust_src_dir: src_dir,
                 };
                 pipeline.run()?;
             }

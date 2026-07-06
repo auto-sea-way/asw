@@ -120,17 +120,26 @@ pub fn scp_upload(cfg: &SshConfig, local: &Path, remote: &str) -> Result<()> {
 }
 
 /// Download a remote file to the local machine via scp.
+///
+/// Downloads to `<local>.tmp` and renames on success (mirroring
+/// `asw-cli::download::ensure_graph`), so an interrupted transfer never
+/// leaves a truncated file at `local` that a later cache check could mistake
+/// for a complete download.
 pub fn scp_download(cfg: &SshConfig, remote: &str, local: &Path) -> Result<()> {
     info!("scp download: {}:{} → {:?}", cfg.host, remote, local);
     if let Some(parent) = local.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
+    let tmp_path = PathBuf::from(format!("{}.tmp", local.to_string_lossy()));
+    // Remove stale temp from any prior interrupted download.
+    let _ = std::fs::remove_file(&tmp_path);
+
     let mut args: Vec<String> = SSH_OPTS.iter().map(|s| s.to_string()).collect();
     args.push("-i".to_string());
     args.push(cfg.key_path.to_string_lossy().to_string());
     args.push(format!("{}@{}:{}", cfg.user, cfg.host, remote));
-    args.push(local.to_string_lossy().to_string());
+    args.push(tmp_path.to_string_lossy().to_string());
 
     let status = Command::new("scp")
         .args(&args)
@@ -143,6 +152,10 @@ pub fn scp_download(cfg: &SshConfig, remote: &str, local: &Path) -> Result<()> {
     if !status.success() {
         bail!("scp download failed (exit {})", status.code().unwrap_or(-1));
     }
+
+    std::fs::rename(&tmp_path, local)
+        .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, local))?;
+
     Ok(())
 }
 
