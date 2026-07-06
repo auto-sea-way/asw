@@ -116,11 +116,23 @@ impl GraphBuilder {
             for &(target, weight_nm) in list {
                 let delta = target - prev_target;
                 crate::varint::encode(delta, &mut edge_data);
-                debug_assert!(
+                // Overflow is data corruption, not a quantization rounding artifact:
+                // silently truncating (saturating-cast) a >655.35nm edge down to
+                // 655.35nm would produce a wrong, undetectable distance. Hard-error
+                // in all builds (not just debug) so it can never ship silently.
+                assert!(
                     weight_nm <= 655.35,
-                    "weight {weight_nm} nm exceeds u16 range (max 655.35 nm)"
+                    "edge weight {weight_nm} nm exceeds u16 centi-nm range (max 655.35 nm) — \
+                     cannot encode without data corruption"
                 );
-                let weight_u16 = (weight_nm * 100.0).round() as u16;
+                // Round to centi-nm, but never let a positive-length edge quantize
+                // to 0: adjacent res-13 H3 cells (passage corridors — Panama, Kiel,
+                // Corinth, Welland) are ~0.0033nm apart, which rounds to 0 and makes
+                // A* treat canal transit as a free edge. Clamp to 1 (0.01nm) instead.
+                let mut weight_u16 = (weight_nm * 100.0).round() as u16;
+                if weight_nm > 0.0 {
+                    weight_u16 = weight_u16.max(1);
+                }
                 edge_data.extend_from_slice(&weight_u16.to_le_bytes());
                 prev_target = target;
             }
@@ -586,5 +598,59 @@ mod tests {
         assert_eq!(n1_neighbors.len(), 1);
         assert_eq!(n1_neighbors[0].0, n0);
         assert!((n1_neighbors[0].1 - 186.0).abs() < 0.01);
+    }
+
+    /// Regression test for finding #2 (2026-07-06 project review): adjacent
+    /// res-13 H3 cells (used in passage corridors — Panama, Kiel, Corinth,
+    /// Welland) are ~0.0033 nm apart. The old `(weight_nm * 100.0).round() as
+    /// u16` quantization rounded that to 0, making canal transit edges free
+    /// for A*. A quantized weight must never be zero for a positive-length edge.
+    #[test]
+    fn quantized_weight_never_zero_for_tiny_res13_edge() {
+        let center = h3o::LatLng::new(9.08, -79.68) // near the Panama Canal
+            .unwrap()
+            .to_cell(h3o::Resolution::Thirteen);
+        let neighbor = crate::h3::neighbors(center)[0];
+
+        let (lat0, lon0) = crate::h3::cell_center(center);
+        let (lat1, lon1) = crate::h3::cell_center(neighbor);
+        let true_dist_nm = crate::h3::haversine_nm(lat0, lon0, lat1, lon1);
+        assert!(
+            true_dist_nm < 0.005,
+            "expected a sub-0.005nm res-13 edge, got {true_dist_nm} nm"
+        );
+
+        let mut b = GraphBuilder::new();
+        let n0 = b.add_node(u64::from(center), lat0, lon0);
+        let n1 = b.add_node(u64::from(neighbor), lat1, lon1);
+        b.add_edge(n0, n1, true_dist_nm as f32);
+        let g = b.build();
+
+        let neighbors: Vec<(u32, f32)> = g.neighbors(n0.min(n1)).collect();
+        assert_eq!(neighbors.len(), 1);
+        assert!(
+            neighbors[0].1 >= 0.01,
+            "quantized weight {} nm should clamp to >= 0.01 nm (1 centi-nm), not round to 0",
+            neighbors[0].1
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "exceeds u16")]
+    fn build_hard_errors_on_weight_overflowing_u16() {
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(0.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let mut b = GraphBuilder::new();
+        let n0 = b.add_node(u64::from(c0), 0.0, 0.0);
+        let n1 = b.add_node(u64::from(c1), 0.0, 1.0);
+        // 655.36 nm exceeds the u16 centi-nm range (max 655.35 nm) — must be
+        // a loud failure, not a silently truncated weight.
+        b.add_edge(n0, n1, 655.36);
+        let _ = b.build();
     }
 }
