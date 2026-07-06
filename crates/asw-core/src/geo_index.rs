@@ -80,6 +80,11 @@ impl LandIndex {
     /// catches land on either side of the antimeridian without reintroducing the
     /// degenerate world-spanning ring the unwrapping was meant to avoid.
     pub fn intersects_polygon(&self, poly: &Polygon<f64>) -> bool {
+        // Fast path: non-transmeridian polygon, no allocation or cloning
+        if !has_transmeridian_coords(poly) {
+            return self.intersects_polygon_single(poly);
+        }
+        // Transmeridian case: build and test variants
         transmeridian_variants(poly)
             .iter()
             .any(|variant| self.intersects_polygon_single(variant))
@@ -99,6 +104,11 @@ impl LandIndex {
     /// Check if the given polygon is entirely contained within any single land polygon.
     /// Antimeridian-aware in the same way as `intersects_polygon`.
     pub fn contains_polygon(&self, poly: &Polygon<f64>) -> bool {
+        // Fast path: non-transmeridian polygon, no allocation or cloning
+        if !has_transmeridian_coords(poly) {
+            return self.contains_polygon_single(poly);
+        }
+        // Transmeridian case: build and test variants
         transmeridian_variants(poly)
             .iter()
             .any(|variant| self.contains_polygon_single(variant))
@@ -317,15 +327,22 @@ fn split_at_antimeridian(
     )
 }
 
+/// Check if any coordinate in the polygon falls outside [-180, 180].
+/// Used as a fast-path check to avoid allocation for the common non-transmeridian case.
+fn has_transmeridian_coords(poly: &Polygon<f64>) -> bool {
+    poly.exterior()
+        .coords()
+        .any(|c| c.x > 180.0 || c.x < -180.0)
+}
+
 /// Produce the polygon variants needed to correctly test a possibly-unwrapped
 /// transmeridian polygon (see `h3::cell_polygon`) against a `LandIndex`, whose stored
 /// polygons always live within [-180, 180].
 ///
-/// If `poly` has no coordinates outside that range, it is returned unchanged (the
-/// common case — no behavior change for non-transmeridian polygons). Otherwise, a
-/// copy shifted by +-360 is added so that the overflowing portion of the ring lands
-/// back in valid coordinate space and can match land polygons on the far side of the
-/// seam, while the in-range portion still matches via the original copy.
+/// Only called when `has_transmeridian_coords` returns true. Returns a vector with
+/// the original polygon and optionally shifted variants so that overflowing portions
+/// land back in valid coordinate space and can match land polygons on the far side of
+/// the seam, while in-range portions still match via the original copy.
 fn transmeridian_variants(poly: &Polygon<f64>) -> Vec<Polygon<f64>> {
     let has_over = poly.exterior().coords().any(|c| c.x > 180.0);
     let has_under = poly.exterior().coords().any(|c| c.x < -180.0);
