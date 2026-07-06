@@ -299,6 +299,9 @@ impl CoastlineIndex {
     }
 }
 
+/// A segment endpoint pair as (lon1, lat1, lon2, lat2).
+type LonLatSegment = (f64, f64, f64, f64);
+
 /// Split a query segment that crosses the antimeridian into two sub-segments that
 /// meet at the seam (lon = +-180), each expressed in a single consistent longitude
 /// frame. Only valid when `(lon1 - lon2).abs() > 180.0`.
@@ -307,7 +310,7 @@ fn split_at_antimeridian(
     lat1: f64,
     lon2: f64,
     lat2: f64,
-) -> ((f64, f64, f64, f64), (f64, f64, f64, f64)) {
+) -> (LonLatSegment, LonLatSegment) {
     // Unwrap into a continuous frame by shifting whichever endpoint is negative,
     // then find where the continuous chord crosses lon = 180.
     let (u1, u2) = if lon1 < 0.0 {
