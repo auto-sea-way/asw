@@ -393,8 +393,8 @@ mod tests {
         // Each node should decode to a valid lat/lng
         for i in 0..g.num_nodes {
             let (lat, lng) = g.node_pos(i);
-            assert!(lat >= -90.0 && lat <= 90.0, "lat out of range: {}", lat);
-            assert!(lng >= -180.0 && lng <= 180.0, "lng out of range: {}", lng);
+            assert!((-90.0..=90.0).contains(&lat), "lat out of range: {}", lat);
+            assert!((-180.0..=180.0).contains(&lng), "lng out of range: {}", lng);
         }
     }
 
