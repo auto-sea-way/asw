@@ -275,7 +275,44 @@ impl CoastlineIndex {
 
     /// Approximate minimum distance (in degrees) from (lon, lat) to any coastline
     /// segment within `radius_deg`. Returns f64::MAX if nothing found.
+    ///
+    /// Antimeridian-aware: `lon` is assumed to already be in [-180, 180] (true of
+    /// all current callers — H3 `cell_center`/`cell_boundary` always return
+    /// normalized longitudes, unlike the unwrapped output of `cell_polygon`). A
+    /// query envelope that would overflow past +-180 is clipped by a naive
+    /// `[lon-radius, lon+radius]` AABB, silently missing coastline that sits just
+    /// across the seam in the *other* longitude sign (e.g. querying at lon
+    /// 179.99 misses a segment at lon -179.98, even though they're ~0.03 degrees
+    /// apart the short way around). When the envelope overflows, we also run the
+    /// query with `lon` shifted by +-360 into the same frame as the segments on
+    /// the far side of the seam — shifting the query point (rather than the
+    /// stored segments) keeps the point and the matched segment in one
+    /// consistent longitude frame, so `point_to_segment_dist`'s planar (non-wrap)
+    /// math measures the true short-way-around distance.
     pub fn min_distance_deg(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
+        let mut best = self.min_distance_deg_planar(lon, lat, radius_deg);
+
+        // Envelope overflows past +180: also search near -180, in the frame
+        // reached by shifting the query point west by a full turn.
+        if lon + radius_deg > 180.0 {
+            let wrapped = self.min_distance_deg_planar(lon - 360.0, lat, radius_deg);
+            if wrapped < best {
+                best = wrapped;
+            }
+        }
+        // Envelope underflows past -180: also search near +180, in the frame
+        // reached by shifting the query point east by a full turn.
+        if lon - radius_deg < -180.0 {
+            let wrapped = self.min_distance_deg_planar(lon + 360.0, lat, radius_deg);
+            if wrapped < best {
+                best = wrapped;
+            }
+        }
+
+        best
+    }
+
+    fn min_distance_deg_planar(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
         let envelope = AABB::from_corners(
             [lon - radius_deg, lat - radius_deg],
             [lon + radius_deg, lat + radius_deg],
@@ -536,5 +573,54 @@ mod tests {
         // Nothing within a tiny radius far away.
         let far = index.min_distance_deg(50.0, 50.0, 0.5);
         assert_eq!(far, f64::MAX);
+    }
+
+    /// A coastline segment just east of the antimeridian and a query point just
+    /// west of it are ~0.03 degrees apart the short way around, but a purely
+    /// planar `[lon-radius, lon+radius]` envelope (pre-fix) clips at +-180 and
+    /// never finds the segment, returning `f64::MAX` instead of the true small
+    /// distance. This is the same class of bug `crosses_land` was already fixed
+    /// for (see the `crosses_land_antimeridian_*` tests above); `min_distance_deg`
+    /// needed the same treatment (review finding: min_distance_deg still planar
+    /// across the antimeridian).
+    #[test]
+    fn min_distance_deg_finds_coastline_across_antimeridian_seam() {
+        // Coastline segment just east of the seam, spanning the query's latitude.
+        let seg = line_of(&[(179.98, -0.5), (179.98, 0.5)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+
+        // Query point just west of the seam. True short-way distance is
+        // |180.0 - 179.98| + |(-179.99) - (-180.0)| = 0.02 + 0.01 = 0.03 deg.
+        let dist = index.min_distance_deg(-179.99, 0.0, 0.05);
+        assert!(
+            (dist - 0.03).abs() < 1e-9,
+            "expected ~0.03 deg across the antimeridian seam, got {dist}"
+        );
+    }
+
+    /// Mirror of the above with the query on the east side and the coastline
+    /// just west of the seam, exercising the other overflow branch
+    /// (`lon + radius_deg > 180.0`).
+    #[test]
+    fn min_distance_deg_finds_coastline_across_antimeridian_seam_other_side() {
+        let seg = line_of(&[(-179.98, -0.5), (-179.98, 0.5)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+
+        let dist = index.min_distance_deg(179.99, 0.0, 0.05);
+        assert!(
+            (dist - 0.03).abs() < 1e-9,
+            "expected ~0.03 deg across the antimeridian seam, got {dist}"
+        );
+    }
+
+    /// Sanity check that the antimeridian handling doesn't erroneously pull in
+    /// unrelated coastline from the far side of the planet when the query point
+    /// isn't actually near the seam.
+    #[test]
+    fn min_distance_deg_normal_case_unaffected_by_antimeridian_handling() {
+        let seg = line_of(&[(10.0, -1.0), (10.0, 1.0)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+        let dist = index.min_distance_deg(9.5, 0.0, 5.0);
+        assert!((dist - 0.5).abs() < 1e-9, "expected ~0.5, got {dist}");
     }
 }

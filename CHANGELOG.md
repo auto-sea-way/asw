@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- A* buffer pool: O(1) generation-counter reset instead of a full-graph memset (~358 MB of writes per request at planet scale, previously hidden from benchmarks); per-node heuristic cached per query. Steady-state RSS grows ~640 MB (two pooled buffer sets gain `gen` + `h_score` arrays); short-route p50 improves 1.1-1.5x and served-request latency no longer pays a hidden 10-35 ms reset
+- A* buffer pool: O(1) generation-counter reset instead of a full-graph memset (~358 MB of writes per request at planet scale, previously hidden from benchmarks); per-node heuristic cached per query. Steady-state RSS grows ~640 MB (two pooled buffer sets gain `gen` + `h_score` arrays); short-route p50 improves 1.1-2x and served-request latency no longer pays a hidden 10-35 ms reset
 - `/route` computation runs on `tokio::task::spawn_blocking` (long routes no longer stall health probes); `ServerState` holds `Arc<AppState>`
 - `nearest_node` exhaustive fallback uses geometrically-doubled eager disk scans (worst case ~1.56x one full-disk call, typical early exit far cheaper)
 - `min_distance_deg` iterates coastline pairs without per-segment allocation
