@@ -1,9 +1,17 @@
 use asw_core::geo_index::CoastlineIndex;
 use asw_core::graph::RoutingGraph;
+use std::sync::Arc;
 
 /// Wrapper that tracks readiness — the HTTP server starts before the graph is loaded.
+///
+/// `inner` holds an `Arc<AppState>` (rather than `AppState` directly) so
+/// handlers can clone it out from under the read lock, drop the lock, and
+/// run CPU-bound work (nearest-node lookup + `compute_route`) on a
+/// `spawn_blocking` thread without holding the lock — and without starving
+/// other requests (notably `/health` and `/ready`) for the duration of a
+/// potentially slow route computation.
 pub struct ServerState {
-    pub inner: tokio::sync::RwLock<Option<AppState>>,
+    pub inner: tokio::sync::RwLock<Option<Arc<AppState>>>,
     pub graph_path: String,
     api_key: String,
 }
@@ -27,7 +35,15 @@ impl ServerState {
 
     pub fn set_ready(&self, app: AppState) {
         // Use blocking_lock since this is called from spawn_blocking
-        *self.inner.blocking_write() = Some(app);
+        *self.inner.blocking_write() = Some(Arc::new(app));
+    }
+
+    /// Clone out the current `Arc<AppState>` (if the graph has finished
+    /// loading) and drop the read guard immediately. Callers can then use
+    /// the returned `Arc` without holding `inner`'s lock, so a slow route
+    /// computation never blocks `/health`/`/ready` or other requests.
+    pub async fn app(&self) -> Option<Arc<AppState>> {
+        self.inner.read().await.clone()
     }
 }
 
@@ -119,6 +135,19 @@ impl AppState {
     }
 
     /// Search a single resolution with k-ring up to `k_max`, updating `best`.
+    ///
+    /// Single-scan implementation: `grid_disk_distances` computes the whole
+    /// disk in one pass and yields cells grouped by ascending grid distance
+    /// (ring 0, then ring 1, ... — both the `_fast` and `_safe` backing
+    /// iterators are BFS-order, so this holds even on the pentagon-distortion
+    /// fallback path). This replaces the old per-k `grid_disk(k)` loop, which
+    /// rescanned every previously-tested ring at each iteration (O(k_max^3)
+    /// total lookups) and allocated a fresh `Vec` per k.
+    ///
+    /// Early-return semantics are identical to the old code: as soon as a
+    /// fully-scanned k-level contains at least one main-component match,
+    /// `best` (updated to the closest such match) is final for this call and
+    /// we stop — larger k are never examined.
     fn search_resolution(
         &self,
         ll: &h3o::LatLng,
@@ -133,25 +162,36 @@ impl AppState {
             Err(_) => return,
         };
         let cell = ll.to_cell(res);
-        for k in 0..=k_max {
-            let mut found_at_k = false;
-            for neighbor in cell.grid_disk::<Vec<_>>(k) {
-                let nh3 = u64::from(neighbor);
-                if let Some(node_id) = self.h3_lookup(nh3) {
-                    if self.component_labels[node_id as usize] == self.main_component {
-                        found_at_k = true;
-                        let (nlat, nlon) = self.graph.node_pos(node_id);
-                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                        if best.is_none_or(|(_, d)| dist < d) {
-                            *best = Some((node_id, dist));
-                        }
+        let disk: Vec<(h3o::CellIndex, u32)> = cell.grid_disk_distances(k_max);
+
+        let mut current_k: u32 = 0;
+        let mut found_at_current_k = false;
+
+        for (neighbor, k) in disk {
+            if k != current_k {
+                // Ring `current_k` is fully scanned — stop here if it had a
+                // match, matching the old per-k early return.
+                if found_at_current_k {
+                    return;
+                }
+                current_k = k;
+                found_at_current_k = false;
+            }
+
+            let nh3 = u64::from(neighbor);
+            if let Some(node_id) = self.h3_lookup(nh3) {
+                if self.component_labels[node_id as usize] == self.main_component {
+                    found_at_current_k = true;
+                    let (nlat, nlon) = self.graph.node_pos(node_id);
+                    let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
+                    if best.is_none_or(|(_, d)| dist < d) {
+                        *best = Some((node_id, dist));
                     }
                 }
             }
-            if found_at_k {
-                return;
-            }
         }
+        // Last ring's match (if any) is already reflected in `best`; no
+        // further ring exists to examine, so there is nothing left to do.
     }
 
     /// Find nearest node in the main connected component via two-pass adaptive k-ring expansion.
@@ -211,31 +251,22 @@ impl AppState {
         // Exhaustive fallback: search res-3 with large k (covers most of the planet).
         // This only finds nodes indexed at res-3 (deep ocean cells). Production graphs
         // always contain res-3 nodes; test graphs may not.
-        let res3 = h3o::Resolution::try_from(3u8).ok()?;
-        let cell3 = ll.to_cell(res3);
-        for k in 0..=50u32 {
-            for neighbor in cell3.grid_disk::<Vec<_>>(k) {
-                let nh3 = u64::from(neighbor);
-                if let Some(node_id) = self.h3_lookup(nh3) {
-                    if self.component_labels[node_id as usize] == self.main_component {
-                        let (nlat, nlon) = self.graph.node_pos(node_id);
-                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                        if best.is_none_or(|(_, d)| dist < d) {
-                            best = Some((node_id, dist));
-                        }
-                    }
-                }
-            }
-            if best.is_some() {
-                return best;
-            }
-        }
+        //
+        // This has exactly the same per-k full-disk-then-early-return shape as
+        // `search_resolution`, so it just reuses it (single scan via
+        // `grid_disk_distances` instead of a fresh `grid_disk` Vec per k).
+        self.search_resolution(&ll, lat, lon, 3, 50, &mut best);
 
-        None
+        best
     }
 
     /// Acquire a buffer set from the pool, run `f`, then release the buffer.
-    pub async fn with_astar_buffers<F, T>(&self, f: F) -> T
+    ///
+    /// Synchronous (not `async`): the body never awaits (`AstarPool` is
+    /// backed by a plain `std::sync::Mutex`), and callers now invoke this
+    /// from inside `tokio::task::spawn_blocking`, which runs a plain
+    /// synchronous closure with no async executor context available.
+    pub fn with_astar_buffers<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&mut asw_core::astar_pool::AstarBuffers) -> T,
     {
@@ -469,5 +500,60 @@ mod app_state_tests {
         // Query from deep inland (Belgrade, Serbia — ~400nm from Mediterranean)
         let result = state.nearest_node(44.8, 20.5);
         assert!(result.is_some(), "should find ocean node from inland point");
+    }
+
+    /// Regression test for the single-scan `search_resolution` rewrite
+    /// (finding 12): when a k-level contains more than one main-component
+    /// match, `nearest_node` must return the *closest* of them, not merely
+    /// the first one encountered while walking the single sorted
+    /// `grid_disk_distances` scan.
+    #[test]
+    fn same_ring_picks_closest_of_multiple_candidates() {
+        let origin_pos = (10.0, 20.0);
+        let origin_cell = h3o::LatLng::new(origin_pos.0, origin_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        // Two distinct ring-1 neighbors of the (unindexed) origin cell — the
+        // origin itself is never added as a node, so ring 0 is empty and the
+        // search must resolve the tie within ring 1.
+        let ring1: Vec<h3o::CellIndex> = origin_cell.grid_ring(1);
+        assert!(ring1.len() >= 2, "expected at least two ring-1 neighbors");
+        let a = ring1[0];
+        let b = ring1[1];
+        let a_ll = h3o::LatLng::from(a);
+        let b_ll = h3o::LatLng::from(b);
+
+        let mut entries: Vec<(u64, f64, f64)> = vec![
+            (u64::from(a), a_ll.lat(), a_ll.lng()),
+            (u64::from(b), b_ll.lat(), b_ll.lng()),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+        assert_eq!(entries.len(), 2, "ring-1 neighbors must be distinct cells");
+
+        let mut builder = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(builder.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            builder.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = builder.build();
+        let state = AppState::new(graph);
+
+        let result = state.nearest_node(origin_pos.0, origin_pos.1);
+        assert!(result.is_some(), "should find a ring-1 candidate");
+        let (_, dist) = result.unwrap();
+
+        let dist_a = asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, a_ll.lat(), a_ll.lng());
+        let dist_b = asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, b_ll.lat(), b_ll.lng());
+        let expected = dist_a.min(dist_b);
+
+        assert!(
+            (dist - expected).abs() < 1e-9,
+            "expected closest candidate at {expected} nm, got {dist} nm"
+        );
     }
 }
