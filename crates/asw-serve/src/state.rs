@@ -134,26 +134,42 @@ impl AppState {
         }
     }
 
+    /// First eager-disk bound for `search_resolution`'s geometric doubling.
+    const DISK_DOUBLING_START: u32 = 4;
+
     /// Search a single resolution with k-ring up to `k_max`, updating `best`.
     ///
-    /// Per-ring implementation: rings are requested one at a time via
-    /// `CellIndex::grid_ring`, ascending from k=0. `grid_ring` is h3o's safe
-    /// public wrapper — it tries the fast pentagon-unsafe walk first and
-    /// transparently falls back to a correct (if slower) computation when a
-    /// pentagon distortion is hit, so results are exact at every k regardless
-    /// of pentagon proximity (ocean cells can be pentagons).
+    /// Geometric-doubling implementation: `grid_disk_distances` is EAGER — it
+    /// materializes the whole disk out to its bound before yielding anything,
+    /// so a single call at `k_max` pays for the full disk even when the
+    /// nearest node sits at small k (the res-3 fallback's k_max=50 disk is
+    /// ~7,651 cells; a k≈12 hit needs only ~469). Instead, the eager call is
+    /// issued with a growing bound (4, 8, 16, 32, ..., capped at `k_max`);
+    /// each step processes only the cells beyond the previous bound, and the
+    /// search stops requesting larger disks as soon as a step yields a hit.
+    /// Total traversal is bounded at ~2.3x the disk actually needed
+    /// (sum of a geometric series) instead of always the full k_max disk.
     ///
-    /// This bounds the H3 traversal to the k actually needed to find a match:
-    /// unlike a single eager `grid_disk_distances(k_max)` call — which always
-    /// materializes the *entire* disk out to k_max before any early return can
-    /// happen — asking for rings one at a time means we simply stop issuing
-    /// calls once a hit is found, so a k_max=50 fallback that resolves at
-    /// k≈12 only ever computes rings 0..=12, not the full 7,651-cell disk.
+    /// A per-ring `grid_ring(k)` loop was tried first and abandoned: its
+    /// pentagon-safe fallback re-runs a full O(k²) BFS per ring, and at res-3
+    /// k_max=50 the disk covers a large fraction of all ~41k res-3 cells, so
+    /// most rings hit the fallback — measured 13-18x slower than one eager
+    /// call on exhaustive (no-match) searches. The eager
+    /// `grid_disk_distances` API handles pentagon distortion once per call
+    /// (fast path first, one safe BFS on failure), keeping the worst case at
+    /// ~2.3x the single eager call.
     ///
-    /// Early-return semantics are identical to the old code: as soon as a
-    /// fully-scanned k-level contains at least one main-component match,
+    /// Both the `_fast` and `_safe` backing iterators yield cells grouped by
+    /// ascending grid distance (BFS order), so within each step cells arrive
+    /// ring 0, ring 1, ... — the grouping logic below relies on this.
+    ///
+    /// Early-return semantics are identical to the old per-k code: as soon as
+    /// a fully-scanned k-level contains at least one main-component match,
     /// `best` (updated to the closest such match) is final for this call and
-    /// we stop — larger k are never requested, let alone examined.
+    /// we stop — larger k are never examined, and larger disks are never
+    /// requested. A k-level is never split across steps (each step's bound is
+    /// a whole ring count), so "finish the whole current k before returning"
+    /// holds at doubling boundaries too.
     fn search_resolution(
         &self,
         ll: &h3o::LatLng,
@@ -169,11 +185,29 @@ impl AppState {
         };
         let cell = ll.to_cell(res);
 
-        for k in 0..=k_max {
-            let ring: Vec<h3o::CellIndex> = cell.grid_ring(k);
-            let mut found_at_current_k = false;
+        // Rings 0..=processed_up_to were fully scanned in previous steps.
+        let mut processed_up_to: Option<u32> = None;
+        let mut bound = Self::DISK_DOUBLING_START.min(k_max);
+        loop {
+            let disk: Vec<(h3o::CellIndex, u32)> = cell.grid_disk_distances(bound);
+            let first_new_k = processed_up_to.map_or(0, |p| p + 1);
 
-            for neighbor in ring {
+            let mut current_k = first_new_k;
+            let mut found_at_current_k = false;
+            for (neighbor, k) in disk {
+                if k < first_new_k {
+                    continue; // Already scanned in a previous, smaller step.
+                }
+                if k != current_k {
+                    // Ring `current_k` is fully scanned — stop here if it had
+                    // a match, matching the old per-k early return.
+                    if found_at_current_k {
+                        return;
+                    }
+                    current_k = k;
+                    found_at_current_k = false;
+                }
+
                 let nh3 = u64::from(neighbor);
                 if let Some(node_id) = self.h3_lookup(nh3) {
                     if self.component_labels[node_id as usize] == self.main_component {
@@ -186,13 +220,17 @@ impl AppState {
                     }
                 }
             }
-
-            // Ring `k` is fully scanned — stop here if it had a match,
-            // matching the old per-k early return. Larger k are never
-            // requested from h3o at all.
+            // The step's last ring (k == bound) is now fully scanned; if it
+            // had a match, stop without requesting a larger disk.
             if found_at_current_k {
                 return;
             }
+
+            if bound >= k_max {
+                return; // Entire k_max disk scanned, no early exit triggered.
+            }
+            processed_up_to = Some(bound);
+            bound = bound.saturating_mul(2).min(k_max);
         }
     }
 
@@ -254,10 +292,11 @@ impl AppState {
         // This only finds nodes indexed at res-3 (deep ocean cells). Production graphs
         // always contain res-3 nodes; test graphs may not.
         //
-        // `k_max=50` here is just an upper bound, not a cost: `search_resolution`'s
-        // per-ring traversal stops requesting further rings the moment a match is
-        // found (typically k≈12 in practice), so this virtually never walks the
-        // full 7,651-cell k=50 disk.
+        // `k_max=50` here is an upper bound, not the typical cost:
+        // `search_resolution`'s geometric doubling stops requesting larger disks
+        // once a step yields a match (typically k≈12 in practice), so this
+        // usually walks ~2.3x the needed disk rather than the full 7,651-cell
+        // k=50 disk.
         self.search_resolution(&ll, lat, lon, 3, 50, &mut best);
 
         best
@@ -560,15 +599,13 @@ mod app_state_tests {
         );
     }
 
-    /// Regression test for the per-ring rewrite of `search_resolution`
-    /// (incremental-k tightening): a near match at ring 2 must win over a
-    /// farther main-component match at ring 5, and the search must stop
-    /// requesting rings as soon as ring 2 is fully scanned with a hit — i.e.
-    /// the ring-5 node's mere existence in the graph must not change the
-    /// result. This exercises the same "stop at the first k with a hit"
-    /// contract that used to be guaranteed by a single eager
-    /// `grid_disk_distances` scan and is now guaranteed by ascending,
-    /// individually-requested `grid_ring` calls.
+    /// Regression test for the incremental-k rewrite of `search_resolution`:
+    /// a near match at ring 2 (inside the first doubling step, bound=4) must
+    /// win over a farther main-component match at ring 5 (inside the second
+    /// step), and the search must stop after ring 2's k-level is fully
+    /// scanned — i.e. the ring-5 node's mere existence in the graph must not
+    /// change the result. This exercises the "stop at the first k with a hit"
+    /// contract across a doubling-step boundary.
     #[test]
     fn nearer_ring_wins_over_farther_ring_and_stops_early() {
         let origin_pos = (10.0, 20.0);
@@ -618,6 +655,81 @@ mod app_state_tests {
         assert!(
             (dist - dist_near).abs() < 1e-9,
             "expected nearer ring-2 candidate at {dist_near} nm, got {dist} nm (far candidate at {dist_far} nm must not win)"
+        );
+    }
+
+    /// Doubling-boundary regression test: a match sitting EXACTLY at a
+    /// doubling step's bound (k=8, the last ring of the 4→8 step) must be
+    /// found and must win over a match at k=9 (the first ring of the next
+    /// step, 8→16). This pins down two off-by-one hazards at the seam:
+    /// a step skipping its own boundary ring (k=8 dropped by both the
+    /// bound=8 and bound=16 steps would lose the node entirely), and a step
+    /// returning early before its boundary ring is fully scanned (the k=9
+    /// node must never be examined once k=8 has a hit).
+    #[test]
+    fn hit_exactly_at_doubling_boundary_k8_wins_over_k9() {
+        // Sanity-check the boundary assumption this test encodes: with the
+        // doubling schedule 4, 8, 16, ... k=8 is the last ring of step 2.
+        assert_eq!(AppState::DISK_DOUBLING_START, 4);
+
+        let origin_pos = (10.0, 20.0);
+        let origin_cell = h3o::LatLng::new(origin_pos.0, origin_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let ring8: Vec<h3o::CellIndex> = origin_cell.grid_ring(8);
+        let ring9: Vec<h3o::CellIndex> = origin_cell.grid_ring(9);
+        let boundary = ring8[0];
+        let beyond = ring9[0];
+        let boundary_ll = h3o::LatLng::from(boundary);
+        let beyond_ll = h3o::LatLng::from(beyond);
+
+        let mut entries: Vec<(u64, f64, f64)> = vec![
+            (u64::from(boundary), boundary_ll.lat(), boundary_ll.lng()),
+            (u64::from(beyond), beyond_ll.lat(), beyond_ll.lng()),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+        assert_eq!(entries.len(), 2, "ring-8 and ring-9 cells must be distinct");
+
+        let mut builder = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(builder.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            builder.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = builder.build();
+        let state = AppState::new(graph);
+
+        let result = state.nearest_node(origin_pos.0, origin_pos.1);
+        assert!(
+            result.is_some(),
+            "should find the ring-8 boundary candidate"
+        );
+        let (_, dist) = result.unwrap();
+
+        let dist_boundary = asw_core::h3::haversine_nm(
+            origin_pos.0,
+            origin_pos.1,
+            boundary_ll.lat(),
+            boundary_ll.lng(),
+        );
+        let dist_beyond = asw_core::h3::haversine_nm(
+            origin_pos.0,
+            origin_pos.1,
+            beyond_ll.lat(),
+            beyond_ll.lng(),
+        );
+        assert!(
+            dist_boundary < dist_beyond,
+            "test setup: ring-8 must be closer than ring-9"
+        );
+
+        assert!(
+            (dist - dist_boundary).abs() < 1e-9,
+            "expected boundary ring-8 candidate at {dist_boundary} nm, got {dist} nm (ring-9 candidate at {dist_beyond} nm must not win)"
         );
     }
 }
