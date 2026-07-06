@@ -17,6 +17,26 @@ pub struct RouteResult {
     pub coordinates: Vec<[f64; 2]>,
 }
 
+/// Ensure `node` is valid for the current generation in `buffers`, computing
+/// and caching its haversine heuristic to `(goal_lat, goal_lon)` on first
+/// touch this generation. `g_score`/`came_from`/`closed` are reset to their
+/// defaults by `touch()` itself; the heuristic decode (H3 -> lat/lng + trig)
+/// only happens once per node per search, no matter how many times the node
+/// is relaxed afterwards.
+#[inline]
+fn touch_and_cache_h(
+    buffers: &mut crate::astar_pool::AstarBuffers,
+    node: u32,
+    graph: &RoutingGraph,
+    goal_lat: f64,
+    goal_lon: f64,
+) {
+    if buffers.touch(node) {
+        let (nlat, nlon) = graph.node_pos(node);
+        buffers.h_score[node as usize] = haversine_nm(nlat, nlon, goal_lat, goal_lon) as f32;
+    }
+}
+
 /// A* pathfinding with haversine heuristic.
 pub fn astar(
     graph: &RoutingGraph,
@@ -24,18 +44,14 @@ pub fn astar(
     goal: u32,
     buffers: &mut crate::astar_pool::AstarBuffers,
 ) -> Option<(Vec<u32>, f64)> {
-    let g_score = &mut buffers.g_score;
-    let came_from = &mut buffers.came_from;
-    let closed = &mut buffers.closed;
-
-    g_score[start as usize] = 0.0;
-
     // Priority queue: (f_score, node_id)
     let mut open: BinaryHeap<Reverse<(OrderedFloat<f32>, u32)>> = BinaryHeap::new();
 
     let (goal_lat, goal_lon) = graph.node_pos(goal);
-    let (start_lat, start_lon) = graph.node_pos(start);
-    let h_start = haversine_nm(start_lat, start_lon, goal_lat, goal_lon) as f32;
+
+    touch_and_cache_h(buffers, start, graph, goal_lat, goal_lon);
+    buffers.g_score[start as usize] = 0.0;
+    let h_start = buffers.h_score[start as usize];
     open.push(Reverse((OrderedFloat(h_start), start)));
 
     while let Some(Reverse((_, current))) = open.pop() {
@@ -44,31 +60,32 @@ pub fn astar(
             let mut path = vec![goal];
             let mut node = goal;
             while node != start {
-                node = came_from[node as usize];
+                node = buffers.came_from[node as usize];
                 path.push(node);
             }
             path.reverse();
-            let total_dist = g_score[goal as usize] as f64;
+            let total_dist = buffers.g_score[goal as usize] as f64;
             return Some((path, total_dist));
         }
 
-        if closed[current as usize] {
+        touch_and_cache_h(buffers, current, graph, goal_lat, goal_lon);
+        if buffers.closed[current as usize] {
             continue;
         }
-        closed[current as usize] = true;
+        buffers.closed[current as usize] = true;
 
-        let current_g = g_score[current as usize];
+        let current_g = buffers.g_score[current as usize];
 
         for (neighbor, weight) in graph.neighbors(current) {
-            if closed[neighbor as usize] {
+            touch_and_cache_h(buffers, neighbor, graph, goal_lat, goal_lon);
+            if buffers.closed[neighbor as usize] {
                 continue;
             }
             let tentative_g = current_g + weight;
-            if tentative_g < g_score[neighbor as usize] {
-                g_score[neighbor as usize] = tentative_g;
-                came_from[neighbor as usize] = current;
-                let (nlat, nlon) = graph.node_pos(neighbor);
-                let h = haversine_nm(nlat, nlon, goal_lat, goal_lon) as f32;
+            if tentative_g < buffers.g_score[neighbor as usize] {
+                buffers.g_score[neighbor as usize] = tentative_g;
+                buffers.came_from[neighbor as usize] = current;
+                let h = buffers.h_score[neighbor as usize];
                 let f = tentative_g + h;
                 open.push(Reverse((OrderedFloat(f), neighbor)));
             }
@@ -264,6 +281,70 @@ mod tests {
         let (path, cost) = result.unwrap();
         assert_eq!(path, vec![node_a]);
         assert!((cost - 0.0).abs() < 1e-6);
+    }
+
+    /// THE regression test for the generation-counter reset: reusing the same
+    /// buffers across two searches (with a `reset()` in between, mimicking
+    /// `AstarPool::acquire`/`release`) must produce a result bit-identical to
+    /// running the second search on brand-new buffers. This catches stale
+    /// g_score/came_from/closed/h_score state leaking across generations.
+    #[test]
+    fn astar_reused_buffers_match_fresh_buffers_after_reset() {
+        let (g, node_a, node_d) = diamond_graph();
+
+        let mut reused = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+
+        // First search touches (and closes) every node in the tiny diamond graph.
+        let first = astar(&g, node_a, node_d, &mut reused).expect("first search finds a path");
+
+        // Simulate AstarPool::release() + acquire(): O(1) generation bump, no
+        // full-graph clear.
+        reused.reset();
+
+        // Second search on the same (now stale-but-reset) buffers.
+        let second = astar(&g, node_a, node_d, &mut reused).expect("second search finds a path");
+
+        // Baseline: identical query on completely fresh buffers.
+        let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let baseline = astar(&g, node_a, node_d, &mut fresh).expect("baseline search finds a path");
+
+        assert_eq!(
+            second.0, baseline.0,
+            "path nodes must match a fresh-buffer run"
+        );
+        assert!(
+            (second.1 - baseline.1).abs() < 1e-6,
+            "cost {} must match fresh-buffer cost {}",
+            second.1,
+            baseline.1
+        );
+        // Repeating the identical query twice should also yield identical results.
+        assert_eq!(first.0, second.0);
+        assert!((first.1 - second.1).abs() < 1e-6);
+    }
+
+    /// A search in one direction (closing nodes and stamping came_from/g_score
+    /// pointers) followed by reset() and a *different* query in the reverse
+    /// direction on the same buffers must not be corrupted by stale state
+    /// (e.g. `closed` flags or `came_from` pointers left over from the first
+    /// generation).
+    #[test]
+    fn astar_stale_state_does_not_leak_across_generations() {
+        let (g, node_a, node_d) = diamond_graph();
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+
+        // First: forward search closes/stamps every node on the A->D path.
+        let _ = astar(&g, node_a, node_d, &mut buffers).expect("path exists");
+
+        buffers.reset();
+
+        // Second: reverse search (D -> A) on the same, now-stale buffers.
+        let reused_result = astar(&g, node_d, node_a, &mut buffers).expect("path exists");
+        let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let fresh_result = astar(&g, node_d, node_a, &mut fresh).expect("path exists");
+
+        assert_eq!(reused_result.0, fresh_result.0);
+        assert!((reused_result.1 - fresh_result.1).abs() < 1e-6);
     }
 
     #[test]
