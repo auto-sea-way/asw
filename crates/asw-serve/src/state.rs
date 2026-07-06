@@ -147,8 +147,9 @@ impl AppState {
     /// issued with a growing bound (4, 8, 16, 32, ..., capped at `k_max`);
     /// each step processes only the cells beyond the previous bound, and the
     /// search stops requesting larger disks as soon as a step yields a hit.
-    /// Total traversal is bounded at ~2.3x the disk actually needed
-    /// (sum of a geometric series) instead of always the full k_max disk.
+    /// Since disk size is quadratic in k, a hit just past a step bound can
+    /// cost up to ~5x the minimal disk, but the worst (no-match) case is
+    /// bounded at ~1.56x a single full-k_max eager call.
     ///
     /// A per-ring `grid_ring(k)` loop was tried first and abandoned: its
     /// pentagon-safe fallback re-runs a full O(k²) BFS per ring, and at res-3
@@ -157,7 +158,7 @@ impl AppState {
     /// call on exhaustive (no-match) searches. The eager
     /// `grid_disk_distances` API handles pentagon distortion once per call
     /// (fast path first, one safe BFS on failure), keeping the worst case at
-    /// ~2.3x the single eager call.
+    /// ~1.56x the single eager call.
     ///
     /// Both the `_fast` and `_safe` backing iterators yield cells grouped by
     /// ascending grid distance (BFS order), so within each step cells arrive
@@ -295,8 +296,8 @@ impl AppState {
         // `k_max=50` here is an upper bound, not the typical cost:
         // `search_resolution`'s geometric doubling stops requesting larger disks
         // once a step yields a match (typically k≈12 in practice), so this
-        // usually walks ~2.3x the needed disk rather than the full 7,651-cell
-        // k=50 disk.
+        // usually walks a fraction of the full 7,651-cell k=50 disk (up to ~5x
+        // the minimal needed disk when a hit lands just past a step bound).
         self.search_resolution(&ll, lat, lon, 3, 50, &mut best);
 
         best

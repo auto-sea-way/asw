@@ -475,6 +475,8 @@ fn split_zone_candidates(
     let mut zone = Vec::new();
     let mut normal = Vec::new();
     for cell in current_water {
+        // Resolutions are probed in ascending order; if corridors at different
+        // zone resolutions ever overlap, the lowest-resolution match wins.
         let leaf_res = zone_resolutions.iter().find_map(|&zone_res| {
             let ancestor = cell.parent(zone_res)?;
             zone_lookup.get(&ancestor).copied()
