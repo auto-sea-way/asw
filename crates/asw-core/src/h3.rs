@@ -39,15 +39,35 @@ pub fn cell_boundary(cell: CellIndex) -> Vec<(f64, f64)> {
 }
 
 /// Convert an H3 cell boundary to a geo::Polygon (lon/lat coordinates).
+///
+/// Cells straddling the antimeridian have h3o boundary vertices that jump between
+/// +180 and -180 (e.g. 179.98, -179.97). Built naively, that ring sweeps across the
+/// whole map at that latitude and gets misclassified by land/water tests. Longitudes
+/// are "unwrapped" here into a continuous range (adding/subtracting 360 as needed) so
+/// the ring stays compact; its coordinates may then fall slightly outside [-180, 180]
+/// for a transmeridian cell. `LandIndex::intersects_polygon`/`contains_polygon` know
+/// how to query such polygons correctly (see `transmeridian_variants` in geo_index.rs).
 pub fn cell_polygon(cell: CellIndex) -> geo::Polygon<f64> {
     let boundary = cell.boundary();
-    let mut coords: Vec<geo::Coord<f64>> = boundary
-        .iter()
-        .map(|ll| geo::Coord {
-            x: ll.lng(),
+    let mut coords: Vec<geo::Coord<f64>> = Vec::with_capacity(boundary.len() + 1);
+    let mut prev_raw_lon: Option<f64> = None;
+    let mut offset = 0.0_f64;
+    for ll in boundary.iter() {
+        let raw_lon = ll.lng();
+        if let Some(prev) = prev_raw_lon {
+            let delta = raw_lon - prev;
+            if delta > 180.0 {
+                offset -= 360.0;
+            } else if delta < -180.0 {
+                offset += 360.0;
+            }
+        }
+        prev_raw_lon = Some(raw_lon);
+        coords.push(geo::Coord {
+            x: raw_lon + offset,
             y: ll.lat(),
-        })
-        .collect();
+        });
+    }
     // Close the ring
     if let Some(&first) = coords.first() {
         coords.push(first);
@@ -100,5 +120,55 @@ mod tests {
         let d1 = haversine_nm(51.5074, -0.1278, 48.8566, 2.3522);
         let d2 = haversine_nm(48.8566, 2.3522, 51.5074, -0.1278);
         assert!((d1 - d2).abs() < 1e-10);
+    }
+
+    /// A res-5 cell seeded right at the antimeridian (lat 65, lon 179.99) must produce
+    /// a compact polygon (small lon extent), not a degenerate ring spanning ~360 degrees.
+    /// Pre-fix, cell_polygon builds coords straight from h3o's wrapped boundary lng()
+    /// values, so a cell straddling the seam gets vertices on both +179.x and -179.x,
+    /// and the raw ring spans nearly the full longitude range.
+    #[test]
+    fn cell_polygon_transmeridian_cell_has_small_lon_extent() {
+        let ll = LatLng::new(65.0, 179.99).expect("valid lat/lng");
+        let cell = ll.to_cell(Resolution::Five);
+
+        // Sanity: confirm this cell actually straddles the antimeridian, i.e. the raw
+        // h3o boundary has a jump > 180 degrees between two consecutive vertices.
+        let boundary: Vec<_> = cell.boundary().iter().copied().collect();
+        let n = boundary.len();
+        let straddles = (0..n).any(|i| {
+            let a = boundary[i].lng();
+            let b = boundary[(i + 1) % n].lng();
+            (a - b).abs() > 180.0
+        });
+        assert!(
+            straddles,
+            "test cell does not actually straddle the antimeridian; pick a different seed point"
+        );
+
+        let poly = cell_polygon(cell);
+        let lons: Vec<f64> = poly.exterior().coords().map(|c| c.x).collect();
+        let min_lon = lons.iter().cloned().fold(f64::MAX, f64::min);
+        let max_lon = lons.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(
+            max_lon - min_lon < 5.0,
+            "transmeridian cell polygon should have small lon extent, got {} (min={}, max={})",
+            max_lon - min_lon,
+            min_lon,
+            max_lon
+        );
+    }
+
+    #[test]
+    fn cell_polygon_normal_cell_unaffected() {
+        // A cell far from the antimeridian should produce an ordinary small polygon,
+        // same as before.
+        let ll = LatLng::new(51.5, -0.1).expect("valid lat/lng");
+        let cell = ll.to_cell(Resolution::Five);
+        let poly = cell_polygon(cell);
+        let lons: Vec<f64> = poly.exterior().coords().map(|c| c.x).collect();
+        let min_lon = lons.iter().cloned().fold(f64::MAX, f64::min);
+        let max_lon = lons.iter().cloned().fold(f64::MIN, f64::max);
+        assert!(max_lon - min_lon < 1.0);
     }
 }
