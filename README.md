@@ -73,37 +73,37 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 ## Routing Benchmarks
 
-20 routes, 10 iterations each. Graph v2 format (bitcode + H3 binary search).
+20 routes, 50 iterations each. Graph v2 format (bitcode + H3 binary search).
 
 ### Sailing Routes
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 0.5ms | 0.6ms | 33>3 |
-| Aegean Hop | 25.3nm | 1.4ms | 1.5ms | 54>5 |
-| Strait of Gibraltar | 29.4nm | 1.4ms | 1.5ms | 63>3 |
-| Baltic Crossing | 41.9nm | 2.5ms | 2.8ms | 53>5 |
-| Balearic Sea | 127.6nm | 3.8ms | 4.6ms | 114>6 |
-| Florida Strait | 89.0nm | 0.9ms | 1.2ms | 22>2 |
-| Malacca Route | 534.2nm | 67.8ms | 92.7ms | 486>19 |
-| Tasman Sea | 1265.1nm | 108.3ms | 126.8ms | 408>16 |
-| South Atlantic | 3272.3nm | 51.8ms | 57.3ms | 392>7 |
-| North Atlantic | 3040.5nm | 1.41s | 1.54s | 682>17 |
+| English Channel | 22.1nm | 0.2ms | 0.2ms | 33>3 |
+| Aegean Hop | 25.3nm | 0.7ms | 0.7ms | 54>5 |
+| Strait of Gibraltar | 29.4nm | 0.7ms | 0.7ms | 63>3 |
+| Baltic Crossing | 41.9nm | 1.6ms | 1.6ms | 53>5 |
+| Balearic Sea | 127.6nm | 2.2ms | 2.4ms | 114>6 |
+| Florida Strait | 89.0nm | 0.3ms | 0.4ms | 22>2 |
+| Malacca Route | 534.2nm | 39.8ms | 40.1ms | 486>19 |
+| Tasman Sea | 1265.1nm | 57.4ms | 60.6ms | 408>16 |
+| South Atlantic | 3272.3nm | 31.5ms | 31.7ms | 392>7 |
+| North Atlantic | 3040.5nm | 868ms | 903ms | 682>17 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.5nm | 23.7ms | 33.3ms | 1155>23 |
-| Panama Canal | 53.6nm | 76.2ms | 79.8ms | 2557>73 |
-| Kiel Canal | 84.4nm | 79.4ms | 87.8ms | 5769>80 |
-| Corinth Canal | 6.6nm | 2.0ms | 2.7ms | 428>9 |
-| Bosphorus | 32.3nm | 3.2ms | 3.7ms | 163>11 |
-| Dardanelles | 45.5nm | 2.2ms | 2.7ms | 116>5 |
-| Malacca Strait | 28.5nm | 2.4ms | 2.7ms | 86>5 |
-| Singapore Strait | 27.9nm | 2.1ms | 2.4ms | 46>5 |
-| Messina Strait | 15.7nm | 975us | 1.0ms | 68>5 |
-| Dover Strait | 18.4nm | 1.7ms | 1.9ms | 17>3 |
+| Suez Canal | 141.5nm | 13.4ms | 13.5ms | 1155>23 |
+| Panama Canal | 53.6nm | 47.4ms | 49.1ms | 2557>73 |
+| Kiel Canal | 84.4nm | 40.9ms | 41.7ms | 5769>80 |
+| Corinth Canal | 6.6nm | 1.1ms | 1.2ms | 428>9 |
+| Bosphorus | 32.3nm | 1.8ms | 1.8ms | 163>11 |
+| Dardanelles | 45.5nm | 1.3ms | 1.4ms | 116>5 |
+| Malacca Strait | 28.5nm | 1.3ms | 1.4ms | 86>5 |
+| Singapore Strait | 27.9nm | 1.0ms | 1.0ms | 46>5 |
+| Messina Strait | 15.7nm | 0.5ms | 0.5ms | 68>5 |
+| Dover Strait | 18.4nm | 0.4ms | 0.4ms | 17>3 |
 
 ## API Endpoints
 
@@ -143,7 +143,7 @@ docker run -e ASW_API_KEY=your-secret \
   -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.4.0
 ```
 
-The full planet graph needs ~4.2 GiB total memory (3.5 GiB RSS + ~750 MiB swap). A **4 GB instance with swap** works; an **8 GB instance** runs comfortably without swap. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
+The full planet graph needs ~4.9 GiB total memory (~4.1 GiB RSS + ~800 MiB swap). A **4 GB instance with a generous swap file** still works but pages under load; an **8 GB instance** is recommended. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
@@ -170,9 +170,9 @@ Built on Hetzner cpx62 (32 vCPU, 64 GB RAM) in ~5 hours:
 | Edges | 302,483,040 |
 | Graph file size | 704 MB |
 | Connectivity | 100% (single connected component after build-time pruning) |
-| Server memory (RSS) | ~3.5 GiB |
-| Server memory (total) | ~4.2 GiB (needs swap on 4 GB nodes) |
-| Minimum instance | 4 GB RAM + swap, recommended 8 GB |
+| Server memory (RSS) | ~4.1 GiB |
+| Server memory (total) | ~4.9 GiB (needs swap below 8 GB) |
+| Minimum instance | 4 GB RAM + swap (pages under load), recommended 8 GB |
 
 ```bash
 asw cloud build --output export/asw.graph
