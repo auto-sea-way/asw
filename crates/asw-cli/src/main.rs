@@ -59,7 +59,7 @@ enum Commands {
         graph_url: Option<String>,
 
         /// API key for authenticating requests (required)
-        #[arg(long, env = "ASW_API_KEY")]
+        #[arg(long, env = "ASW_API_KEY", hide_env_values = true)]
         api_key: String,
     },
     /// Export graph as GeoJSON for visualization
@@ -124,7 +124,7 @@ enum CloudAction {
     /// Full remote build: provision → upload → compile → build → download
     Build {
         /// Hetzner API token
-        #[arg(long, env = "HETZNER_TOKEN")]
+        #[arg(long, env = "HETZNER_TOKEN", hide_env_values = true)]
         hetzner_token: String,
 
         /// Bounding box: preset name (dev, dev-small, marmaris) or min_lon,min_lat,max_lon,max_lat
@@ -153,7 +153,7 @@ enum CloudAction {
     /// Provision a Hetzner server (create + bootstrap)
     Provision {
         /// Hetzner API token
-        #[arg(long, env = "HETZNER_TOKEN")]
+        #[arg(long, env = "HETZNER_TOKEN", hide_env_values = true)]
         hetzner_token: String,
 
         /// SSH private key path (auto-detected if not specified)
@@ -163,13 +163,13 @@ enum CloudAction {
     /// Teardown: delete the Hetzner server
     Teardown {
         /// Hetzner API token
-        #[arg(long, env = "HETZNER_TOKEN")]
+        #[arg(long, env = "HETZNER_TOKEN", hide_env_values = true)]
         hetzner_token: String,
     },
     /// Check server status
     Status {
         /// Hetzner API token
-        #[arg(long, env = "HETZNER_TOKEN")]
+        #[arg(long, env = "HETZNER_TOKEN", hide_env_values = true)]
         hetzner_token: String,
     },
 }
