@@ -181,46 +181,77 @@ impl RangeMin {
     }
 }
 
-/// Greedy line-of-sight smoothing.
-///
-/// Removes unnecessary waypoints by checking that direct lines between
-/// waypoints (a) don't cross any coastline and (b) when `shore_buffer_nm > 0`,
-/// don't come closer to the coastline than min(buffer, the raw path's own
-/// minimum clearance over the skipped span). Rule (b) means smoothing never
-/// brings the route closer to shore than penalized A* already accepted —
-/// full buffer in open water, graceful degradation near endpoints/in coves.
+/// Greedy line-of-sight smoothing over a node path (see `smooth_indices`,
+/// which this delegates to after decoding node positions and shore
+/// distances).
 pub fn smooth(
     graph: &RoutingGraph,
     path: &[u32],
     coastline: &CoastlineIndex,
     shore_buffer_nm: f64,
 ) -> Vec<u32> {
-    if path.len() <= 2 {
-        return path.to_vec();
+    let coords: Vec<[f64; 2]> = path
+        .iter()
+        .map(|&n| {
+            let (lat, lon) = graph.node_pos(n);
+            [lon, lat]
+        })
+        .collect();
+    let shore_dist: Vec<u8> = path.iter().map(|&n| graph.shore_dist[n as usize]).collect();
+    smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm)
+        .into_iter()
+        .map(|i| path[i])
+        .collect()
+}
+
+/// Greedy line-of-sight smoothing over raw `[lon, lat]` coordinates.
+///
+/// Removes waypoints whose direct predecessor→successor line (a) doesn't
+/// cross any coastline and (b) when `shore_buffer_nm > 0`, doesn't come
+/// closer to the coastline than min(buffer, the input's own minimum
+/// clearance over the skipped span, per `shore_dist`). Rule (b) means
+/// smoothing never brings the route closer to shore than the raw input
+/// already accepted — full buffer in open water, graceful degradation near
+/// endpoints/in coves.
+///
+/// `shore_dist[i]` is the quantized (`SHORE_DIST_UNIT_NM` units) shore
+/// distance of `coords[i]`; it must have the same length as `coords` and is
+/// only consulted when `shore_buffer_nm > 0`. Returns strictly increasing
+/// indices into `coords`, always keeping the first and last. When even the
+/// next hop is blocked (e.g. a pin on land), the blocked segment is kept and
+/// smoothing continues from that point.
+pub fn smooth_indices(
+    coords: &[[f64; 2]],
+    shore_dist: &[u8],
+    coastline: &CoastlineIndex,
+    shore_buffer_nm: f64,
+) -> Vec<usize> {
+    if coords.len() <= 2 {
+        return (0..coords.len()).collect();
     }
     let use_buffer = shore_buffer_nm > 0.0;
+    debug_assert!(
+        !use_buffer || shore_dist.len() == coords.len(),
+        "shore_dist must be parallel to coords when a buffer is requested"
+    );
 
-    // Range-min over the whole path's shore_dist, built once per call (not
+    // Range-min over the whole input's shore_dist, built once per call (not
     // per anchor) so smoothing is O(n log n) overall instead of O(n^2).
     let range_min = if use_buffer {
-        let shore_dist: Vec<u8> = path
-            .iter()
-            .map(|&node| graph.shore_dist[node as usize])
-            .collect();
-        Some(RangeMin::build(&shore_dist))
+        Some(RangeMin::build(shore_dist))
     } else {
         None
     };
 
-    let mut result = vec![path[0]];
+    let mut result = vec![0];
     let mut current_idx = 0;
-    let end_idx = path.len() - 1;
+    let end_idx = coords.len() - 1;
 
     while current_idx < end_idx {
-        let (c_lat, c_lon) = graph.node_pos(path[current_idx]);
+        let [c_lon, c_lat] = coords[current_idx];
 
         let clear = |j: usize| -> bool {
-            let (t_lat, t_lon) = graph.node_pos(path[j]);
+            let [t_lon, t_lat] = coords[j];
             if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
                 return false;
             }
@@ -239,7 +270,7 @@ pub fn smooth(
 
         // Try direct line to destination
         if clear(end_idx) {
-            result.push(path[end_idx]);
+            result.push(end_idx);
             break;
         }
 
@@ -263,7 +294,7 @@ pub fn smooth(
         }
 
         if v_lo == end_idx {
-            result.push(path[end_idx]);
+            result.push(end_idx);
             break;
         }
 
@@ -277,10 +308,12 @@ pub fn smooth(
             }
         }
 
+        // v_lo is the farthest visible point. Ensure we make progress even
+        // when the very next hop is blocked (land pin case).
         if v_lo <= current_idx {
             v_lo = current_idx + 1;
         }
-        result.push(path[v_lo]);
+        result.push(v_lo);
         current_idx = v_lo;
     }
 
@@ -657,5 +690,86 @@ mod tests {
         let (g, coast, path) = dogleg_with_shore(&[20, 255, 20]);
         let smoothed = smooth(&g, &path, &coast, 3.0);
         assert_eq!(smoothed, vec![path[0], path[2]]);
+    }
+
+    /// Vertical coastline "wall" at `lon`, spanning `lat_min..lat_max`.
+    fn wall_index(lon: f64, lat_min: f64, lat_max: f64) -> CoastlineIndex {
+        let line = geo::LineString::from(vec![(lon, lat_min), (lon, lat_max)]);
+        CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(line)])
+    }
+
+    /// Closed square ring around (0, 0), side 0.2 degrees — a tiny "island"
+    /// used to simulate a pin on land.
+    fn island_around_origin() -> CoastlineIndex {
+        let ring = geo::LineString::from(vec![
+            (-0.1, -0.1),
+            (0.1, -0.1),
+            (0.1, 0.1),
+            (-0.1, 0.1),
+            (-0.1, -0.1),
+        ]);
+        CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(ring)])
+    }
+
+    #[test]
+    fn smooth_indices_collapses_clear_path() {
+        let coastline = CoastlineIndex::new(vec![]);
+        let coords = [[0.0, 0.0], [0.3, 0.1], [0.6, -0.1], [1.0, 0.0]];
+        let out = smooth_indices(&coords, &[255; 4], &coastline, 0.0);
+        assert_eq!(out, vec![0, 3]);
+    }
+
+    #[test]
+    fn smooth_indices_keeps_necessary_corner() {
+        // Wall at lon 0.5 (lat -1..1); the path detours over its top at lat 1.5.
+        // Only the corner above the wall must survive smoothing.
+        let coastline = wall_index(0.5, -1.0, 1.0);
+        let coords = [[0.0, 0.0], [0.2, 0.5], [0.5, 1.5], [0.8, 0.5], [1.0, 0.0]];
+        let out = smooth_indices(&coords, &[255; 5], &coastline, 0.0);
+        assert_eq!(out, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn smooth_indices_short_input_passthrough() {
+        let coastline = wall_index(0.5, -1.0, 1.0);
+        let coords = [[0.0, 0.0], [1.0, 0.0]];
+        assert_eq!(
+            smooth_indices(&coords, &[255; 2], &coastline, 0.0),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn smooth_indices_blocked_next_hop_still_progresses() {
+        // First point sits inside a ring "island": it can see nothing, so the
+        // smoother must keep the (land-clipping) segment to the next point and
+        // continue — this is the approved land-pin behavior.
+        let coastline = island_around_origin();
+        let coords = [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]];
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
+        assert_eq!(*out.first().unwrap(), 0);
+        assert_eq!(*out.last().unwrap(), 2);
+    }
+
+    #[test]
+    fn smooth_indices_respects_buffer() {
+        // Same geometry as the node-based dogleg tests: coastline at lon 28.0
+        // (lat 36.45..36.55), direct P0->P2 line ~2.41 nm off the coast.
+        let coastline = wall_index(28.0, 36.45, 36.55);
+        let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
+        let loose = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
+        assert_eq!(loose, vec![0, 2]);
+        let strict = smooth_indices(&coords, &[255; 3], &coastline, 3.0);
+        assert_eq!(strict, vec![0, 1, 2], "3 nm buffer must keep the dogleg");
+    }
+
+    #[test]
+    fn smooth_indices_relaxes_for_near_shore_endpoints() {
+        // Endpoints themselves are close to shore (q=20 = 0.4 nm): threshold
+        // becomes min(3.0, 0.4) = 0.4 nm, so the ~2.4 nm direct line passes.
+        let coastline = wall_index(28.0, 36.45, 36.55);
+        let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
+        let out = smooth_indices(&coords, &[20, 255, 20], &coastline, 3.0);
+        assert_eq!(out, vec![0, 2]);
     }
 }
