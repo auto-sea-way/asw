@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-07-07
 
 ### Added
 
@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Direct-line shortcut: when the straight line between the requested points does not cross land — and keeps the requested `shore_buffer` clearance, degraded to the endpoints' own shore distance when they start closer — `/route` returns a 2-point great-circle route without a graph search (faster for open-water queries)
 - A pin on land (or blocked from its snapped node) still returns a route: the first/last segment keeps the direct connection to the graph (small shoreline clip) instead of erroring
 - `asw_core::routing::smooth` is now a thin wrapper over the new coordinate-based `smooth_indices` (same algorithm, same buffer semantics)
+- Crate versions now track the release version — `asw --version` reports the actual release (was stuck at 0.1.0)
 
 ## [0.5.0] - 2026-07-07
 
@@ -145,7 +146,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
-[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.5.0...HEAD
+[0.6.0]: https://github.com/auto-sea-way/asw/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/auto-sea-way/asw/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/auto-sea-way/asw/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/auto-sea-way/asw/compare/v0.3.0...v0.3.1

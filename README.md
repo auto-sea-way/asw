@@ -31,7 +31,7 @@ Ship it as a single binary + graph file. Self-hosted, no third-party API keys, n
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.5.0-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (~60-90s while the graph loads), then query a route:
@@ -129,23 +129,23 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.5.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.5.0-full` | Full image — graph file included (~750 MB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.6.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.6.0-full` | Full image — graph file included (~750 MB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~870 MB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.5.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.5.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.5.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.6.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.5.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0
 ```
 
 The full planet graph needs ~4.1 GiB RSS right after load (measured, Linux), growing with query coverage as A* buffer pages are touched — 4.3 GiB measured after a globally diverse route mix, ~4.8 GiB hard ceiling. Plan for ~5 GiB total. A **4 GB instance with a generous swap file** still works but pages under load; an **8 GB instance** is recommended. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
@@ -167,7 +167,7 @@ Each release also includes the pre-built `asw.graph` file and `SHA256SUMS` for v
 
 ## Full Planet Build
 
-Built on Hetzner cpx62 (32 vCPU, 64 GB RAM) in ~5 hours:
+Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in ~5 hours:
 
 | Metric | Value |
 |--------|-------|
@@ -202,6 +202,11 @@ asw serve --graph export/asw.graph --host 0.0.0.0 --port 3000
 
 # Export as GeoJSON for visualization
 asw geojson --graph export/asw.graph --bbox marmaris --coastline --output export/asw.geojson
+
+# Benchmark routing performance (20 fixed routes, 50 iterations each)
+asw bench --graph export/asw.graph --output export/bench.json
+asw bench --compare export/bench.json          # compare against a saved baseline
+asw bench --shore-buffer 1.0                   # benchmark with the shore-clearance penalty applied
 ```
 
 Bbox supports presets (`dev`, `dev-small`, `marmaris`) or `min_lon,min_lat,max_lon,max_lat`.
