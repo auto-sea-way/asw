@@ -38,13 +38,13 @@ fn touch_and_cache_h(
 }
 
 /// Query-time shore clearance penalty. Edges into nodes closer to shore than
-/// `buffer_q` get their weight multiplied by `1 + k * (1 - d/buffer_q)`.
+/// `buffer_q` get their weight multiplied by `1 + DEFAULT_K * (1 - d/buffer_q)`.
+/// The penalty strength is a fixed constant (`DEFAULT_K`) — nothing in the
+/// codebase varies it per-request, so there is no configurable field for it.
 #[derive(Debug, Clone, Copy)]
 pub struct ShorePenalty {
     /// Requested clearance in shore_dist units (SHORE_DIST_UNIT_NM each).
     pub buffer_q: u8,
-    /// Penalty strength at distance 0.
-    pub k: f32,
 }
 
 impl ShorePenalty {
@@ -57,13 +57,14 @@ impl ShorePenalty {
         if buffer_nm.is_nan() || buffer_nm <= 0.0 {
             return None;
         }
-        let q = (buffer_nm / crate::graph::SHORE_DIST_UNIT_NM)
+        // Subtract a small epsilon before ceiling so float error on an exact
+        // multiple (e.g. 0.14 / 0.02 = 7.000000000000001) doesn't overstate
+        // buffer_q by one unit. Mirrors quantize_shore_dist's epsilon guard
+        // in graph.rs (added before floor there; subtracted before ceil here).
+        let q = (buffer_nm / crate::graph::SHORE_DIST_UNIT_NM - 1e-9)
             .ceil()
             .clamp(1.0, 255.0) as u8;
-        Some(Self {
-            buffer_q: q,
-            k: Self::DEFAULT_K,
-        })
+        Some(Self { buffer_q: q })
     }
 
     /// Weight multiplier for an edge into a node `d` shore_dist units from shore.
@@ -72,7 +73,7 @@ impl ShorePenalty {
         if d >= self.buffer_q {
             1.0
         } else {
-            1.0 + self.k * (1.0 - d as f32 / self.buffer_q as f32)
+            1.0 + Self::DEFAULT_K * (1.0 - d as f32 / self.buffer_q as f32)
         }
     }
 }
@@ -140,6 +141,46 @@ pub fn astar(
     None // No path found
 }
 
+/// Sparse table for O(1) range-minimum queries over a fixed `u8` slice.
+/// Built once (O(n log n)) and queried O(1) per anchor in `smooth()`,
+/// replacing an O(n) running-min rebuild per anchor (worst case O(n^2)
+/// across the whole smoothing pass for long, twisty raw paths).
+struct RangeMin {
+    /// `table[k][i]` = min over `values[i .. i + 2^k]`.
+    table: Vec<Vec<u8>>,
+}
+
+impl RangeMin {
+    fn build(values: &[u8]) -> Self {
+        let n = values.len();
+        let levels = if n == 0 {
+            1
+        } else {
+            (n as u32).ilog2() as usize + 1
+        };
+        let mut table: Vec<Vec<u8>> = Vec::with_capacity(levels);
+        table.push(values.to_vec());
+        for k in 1..levels {
+            let half = 1usize << (k - 1);
+            let span = half * 2;
+            let prev = &table[k - 1];
+            let row: Vec<u8> = (0..=n - span)
+                .map(|i| prev[i].min(prev[i + half]))
+                .collect();
+            table.push(row);
+        }
+        Self { table }
+    }
+
+    /// Minimum of `values[i..=j]` (inclusive), both indices in bounds.
+    fn query(&self, i: usize, j: usize) -> u8 {
+        let len = j - i + 1;
+        let k = (len as u32).ilog2() as usize;
+        let span = 1usize << k;
+        self.table[k][i].min(self.table[k][j + 1 - span])
+    }
+}
+
 /// Greedy line-of-sight smoothing.
 ///
 /// Removes unnecessary waypoints by checking that direct lines between
@@ -159,6 +200,18 @@ pub fn smooth(
     }
     let use_buffer = shore_buffer_nm > 0.0;
 
+    // Range-min over the whole path's shore_dist, built once per call (not
+    // per anchor) so smoothing is O(n log n) overall instead of O(n^2).
+    let range_min = if use_buffer {
+        let shore_dist: Vec<u8> = path
+            .iter()
+            .map(|&node| graph.shore_dist[node as usize])
+            .collect();
+        Some(RangeMin::build(&shore_dist))
+    } else {
+        None
+    };
+
     let mut result = vec![path[0]];
     let mut current_idx = 0;
     let end_idx = path.len() - 1;
@@ -166,28 +219,13 @@ pub fn smooth(
     while current_idx < end_idx {
         let (c_lat, c_lon) = graph.node_pos(path[current_idx]);
 
-        // Running min of shore_dist from the anchor: range_min[j - current_idx]
-        // = min shore_dist over path[current_idx..=j]. O(n) per anchor.
-        let range_min: Vec<u8> = if use_buffer {
-            let mut v = Vec::with_capacity(end_idx - current_idx + 1);
-            let mut m = u8::MAX;
-            for &node in &path[current_idx..=end_idx] {
-                m = m.min(graph.shore_dist[node as usize]);
-                v.push(m);
-            }
-            v
-        } else {
-            Vec::new()
-        };
-
         let clear = |j: usize| -> bool {
             let (t_lat, t_lon) = graph.node_pos(path[j]);
             if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
                 return false;
             }
-            if use_buffer {
-                let raw_min_nm =
-                    range_min[j - current_idx] as f64 * crate::graph::SHORE_DIST_UNIT_NM;
+            if let Some(rm) = &range_min {
+                let raw_min_nm = rm.query(current_idx, j) as f64 * crate::graph::SHORE_DIST_UNIT_NM;
                 let threshold = shore_buffer_nm.min(raw_min_nm);
                 if threshold > 0.0
                     && coastline.segment_min_distance_nm(c_lon, c_lat, t_lon, t_lat, threshold)
@@ -453,6 +491,29 @@ mod tests {
     }
 
     #[test]
+    fn range_min_matches_brute_force_min() {
+        let values: [u8; 9] = [5, 3, 8, 1, 9, 2, 7, 6, 4];
+        let rm = RangeMin::build(&values);
+        for i in 0..values.len() {
+            for j in i..values.len() {
+                let expected = values[i..=j].iter().copied().min().unwrap();
+                assert_eq!(
+                    rm.query(i, j),
+                    expected,
+                    "range [{i}, {j}] expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn range_min_single_element() {
+        let values: [u8; 1] = [42];
+        let rm = RangeMin::build(&values);
+        assert_eq!(rm.query(0, 0), 42);
+    }
+
+    #[test]
     fn shore_penalty_from_nm_and_factor() {
         assert!(ShorePenalty::from_nm(0.0).is_none());
         assert!(ShorePenalty::from_nm(-1.0).is_none());
@@ -462,6 +523,10 @@ mod tests {
         assert_eq!(p2.buffer_q, 1);
         let p3 = ShorePenalty::from_nm(99.0).unwrap(); // clamps to 255
         assert_eq!(p3.buffer_q, 255);
+        // 0.14 / 0.02 == 7.000000000000001 in f64; without the epsilon guard
+        // this ceils to 8 instead of the intended exact 7.
+        let p4 = ShorePenalty::from_nm(0.14).unwrap();
+        assert_eq!(p4.buffer_q, 7);
 
         assert_eq!(p.factor(5), 1.0); // at the buffer: no penalty
         assert_eq!(p.factor(255), 1.0); // far offshore: no penalty

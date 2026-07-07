@@ -343,7 +343,13 @@ impl RoutingGraph {
             }
         }
         new_builder.coastline_coords = self.coastline_coords;
-        new_builder.build()
+        let pruned = new_builder.build();
+        tracing::info!(
+            "Pruned graph: {} nodes, {} edges",
+            pruned.num_nodes,
+            pruned.num_edges
+        );
+        pruned
     }
 
     /// Returns a Vec where `result[i]` is the component root for node `i`.

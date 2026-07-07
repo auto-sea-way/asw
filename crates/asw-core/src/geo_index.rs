@@ -290,26 +290,9 @@ impl CoastlineIndex {
     /// consistent longitude frame, so `point_to_segment_dist`'s planar (non-wrap)
     /// math measures the true short-way-around distance.
     pub fn min_distance_deg(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
-        let mut best = self.min_distance_deg_planar(lon, lat, radius_deg);
-
-        // Envelope overflows past +180: also search near -180, in the frame
-        // reached by shifting the query point west by a full turn.
-        if lon + radius_deg > 180.0 {
-            let wrapped = self.min_distance_deg_planar(lon - 360.0, lat, radius_deg);
-            if wrapped < best {
-                best = wrapped;
-            }
-        }
-        // Envelope underflows past -180: also search near +180, in the frame
-        // reached by shifting the query point east by a full turn.
-        if lon - radius_deg < -180.0 {
-            let wrapped = self.min_distance_deg_planar(lon + 360.0, lat, radius_deg);
-            if wrapped < best {
-                best = wrapped;
-            }
-        }
-
-        best
+        with_wrap_retry(lon, lon, radius_deg, |shift| {
+            self.min_distance_deg_planar(lon + shift, lat, radius_deg)
+        })
     }
 
     fn min_distance_deg_planar(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
@@ -344,14 +327,10 @@ impl CoastlineIndex {
     /// always live within [-180, 180]) and the minimum is taken.
     pub fn min_distance_nm(&self, lon: f64, lat: f64, max_nm: f64) -> f64 {
         let coslat = cos_lat_clamped(lat);
-        let dlon = max_nm / (60.0 * coslat);
-        let mut best = self.min_distance_nm_planar(lon, lat, max_nm, coslat);
-        if lon + dlon > 180.0 {
-            best = best.min(self.min_distance_nm_planar(lon - 360.0, lat, max_nm, coslat));
-        } else if lon - dlon < -180.0 {
-            best = best.min(self.min_distance_nm_planar(lon + 360.0, lat, max_nm, coslat));
-        }
-        best
+        let dlon = nm_lon_radius(max_nm, coslat);
+        with_wrap_retry(lon, lon, dlon, |shift| {
+            self.min_distance_nm_planar(lon + shift, lat, max_nm, coslat)
+        })
     }
 
     fn min_distance_nm_planar(&self, lon: f64, lat: f64, max_nm: f64, coslat: f64) -> f64 {
@@ -408,26 +387,10 @@ impl CoastlineIndex {
         max_nm: f64,
     ) -> f64 {
         let coslat = cos_lat_clamped((lat1 + lat2) / 2.0);
-        let dlon = max_nm / (60.0 * coslat);
-        let mut best = self.segment_min_distance_nm_planar(lon1, lat1, lon2, lat2, max_nm);
-        if lon1.max(lon2) + dlon > 180.0 {
-            best = best.min(self.segment_min_distance_nm_planar(
-                lon1 - 360.0,
-                lat1,
-                lon2 - 360.0,
-                lat2,
-                max_nm,
-            ));
-        } else if lon1.min(lon2) - dlon < -180.0 {
-            best = best.min(self.segment_min_distance_nm_planar(
-                lon1 + 360.0,
-                lat1,
-                lon2 + 360.0,
-                lat2,
-                max_nm,
-            ));
-        }
-        best
+        let dlon = nm_lon_radius(max_nm, coslat);
+        with_wrap_retry(lon1.min(lon2), lon1.max(lon2), dlon, |shift| {
+            self.segment_min_distance_nm_planar(lon1 + shift, lat1, lon2 + shift, lat2, max_nm)
+        })
     }
 
     fn segment_min_distance_nm_planar(
@@ -562,6 +525,35 @@ fn bounding_rect(poly: &Polygon<f64>) -> ([f64; 2], [f64; 2]) {
 /// cos(lat) clamped away from zero for degree->nm longitude scaling near poles.
 fn cos_lat_clamped(lat: f64) -> f64 {
     lat.to_radians().cos().max(0.01)
+}
+
+/// Longitude half-width (in degrees) of a `max_nm` search radius at `coslat`.
+fn nm_lon_radius(max_nm: f64, coslat: f64) -> f64 {
+    max_nm / (60.0 * coslat)
+}
+
+/// Run `query(0.0)` for the primary (non-wrapped) frame and, if the query's
+/// longitude extent `[lon_min, lon_max]` expanded by `dlon` overflows past
+/// +/-180, retry `query` shifted by the opposite full turn (-360 or +360) and
+/// take the minimum. This is the shared antimeridian handling used by both
+/// the point (`min_distance_nm`/`min_distance_deg`) and segment
+/// (`segment_min_distance_nm_wrapped`) planar distance queries: stored
+/// coastline segments always live within [-180, 180], so shifting the query
+/// by a full turn puts it in the same frame as segments on the far side of
+/// the seam without needing to touch the stored data.
+fn with_wrap_retry(
+    lon_min: f64,
+    lon_max: f64,
+    dlon: f64,
+    mut query: impl FnMut(f64) -> f64,
+) -> f64 {
+    let mut best = query(0.0);
+    if lon_max + dlon > 180.0 {
+        best = best.min(query(-360.0));
+    } else if lon_min - dlon < -180.0 {
+        best = best.min(query(360.0));
+    }
+    best
 }
 
 /// Project a lon/lat coordinate into a local equirectangular nm frame
