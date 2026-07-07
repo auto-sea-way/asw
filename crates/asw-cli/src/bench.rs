@@ -442,6 +442,22 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
         "\nComparing against baseline (commit {}, {})\n",
         baseline.commit, baseline.timestamp
     );
+
+    // Old baselines predate the `shore_buffer_nm` field and deserialize it
+    // to 0.0 via #[serde(default)]. A mismatch here means the current run
+    // and the baseline applied a different (or absent) shore penalty, so
+    // their timings/hop-counts are not comparable — regression detection
+    // must not fire off apples-to-oranges deltas.
+    let buffer_mismatch = (current.shore_buffer_nm - baseline.shore_buffer_nm).abs() > 1e-9;
+    if buffer_mismatch {
+        println!(
+            "WARNING: shore_buffer_nm differs between runs (baseline {:.3} nm vs current {:.3} nm) \
+             — timing and hop-count deltas below are not comparable across a different shore buffer; \
+             regression detection is disabled for this comparison.\n",
+            baseline.shore_buffer_nm, current.shore_buffer_nm
+        );
+    }
+
     println!(
         "{:<20} {:>12} {:>12} {:>10} {:>10}",
         "Route", "P50 before", "P50 now", "Delta", "Status"
@@ -463,7 +479,9 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
                 } else {
                     0.0
                 };
-                let status = if delta_pct > 10.0 {
+                let status = if buffer_mismatch {
+                    "N/A"
+                } else if delta_pct > 10.0 {
                     has_regression = true;
                     "REGRESSION"
                 } else if delta_pct < -10.0 {
@@ -494,7 +512,10 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
     }
     println!();
 
-    has_regression
+    // Never signal a regression from a comparison whose baseline used a
+    // different shore buffer, no matter what the (incomparable) deltas above
+    // computed to.
+    has_regression && !buffer_mismatch
 }
 
 /// Write markdown benchmark results to `benchmarks/BENCHMARKS.md`.
@@ -738,4 +759,57 @@ pub fn run(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bench_result(shore_buffer_nm: f64, p50_us: u64) -> BenchResult {
+        BenchResult {
+            graph: GraphMeta {
+                nodes: 100,
+                edges: 200,
+                file: "test.graph".to_string(),
+            },
+            commit: "abc123".to_string(),
+            timestamp: "2026-01-01T00:00:00Z".to_string(),
+            iterations: 50,
+            shore_buffer_nm,
+            routes: vec![RouteBenchResult {
+                name: "Test Route".to_string(),
+                distance_nm: 10.0,
+                raw_hops: 5,
+                smooth_hops: 3,
+                min_us: p50_us,
+                p50_us,
+                p95_us: p50_us,
+                max_us: p50_us,
+            }],
+        }
+    }
+
+    #[test]
+    fn comparison_flags_regression_when_buffers_match() {
+        let baseline = bench_result(0.2, 1000);
+        let current = bench_result(0.2, 2000); // +100%, well over the 10% threshold
+        assert!(print_comparison(&current, &baseline));
+    }
+
+    #[test]
+    fn comparison_does_not_flag_regression_when_buffers_differ() {
+        let baseline = bench_result(0.0, 1000);
+        let current = bench_result(0.2, 2000); // same delta as above, but buffers differ
+        assert!(
+            !print_comparison(&current, &baseline),
+            "a shore_buffer_nm mismatch must suppress the regression flag regardless of timing delta"
+        );
+    }
+
+    #[test]
+    fn comparison_unaffected_when_buffers_match_and_no_regression() {
+        let baseline = bench_result(0.1, 1000);
+        let current = bench_result(0.1, 1010); // well under the 10% threshold
+        assert!(!print_comparison(&current, &baseline));
+    }
 }
