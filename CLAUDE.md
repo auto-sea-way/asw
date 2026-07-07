@@ -50,6 +50,7 @@ Rust workspace with 5 crates:
 - Critical narrow passages (Suez, Panama, etc.) use resolution cascade corridors
 - Graph format v3: bitcode + zstd-19 serialization, sorted `node_h3: Vec<u64>` for O(log n) spatial lookup, per-node `shore_dist: Vec<u8>` (1 byte/node, quantized distance-to-shore, 0.02 nm units, saturating at 5.1 nm)
 - Nearest-node snapping via H3 binary search (no R-tree) — sorted node_h3 vec is both coordinate store and spatial index
+- Query-time endpoint stitching: routes start/end at the exact requested coordinates; clear line-of-sight pairs short-circuit to a direct great-circle leg without a graph search (shore-buffer aware; no graph densification needed for deep water)
 - Pre-allocated A* buffer pool (2 buffer sets) eliminates per-request allocation spikes
 - Cloud builds: shell out to system `ssh`/`scp` for streaming output
 - Hetzner API via reqwest (blocking), no SDK dependency
