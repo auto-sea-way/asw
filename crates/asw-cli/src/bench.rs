@@ -101,6 +101,8 @@ struct BenchResult {
     commit: String,
     timestamp: String,
     iterations: usize,
+    #[serde(default)]
+    shore_buffer_nm: f64,
     routes: Vec<RouteBenchResult>,
 }
 
@@ -342,6 +344,7 @@ fn build_result(
     graph: &RoutingGraph,
     graph_path: &str,
     iterations: usize,
+    shore_buffer_nm: f64,
 ) -> BenchResult {
     BenchResult {
         graph: GraphMeta {
@@ -352,6 +355,7 @@ fn build_result(
         commit: git_commit(),
         timestamp: chrono_now(),
         iterations,
+        shore_buffer_nm,
         routes: stats
             .iter()
             .map(|s| RouteBenchResult {
@@ -694,7 +698,13 @@ pub fn run(
     let stats = run_benchmark(&app, &app.graph, &routes, iterations, shore_buffer_nm);
 
     let graph_path_str = graph_path.display().to_string();
-    let result = build_result(&stats, &app.graph, &graph_path_str, iterations);
+    let result = build_result(
+        &stats,
+        &app.graph,
+        &graph_path_str,
+        iterations,
+        shore_buffer_nm,
+    );
 
     if json {
         println!(

@@ -119,7 +119,7 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 **`/route` parameters:**
 
 - `from`, `to` — `lat,lon` coordinates
-- `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the applied value as `shore_buffer_nm`
+- `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the requested value as `shore_buffer_nm`
 
 ## Packages
 

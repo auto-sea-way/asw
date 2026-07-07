@@ -96,7 +96,7 @@ async fn route_handler(
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
-                error: "Invalid 'shore_buffer' parameter. Expected nautical miles in 0..5.0".into(),
+                error: "Invalid 'shore_buffer' parameter. Expected nautical miles from 0 to 5.0 inclusive".into(),
             }),
         ));
     }
