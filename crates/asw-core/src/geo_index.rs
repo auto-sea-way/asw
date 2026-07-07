@@ -72,7 +72,25 @@ impl LandIndex {
     }
 
     /// Check if any land polygon intersects the given polygon.
+    ///
+    /// Antimeridian-aware: a polygon produced by `cell_polygon` for a transmeridian
+    /// H3 cell may carry unwrapped longitudes outside [-180, 180] (see h3.rs). Stored
+    /// land polygons always live within [-180, 180], split at the seam, so such a
+    /// query polygon is tested once as-is and once shifted back into range — this
+    /// catches land on either side of the antimeridian without reintroducing the
+    /// degenerate world-spanning ring the unwrapping was meant to avoid.
     pub fn intersects_polygon(&self, poly: &Polygon<f64>) -> bool {
+        // Fast path: non-transmeridian polygon, no allocation or cloning
+        if !has_transmeridian_coords(poly) {
+            return self.intersects_polygon_single(poly);
+        }
+        // Transmeridian case: build and test variants
+        transmeridian_variants(poly)
+            .iter()
+            .any(|variant| self.intersects_polygon_single(variant))
+    }
+
+    fn intersects_polygon_single(&self, poly: &Polygon<f64>) -> bool {
         let (min, max) = bounding_rect(poly);
         let envelope = AABB::from_corners(min, max);
         for lp in self.tree.locate_in_envelope_intersecting(&envelope) {
@@ -84,7 +102,19 @@ impl LandIndex {
     }
 
     /// Check if the given polygon is entirely contained within any single land polygon.
+    /// Antimeridian-aware in the same way as `intersects_polygon`.
     pub fn contains_polygon(&self, poly: &Polygon<f64>) -> bool {
+        // Fast path: non-transmeridian polygon, no allocation or cloning
+        if !has_transmeridian_coords(poly) {
+            return self.contains_polygon_single(poly);
+        }
+        // Transmeridian case: build and test variants
+        transmeridian_variants(poly)
+            .iter()
+            .any(|variant| self.contains_polygon_single(variant))
+    }
+
+    fn contains_polygon_single(&self, poly: &Polygon<f64>) -> bool {
         let (min, max) = bounding_rect(poly);
         let envelope = AABB::from_corners(min, max);
         for lp in self.tree.locate_in_envelope_intersecting(&envelope) {
@@ -206,7 +236,27 @@ impl CoastlineIndex {
     }
 
     /// Check if a line segment from (lon1, lat1) to (lon2, lat2) crosses any coastline.
+    ///
+    /// Antimeridian-aware: a query segment crossing lon +/-180 (e.g. Auckland to
+    /// Honolulu) is split into two sub-segments at the seam before testing, so the
+    /// R-tree envelope stays local to the segment's actual path instead of spanning
+    /// nearly the whole planet, and the planar intersection test no longer runs the
+    /// "long way round" through the opposite side of the world.
+    ///
+    /// Stored coastline segments themselves are short OSM-derived chunks (see
+    /// `asw-build/src/coastline.rs::subdivide_ring`) sourced from the pre-split
+    /// `land-polygons-split-4326` dataset, which does not emit rings straddling the
+    /// seam, so individual stored segments are assumed not to cross it.
     pub fn crosses_land(&self, lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> bool {
+        if (lon1 - lon2).abs() > 180.0 {
+            let (a, b) = split_at_antimeridian(lon1, lat1, lon2, lat2);
+            return self.crosses_land_planar(a.0, a.1, a.2, a.3)
+                || self.crosses_land_planar(b.0, b.1, b.2, b.3);
+        }
+        self.crosses_land_planar(lon1, lat1, lon2, lat2)
+    }
+
+    fn crosses_land_planar(&self, lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> bool {
         let min_lon = lon1.min(lon2);
         let max_lon = lon1.max(lon2);
         let min_lat = lat1.min(lat2);
@@ -225,7 +275,44 @@ impl CoastlineIndex {
 
     /// Approximate minimum distance (in degrees) from (lon, lat) to any coastline
     /// segment within `radius_deg`. Returns f64::MAX if nothing found.
+    ///
+    /// Antimeridian-aware: `lon` is assumed to already be in [-180, 180] (true of
+    /// all current callers — H3 `cell_center`/`cell_boundary` always return
+    /// normalized longitudes, unlike the unwrapped output of `cell_polygon`). A
+    /// query envelope that would overflow past +-180 is clipped by a naive
+    /// `[lon-radius, lon+radius]` AABB, silently missing coastline that sits just
+    /// across the seam in the *other* longitude sign (e.g. querying at lon
+    /// 179.99 misses a segment at lon -179.98, even though they're ~0.03 degrees
+    /// apart the short way around). When the envelope overflows, we also run the
+    /// query with `lon` shifted by +-360 into the same frame as the segments on
+    /// the far side of the seam — shifting the query point (rather than the
+    /// stored segments) keeps the point and the matched segment in one
+    /// consistent longitude frame, so `point_to_segment_dist`'s planar (non-wrap)
+    /// math measures the true short-way-around distance.
     pub fn min_distance_deg(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
+        let mut best = self.min_distance_deg_planar(lon, lat, radius_deg);
+
+        // Envelope overflows past +180: also search near -180, in the frame
+        // reached by shifting the query point west by a full turn.
+        if lon + radius_deg > 180.0 {
+            let wrapped = self.min_distance_deg_planar(lon - 360.0, lat, radius_deg);
+            if wrapped < best {
+                best = wrapped;
+            }
+        }
+        // Envelope underflows past -180: also search near +180, in the frame
+        // reached by shifting the query point east by a full turn.
+        if lon - radius_deg < -180.0 {
+            let wrapped = self.min_distance_deg_planar(lon + 360.0, lat, radius_deg);
+            if wrapped < best {
+                best = wrapped;
+            }
+        }
+
+        best
+    }
+
+    fn min_distance_deg_planar(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
         let envelope = AABB::from_corners(
             [lon - radius_deg, lat - radius_deg],
             [lon + radius_deg, lat + radius_deg],
@@ -234,9 +321,8 @@ impl CoastlineIndex {
         let mut best = f64::MAX;
 
         for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
-            let coords: Vec<_> = seg.line.coords().collect();
-            for w in coords.windows(2) {
-                let d = point_to_segment_dist(pt, *w[0], *w[1]);
+            for line in seg.line.lines() {
+                let d = point_to_segment_dist(pt, line.start, line.end);
                 if d < best {
                     best = d;
                 }
@@ -248,6 +334,79 @@ impl CoastlineIndex {
     pub fn segment_count(&self) -> usize {
         self.tree.size()
     }
+}
+
+/// A segment endpoint pair as (lon1, lat1, lon2, lat2).
+type LonLatSegment = (f64, f64, f64, f64);
+
+/// Split a query segment that crosses the antimeridian into two sub-segments that
+/// meet at the seam (lon = +-180), each expressed in a single consistent longitude
+/// frame. Only valid when `(lon1 - lon2).abs() > 180.0`.
+fn split_at_antimeridian(
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+) -> (LonLatSegment, LonLatSegment) {
+    // Unwrap into a continuous frame by shifting whichever endpoint is negative,
+    // then find where the continuous chord crosses lon = 180.
+    let (u1, u2) = if lon1 < 0.0 {
+        (lon1 + 360.0, lon2)
+    } else {
+        (lon1, lon2 + 360.0)
+    };
+    let t = (180.0 - u1) / (u2 - u1);
+    let lat_cross = lat1 + t * (lat2 - lat1);
+
+    let seam1 = if lon1 < 0.0 { -180.0 } else { 180.0 };
+    let seam2 = if lon2 < 0.0 { -180.0 } else { 180.0 };
+
+    (
+        (lon1, lat1, seam1, lat_cross),
+        (seam2, lat_cross, lon2, lat2),
+    )
+}
+
+/// Check if any coordinate in the polygon falls outside [-180, 180].
+/// Used as a fast-path check to avoid allocation for the common non-transmeridian case.
+fn has_transmeridian_coords(poly: &Polygon<f64>) -> bool {
+    poly.exterior()
+        .coords()
+        .any(|c| c.x > 180.0 || c.x < -180.0)
+}
+
+/// Produce the polygon variants needed to correctly test a possibly-unwrapped
+/// transmeridian polygon (see `h3::cell_polygon`) against a `LandIndex`, whose stored
+/// polygons always live within [-180, 180].
+///
+/// Only called when `has_transmeridian_coords` returns true. Returns a vector with
+/// the original polygon and optionally shifted variants so that overflowing portions
+/// land back in valid coordinate space and can match land polygons on the far side of
+/// the seam, while in-range portions still match via the original copy.
+fn transmeridian_variants(poly: &Polygon<f64>) -> Vec<Polygon<f64>> {
+    let has_over = poly.exterior().coords().any(|c| c.x > 180.0);
+    let has_under = poly.exterior().coords().any(|c| c.x < -180.0);
+
+    let mut variants = vec![poly.clone()];
+    if has_over {
+        variants.push(shift_polygon(poly, -360.0));
+    }
+    if has_under {
+        variants.push(shift_polygon(poly, 360.0));
+    }
+    variants
+}
+
+fn shift_polygon(poly: &Polygon<f64>, dx: f64) -> Polygon<f64> {
+    let shifted: Vec<Coord<f64>> = poly
+        .exterior()
+        .coords()
+        .map(|c| Coord {
+            x: c.x + dx,
+            y: c.y,
+        })
+        .collect();
+    Polygon::new(LineString::new(shifted), vec![])
 }
 
 fn bounding_rect(poly: &Polygon<f64>) -> ([f64; 2], [f64; 2]) {
@@ -296,4 +455,172 @@ fn line_bounding_rect(ls: &LineString<f64>) -> ([f64; 2], [f64; 2]) {
         max_y = max_y.max(coord.y);
     }
     ([min_x, min_y], [max_x, max_y])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_of(coords: &[(f64, f64)]) -> LineString<f64> {
+        LineString::from(
+            coords
+                .iter()
+                .map(|&(x, y)| Coord { x, y })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// A short all-water segment hugging the antimeridian (lat 0, lon 179.9 -> -179.9)
+    /// must not be reported as crossing land just because a coastline segment exists
+    /// on the far side of the planet. Pre-fix, `crosses_land` builds a planar Line
+    /// straight from 179.9 to -179.9, which numerically passes through lon 0 — so it
+    /// spuriously intersects a coastline segment sitting in the Gulf of Guinea.
+    #[test]
+    fn crosses_land_antimeridian_no_false_positive_from_far_land() {
+        let far_segment = CoastlineSegment::new(line_of(&[(0.0, -1.0), (0.0, 1.0)]));
+        let index = CoastlineIndex::new(vec![far_segment]);
+        assert!(
+            !index.crosses_land(179.9, 0.0, -179.9, 0.0),
+            "seam-hugging water segment must not report a land crossing from unrelated \
+             coastline on the far side of the planet"
+        );
+    }
+
+    /// A coastline segment that actually straddles the seam-crossing path, right at the
+    /// antimeridian, must be detected. Pre-fix, the planar Line's endpoints only span
+    /// lon in [-179.9, 179.9], so a coastline segment sitting just outside that range
+    /// (e.g. at lon 179.95) is never tested against and the crossing is missed.
+    #[test]
+    fn crosses_land_antimeridian_detects_real_crossing_near_seam() {
+        let near_segment = CoastlineSegment::new(line_of(&[(179.95, -1.0), (179.95, 1.0)]));
+        let index = CoastlineIndex::new(vec![near_segment]);
+        assert!(
+            index.crosses_land(179.9, 0.0, -179.9, 0.0),
+            "a coastline segment actually straddling the seam-crossing path must be detected"
+        );
+    }
+
+    #[test]
+    fn crosses_land_normal_case_unaffected() {
+        // A segment nowhere near the antimeridian, crossing a coastline segment that
+        // actually blocks it, must still be detected (sanity check, no regression).
+        let blocking = CoastlineSegment::new(line_of(&[(10.0, -1.0), (10.0, 1.0)]));
+        let index = CoastlineIndex::new(vec![blocking]);
+        assert!(index.crosses_land(5.0, 0.0, 15.0, 0.0));
+        assert!(!index.crosses_land(5.0, 0.0, 5.0, 1.0));
+    }
+
+    /// `cell_polygon` (h3.rs) unwraps transmeridian cells into a compact ring whose
+    /// longitudes may fall slightly outside [-180, 180]. LandIndex queries must still
+    /// find land on either physical side of the seam for such a polygon.
+    #[test]
+    fn land_index_intersects_polygon_handles_unwrapped_transmeridian_ring() {
+        fn square(x0: f64, x1: f64, y0: f64, y1: f64) -> Polygon<f64> {
+            Polygon::new(
+                LineString::new(vec![
+                    Coord { x: x0, y: y0 },
+                    Coord { x: x1, y: y0 },
+                    Coord { x: x1, y: y1 },
+                    Coord { x: x0, y: y1 },
+                    Coord { x: x0, y: y0 },
+                ]),
+                vec![],
+            )
+        }
+
+        // Simulate an unwrapped transmeridian cell polygon straddling the seam: a raw
+        // vertex at -179.5 becomes 180.5 once unwrapped, giving a continuous ring
+        // spanning lon 179.5..180.5.
+        let poly = square(179.5, 180.5, 0.0, 1.0);
+
+        // Land just west of the seam (raw lon around -179.8) — only reachable via the
+        // shifted (+360) variant.
+        let index_west = LandIndex::new(vec![LandPolygon::new(square(-179.9, -179.7, 0.4, 0.6))]);
+        assert!(
+            index_west.intersects_polygon(&poly),
+            "transmeridian polygon must detect land just west of the seam"
+        );
+
+        // Land just east of the seam (raw lon around 179.6) — reachable directly.
+        let index_east = LandIndex::new(vec![LandPolygon::new(square(179.55, 179.65, 0.4, 0.6))]);
+        assert!(
+            index_east.intersects_polygon(&poly),
+            "transmeridian polygon must detect land just east of the seam"
+        );
+
+        // Unrelated land far away (near the prime meridian) must not match.
+        let index_far = LandIndex::new(vec![LandPolygon::new(square(0.0, 0.1, 0.4, 0.6))]);
+        assert!(!index_far.intersects_polygon(&poly));
+    }
+
+    #[test]
+    fn min_distance_deg_matches_expected_point_to_segment_distance() {
+        // A simple L-shaped coastline; point-to-segment distance is well known here.
+        let seg = line_of(&[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+
+        // Directly on the line -> distance ~0.
+        let on_line = index.min_distance_deg(0.0, 0.5, 5.0);
+        assert!(on_line < 1e-9, "expected ~0, got {on_line}");
+
+        // Perpendicular distance of 0.5 deg from the vertical segment.
+        let off_line = index.min_distance_deg(0.5, 0.5, 5.0);
+        assert!(
+            (off_line - 0.5).abs() < 1e-9,
+            "expected ~0.5, got {off_line}"
+        );
+
+        // Nothing within a tiny radius far away.
+        let far = index.min_distance_deg(50.0, 50.0, 0.5);
+        assert_eq!(far, f64::MAX);
+    }
+
+    /// A coastline segment just east of the antimeridian and a query point just
+    /// west of it are ~0.03 degrees apart the short way around, but a purely
+    /// planar `[lon-radius, lon+radius]` envelope (pre-fix) clips at +-180 and
+    /// never finds the segment, returning `f64::MAX` instead of the true small
+    /// distance. This is the same class of bug `crosses_land` was already fixed
+    /// for (see the `crosses_land_antimeridian_*` tests above); `min_distance_deg`
+    /// needed the same treatment (review finding: min_distance_deg still planar
+    /// across the antimeridian).
+    #[test]
+    fn min_distance_deg_finds_coastline_across_antimeridian_seam() {
+        // Coastline segment just east of the seam, spanning the query's latitude.
+        let seg = line_of(&[(179.98, -0.5), (179.98, 0.5)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+
+        // Query point just west of the seam. True short-way distance is
+        // |180.0 - 179.98| + |(-179.99) - (-180.0)| = 0.02 + 0.01 = 0.03 deg.
+        let dist = index.min_distance_deg(-179.99, 0.0, 0.05);
+        assert!(
+            (dist - 0.03).abs() < 1e-9,
+            "expected ~0.03 deg across the antimeridian seam, got {dist}"
+        );
+    }
+
+    /// Mirror of the above with the query on the east side and the coastline
+    /// just west of the seam, exercising the other overflow branch
+    /// (`lon + radius_deg > 180.0`).
+    #[test]
+    fn min_distance_deg_finds_coastline_across_antimeridian_seam_other_side() {
+        let seg = line_of(&[(-179.98, -0.5), (-179.98, 0.5)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+
+        let dist = index.min_distance_deg(179.99, 0.0, 0.05);
+        assert!(
+            (dist - 0.03).abs() < 1e-9,
+            "expected ~0.03 deg across the antimeridian seam, got {dist}"
+        );
+    }
+
+    /// Sanity check that the antimeridian handling doesn't erroneously pull in
+    /// unrelated coastline from the far side of the planet when the query point
+    /// isn't actually near the seam.
+    #[test]
+    fn min_distance_deg_normal_case_unaffected_by_antimeridian_handling() {
+        let seg = line_of(&[(10.0, -1.0), (10.0, 1.0)]);
+        let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
+        let dist = index.min_distance_deg(9.5, 0.0, 5.0);
+        assert!((dist - 0.5).abs() < 1e-9, "expected ~0.5, got {dist}");
+    }
 }

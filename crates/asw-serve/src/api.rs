@@ -57,8 +57,11 @@ async fn route_handler(
     State(state): State<Arc<ServerState>>,
     Query(params): Query<RouteQuery>,
 ) -> Result<Json<RouteResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let guard = state.inner.read().await;
-    let app = guard.as_ref().ok_or_else(|| {
+    // Clone the Arc<AppState> out and drop the read guard immediately —
+    // holding it across the (potentially slow, CPU-bound) route computation
+    // below would starve other readers of `state.inner`, including the
+    // `/health`/`/ready` probes and concurrent `/route`/`/info` requests.
+    let app = state.app().await.ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse {
@@ -85,10 +88,33 @@ async fn route_handler(
         )
     })?;
 
-    let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.nearest_node(lat, lon) };
+    // Bound concurrent A* computations to the buffer pool's capacity before
+    // handing off to the blocking pool: without this, `spawn_blocking` can
+    // spin up to Tokio's 512-thread blocking pool, and each thread beyond the
+    // pool's pre-allocated buffer sets forces `AstarPool::acquire` to
+    // allocate a fresh full-size buffer set (hundreds of MB at planet scale),
+    // which can OOM a small instance under a handful of concurrent long
+    // routes (see finding 1 in the 2026-07-06 project review). Acquiring is
+    // `async`, so requests beyond the limit queue here instead of consuming a
+    // blocking-pool thread. `acquire()` only errs if the semaphore has been
+    // closed, which this server never does — map defensively to 503 rather
+    // than panicking via `unwrap`/`expect`.
+    let _permit = state.route_permits.acquire().await.map_err(|_| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Server is at capacity, please retry".into(),
+            }),
+        )
+    })?;
 
-    let result = app
-        .with_astar_buffers(|buffers| {
+    // Run nearest-node snapping + A* + smoothing on a blocking-pool thread:
+    // this is CPU-bound work (tens of ms to >1s for long routes) that must
+    // not occupy a tokio worker thread, or it starves other tasks scheduled
+    // on the same worker (see finding 6 in the 2026-07-06 project review).
+    let result = tokio::task::spawn_blocking(move || {
+        let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.nearest_node(lat, lon) };
+        app.with_astar_buffers(|buffers| {
             compute_route(
                 &app.graph,
                 from_lat,
@@ -100,15 +126,24 @@ async fn route_handler(
                 buffers,
             )
         })
-        .await
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse {
-                    error: "No route found between the given points".into(),
-                }),
-            )
-        })?;
+    })
+    .await
+    .map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: "Route computation failed unexpectedly".into(),
+            }),
+        )
+    })?
+    .ok_or_else(|| {
+        (
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse {
+                error: "No route found between the given points".into(),
+            }),
+        )
+    })?;
 
     let geometry = serde_json::json!({
         "type": "LineString",
@@ -246,6 +281,57 @@ mod tests {
         ))
     }
 
+    /// Directly install an `AppState` as "ready", bypassing `set_ready`.
+    ///
+    /// `set_ready` uses `blocking_write()` because production code calls it
+    /// from inside `spawn_blocking` (see `main.rs`); calling it directly from
+    /// an async test body panics ("Cannot block the current thread from
+    /// within a runtime"). Tests instead populate `inner` via the async
+    /// `write()` guard, which is equivalent for our purposes.
+    async fn mark_ready(state: &ServerState, app: crate::state::AppState) {
+        *state.inner.write().await = Some(Arc::new(app));
+    }
+
+    /// Build a `ServerState` whose graph has already finished loading,
+    /// backed by a tiny 3-node chain graph. Used to exercise the `/route`
+    /// happy path end-to-end through the new `Arc<AppState>` +
+    /// `spawn_blocking` pipeline (finding 6), rather than only the "still
+    /// loading" 503 path the other tests cover.
+    async fn ready_state_with_small_graph() -> Arc<ServerState> {
+        use crate::state::AppState;
+        use asw_core::graph::GraphBuilder;
+
+        let coords = [(36.848, 28.268), (36.9, 28.3), (37.0, 28.5)];
+        let mut entries: Vec<(u64, f64, f64)> = coords
+            .iter()
+            .map(|&(lat, lng)| {
+                let cell = h3o::LatLng::new(lat, lng)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Five);
+                (u64::from(cell), lat, lng)
+            })
+            .collect();
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+
+        let mut b = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(b.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            b.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = b.build();
+
+        let state = Arc::new(ServerState::new(
+            "test.graph".into(),
+            "secret-key-1234567890".into(),
+        ));
+        mark_ready(&state, AppState::new(graph)).await;
+        state
+    }
+
     #[tokio::test]
     async fn health_no_auth_required() {
         let app = create_router(test_state());
@@ -327,6 +413,88 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), HyperStatus::SERVICE_UNAVAILABLE);
+    }
+
+    /// End-to-end happy path once the graph is loaded: exercises the full
+    /// `state.app()` clone -> `spawn_blocking` -> `nearest_node` ->
+    /// `compute_route` -> `with_astar_buffers` pipeline introduced for
+    /// finding 6, verifying it still produces a correct route (not just
+    /// that the code compiles / doesn't deadlock).
+    #[tokio::test]
+    async fn route_returns_200_with_valid_route_once_ready() {
+        let app = create_router(ready_state_with_small_graph().await);
+        let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["distance_nm"].as_f64().unwrap() > 0.0,
+            "expected a positive route distance, got {json:?}"
+        );
+        assert!(json["raw_hops"].as_u64().unwrap() >= 1);
+        assert_eq!(json["geometry"]["type"], "LineString");
+    }
+
+    /// More concurrent `/route` requests than the A* buffer pool holds
+    /// (`DEFAULT_POOL_SIZE` buffer sets) must all still complete successfully
+    /// — the `route_permits` semaphore queues the surplus request(s) rather
+    /// than letting them fail, panic, or force the pool to allocate beyond
+    /// its capacity (finding 1, 2026-07-06 review).
+    #[tokio::test]
+    async fn concurrent_route_requests_beyond_pool_capacity_all_succeed() {
+        let state = ready_state_with_small_graph().await;
+        let app = create_router(state);
+
+        let concurrency = asw_core::astar_pool::DEFAULT_POOL_SIZE + 1;
+        let mut handles = Vec::with_capacity(concurrency);
+        for _ in 0..concurrency {
+            let app = app.clone();
+            handles.push(tokio::spawn(async move {
+                let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")
+                    .header("X-Api-Key", "secret-key-1234567890")
+                    .body(Body::empty())
+                    .unwrap();
+                app.oneshot(req).await.unwrap()
+            }));
+        }
+
+        for handle in handles {
+            let resp = handle.await.expect("request task must not panic");
+            assert_eq!(
+                resp.status(),
+                HyperStatus::OK,
+                "every request must complete successfully, queueing rather than failing"
+            );
+        }
+    }
+
+    /// A query point with no reachable node (empty ready graph) must still
+    /// surface as 404, not hang or panic, through the spawn_blocking path.
+    #[tokio::test]
+    async fn route_returns_404_when_no_route_found_once_ready() {
+        use crate::state::AppState;
+        use asw_core::graph::GraphBuilder;
+
+        let state = Arc::new(ServerState::new(
+            "test.graph".into(),
+            "secret-key-1234567890".into(),
+        ));
+        mark_ready(&state, AppState::new(GraphBuilder::new().build())).await;
+
+        let app = create_router(state);
+        let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::NOT_FOUND);
     }
 
     #[tokio::test]

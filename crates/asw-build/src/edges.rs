@@ -176,7 +176,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
             let (lat1, lon1) = node_positions[&src];
             let (lat2, lon2) = node_positions[&dst];
             let mid_lat = (lat1 + lat2) / 2.0;
-            let mid_lon = (lon1 + lon2) / 2.0;
+            let mid_lon = wrap_aware_mid_lon(lon1, lon2);
             if water.is_water(mid_lon, mid_lat) {
                 Some((src, dst, cost))
             } else {
@@ -194,4 +194,52 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     );
 
     Ok(valid_edges)
+}
+
+/// Wrap-aware longitude midpoint. Averaging raw longitudes breaks down for an edge
+/// crossing the antimeridian (e.g. 179.95 and -179.95 average to ~0, the opposite side
+/// of the planet). When the two longitudes are more than 180 degrees apart, shift the
+/// negative one into a continuous frame before averaging, then re-normalize into
+/// [-180, 180].
+fn wrap_aware_mid_lon(lon1: f64, lon2: f64) -> f64 {
+    if (lon1 - lon2).abs() > 180.0 {
+        let (a, b) = if lon1 < 0.0 {
+            (lon1 + 360.0, lon2)
+        } else {
+            (lon1, lon2 + 360.0)
+        };
+        let mid = (a + b) / 2.0;
+        ((mid + 540.0) % 360.0) - 180.0
+    } else {
+        (lon1 + lon2) / 2.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wrap_aware_mid_lon_handles_antimeridian() {
+        let mid = wrap_aware_mid_lon(179.95, -179.95);
+        assert!(
+            (mid.abs() - 180.0).abs() < 1.0,
+            "expected midpoint near +/-180 (the seam), got {mid}"
+        );
+    }
+
+    #[test]
+    fn wrap_aware_mid_lon_handles_antimeridian_other_order() {
+        let mid = wrap_aware_mid_lon(-179.95, 179.95);
+        assert!(
+            (mid.abs() - 180.0).abs() < 1.0,
+            "expected midpoint near +/-180 (the seam), got {mid}"
+        );
+    }
+
+    #[test]
+    fn wrap_aware_mid_lon_normal_case_unaffected() {
+        let mid = wrap_aware_mid_lon(10.0, 20.0);
+        assert!((mid - 15.0).abs() < 1e-9);
+    }
 }

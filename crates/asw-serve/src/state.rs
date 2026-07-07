@@ -1,11 +1,31 @@
 use asw_core::geo_index::CoastlineIndex;
 use asw_core::graph::RoutingGraph;
+use std::sync::Arc;
 
 /// Wrapper that tracks readiness — the HTTP server starts before the graph is loaded.
+///
+/// `inner` holds an `Arc<AppState>` (rather than `AppState` directly) so
+/// handlers can clone it out from under the read lock, drop the lock, and
+/// run CPU-bound work (nearest-node lookup + `compute_route`) on a
+/// `spawn_blocking` thread without holding the lock — and without starving
+/// other requests (notably `/health` and `/ready`) for the duration of a
+/// potentially slow route computation.
 pub struct ServerState {
-    pub inner: tokio::sync::RwLock<Option<AppState>>,
+    pub inner: tokio::sync::RwLock<Option<Arc<AppState>>>,
     pub graph_path: String,
     api_key: String,
+    /// Bounds the number of `/route` requests concurrently running A* search
+    /// to the A* buffer pool's capacity (`asw_core::astar_pool::DEFAULT_POOL_SIZE`).
+    ///
+    /// Without this, `spawn_blocking` (used to run route computation off the
+    /// async executor) can spin up to Tokio's 512-thread blocking pool, and
+    /// each thread beyond the pool's pre-allocated buffer sets forces
+    /// `AstarPool::acquire` to allocate a fresh full-size buffer set
+    /// (hundreds of MB at planet scale) — a handful of concurrent long routes
+    /// can OOM a small instance. Acquiring this permit is `async`, so
+    /// requests beyond the limit queue on the `.await` point without
+    /// occupying a blocking-pool thread; see `api::route_handler`.
+    pub route_permits: tokio::sync::Semaphore,
 }
 
 impl ServerState {
@@ -18,6 +38,7 @@ impl ServerState {
             inner: tokio::sync::RwLock::new(None),
             graph_path,
             api_key,
+            route_permits: tokio::sync::Semaphore::new(asw_core::astar_pool::DEFAULT_POOL_SIZE),
         }
     }
 
@@ -27,7 +48,15 @@ impl ServerState {
 
     pub fn set_ready(&self, app: AppState) {
         // Use blocking_lock since this is called from spawn_blocking
-        *self.inner.blocking_write() = Some(app);
+        *self.inner.blocking_write() = Some(Arc::new(app));
+    }
+
+    /// Clone out the current `Arc<AppState>` (if the graph has finished
+    /// loading) and drop the read guard immediately. Callers can then use
+    /// the returned `Arc` without holding `inner`'s lock, so a slow route
+    /// computation never blocks `/health`/`/ready` or other requests.
+    pub async fn app(&self) -> Option<Arc<AppState>> {
+        self.inner.read().await.clone()
     }
 }
 
@@ -50,7 +79,11 @@ pub struct AppState {
     /// Component root for each node; nodes in the main component share `main_component`.
     component_labels: Vec<u32>,
     main_component: u32,
-    /// Pre-allocated A* search buffer pool (2 buffer sets for concurrent requests).
+    /// Pre-allocated A* search buffer pool. Sized to
+    /// `asw_core::astar_pool::DEFAULT_POOL_SIZE` buffer sets; concurrent
+    /// access above that capacity is prevented upstream by
+    /// `ServerState::route_permits`, a semaphore sized to match, so requests
+    /// beyond the pool's capacity queue instead of forcing it to grow.
     astar_pool: asw_core::astar_pool::AstarPool,
 }
 
@@ -79,7 +112,10 @@ impl AppState {
                 .unwrap_or(0)
         };
 
-        let astar_pool = asw_core::astar_pool::AstarPool::new(graph.num_nodes as usize, 2);
+        let astar_pool = asw_core::astar_pool::AstarPool::new(
+            graph.num_nodes as usize,
+            asw_core::astar_pool::DEFAULT_POOL_SIZE,
+        );
 
         Self {
             graph,
@@ -118,7 +154,43 @@ impl AppState {
         }
     }
 
+    /// First eager-disk bound for `search_resolution`'s geometric doubling.
+    const DISK_DOUBLING_START: u32 = 4;
+
     /// Search a single resolution with k-ring up to `k_max`, updating `best`.
+    ///
+    /// Geometric-doubling implementation: `grid_disk_distances` is EAGER — it
+    /// materializes the whole disk out to its bound before yielding anything,
+    /// so a single call at `k_max` pays for the full disk even when the
+    /// nearest node sits at small k (the res-3 fallback's k_max=50 disk is
+    /// ~7,651 cells; a k≈12 hit needs only ~469). Instead, the eager call is
+    /// issued with a growing bound (4, 8, 16, 32, ..., capped at `k_max`);
+    /// each step processes only the cells beyond the previous bound, and the
+    /// search stops requesting larger disks as soon as a step yields a hit.
+    /// Since disk size is quadratic in k, a hit just past a step bound can
+    /// cost up to ~5x the minimal disk, but the worst (no-match) case is
+    /// bounded at ~1.56x a single full-k_max eager call.
+    ///
+    /// A per-ring `grid_ring(k)` loop was tried first and abandoned: its
+    /// pentagon-safe fallback re-runs a full O(k²) BFS per ring, and at res-3
+    /// k_max=50 the disk covers a large fraction of all ~41k res-3 cells, so
+    /// most rings hit the fallback — measured 13-18x slower than one eager
+    /// call on exhaustive (no-match) searches. The eager
+    /// `grid_disk_distances` API handles pentagon distortion once per call
+    /// (fast path first, one safe BFS on failure), keeping the worst case at
+    /// ~1.56x the single eager call.
+    ///
+    /// Both the `_fast` and `_safe` backing iterators yield cells grouped by
+    /// ascending grid distance (BFS order), so within each step cells arrive
+    /// ring 0, ring 1, ... — the grouping logic below relies on this.
+    ///
+    /// Early-return semantics are identical to the old per-k code: as soon as
+    /// a fully-scanned k-level contains at least one main-component match,
+    /// `best` (updated to the closest such match) is final for this call and
+    /// we stop — larger k are never examined, and larger disks are never
+    /// requested. A k-level is never split across steps (each step's bound is
+    /// a whole ring count), so "finish the whole current k before returning"
+    /// holds at doubling boundaries too.
     fn search_resolution(
         &self,
         ll: &h3o::LatLng,
@@ -133,13 +205,34 @@ impl AppState {
             Err(_) => return,
         };
         let cell = ll.to_cell(res);
-        for k in 0..=k_max {
-            let mut found_at_k = false;
-            for neighbor in cell.grid_disk::<Vec<_>>(k) {
+
+        // Rings 0..=processed_up_to were fully scanned in previous steps.
+        let mut processed_up_to: Option<u32> = None;
+        let mut bound = Self::DISK_DOUBLING_START.min(k_max);
+        loop {
+            let disk: Vec<(h3o::CellIndex, u32)> = cell.grid_disk_distances(bound);
+            let first_new_k = processed_up_to.map_or(0, |p| p + 1);
+
+            let mut current_k = first_new_k;
+            let mut found_at_current_k = false;
+            for (neighbor, k) in disk {
+                if k < first_new_k {
+                    continue; // Already scanned in a previous, smaller step.
+                }
+                if k != current_k {
+                    // Ring `current_k` is fully scanned — stop here if it had
+                    // a match, matching the old per-k early return.
+                    if found_at_current_k {
+                        return;
+                    }
+                    current_k = k;
+                    found_at_current_k = false;
+                }
+
                 let nh3 = u64::from(neighbor);
                 if let Some(node_id) = self.h3_lookup(nh3) {
                     if self.component_labels[node_id as usize] == self.main_component {
-                        found_at_k = true;
+                        found_at_current_k = true;
                         let (nlat, nlon) = self.graph.node_pos(node_id);
                         let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
                         if best.is_none_or(|(_, d)| dist < d) {
@@ -148,9 +241,17 @@ impl AppState {
                     }
                 }
             }
-            if found_at_k {
+            // The step's last ring (k == bound) is now fully scanned; if it
+            // had a match, stop without requesting a larger disk.
+            if found_at_current_k {
                 return;
             }
+
+            if bound >= k_max {
+                return; // Entire k_max disk scanned, no early exit triggered.
+            }
+            processed_up_to = Some(bound);
+            bound = bound.saturating_mul(2).min(k_max);
         }
     }
 
@@ -211,31 +312,24 @@ impl AppState {
         // Exhaustive fallback: search res-3 with large k (covers most of the planet).
         // This only finds nodes indexed at res-3 (deep ocean cells). Production graphs
         // always contain res-3 nodes; test graphs may not.
-        let res3 = h3o::Resolution::try_from(3u8).ok()?;
-        let cell3 = ll.to_cell(res3);
-        for k in 0..=50u32 {
-            for neighbor in cell3.grid_disk::<Vec<_>>(k) {
-                let nh3 = u64::from(neighbor);
-                if let Some(node_id) = self.h3_lookup(nh3) {
-                    if self.component_labels[node_id as usize] == self.main_component {
-                        let (nlat, nlon) = self.graph.node_pos(node_id);
-                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                        if best.is_none_or(|(_, d)| dist < d) {
-                            best = Some((node_id, dist));
-                        }
-                    }
-                }
-            }
-            if best.is_some() {
-                return best;
-            }
-        }
+        //
+        // `k_max=50` here is an upper bound, not the typical cost:
+        // `search_resolution`'s geometric doubling stops requesting larger disks
+        // once a step yields a match (typically k≈12 in practice), so this
+        // usually walks a fraction of the full 7,651-cell k=50 disk (up to ~5x
+        // the minimal needed disk when a hit lands just past a step bound).
+        self.search_resolution(&ll, lat, lon, 3, 50, &mut best);
 
-        None
+        best
     }
 
     /// Acquire a buffer set from the pool, run `f`, then release the buffer.
-    pub async fn with_astar_buffers<F, T>(&self, f: F) -> T
+    ///
+    /// Synchronous (not `async`): the body never awaits (`AstarPool` is
+    /// backed by a plain `std::sync::Mutex`), and callers now invoke this
+    /// from inside `tokio::task::spawn_blocking`, which runs a plain
+    /// synchronous closure with no async executor context available.
+    pub fn with_astar_buffers<F, T>(&self, f: F) -> T
     where
         F: FnOnce(&mut asw_core::astar_pool::AstarBuffers) -> T,
     {
@@ -469,5 +563,194 @@ mod app_state_tests {
         // Query from deep inland (Belgrade, Serbia — ~400nm from Mediterranean)
         let result = state.nearest_node(44.8, 20.5);
         assert!(result.is_some(), "should find ocean node from inland point");
+    }
+
+    /// Regression test for the single-scan `search_resolution` rewrite
+    /// (finding 12): when a k-level contains more than one main-component
+    /// match, `nearest_node` must return the *closest* of them, not merely
+    /// the first one encountered while walking the single sorted
+    /// `grid_disk_distances` scan.
+    #[test]
+    fn same_ring_picks_closest_of_multiple_candidates() {
+        let origin_pos = (10.0, 20.0);
+        let origin_cell = h3o::LatLng::new(origin_pos.0, origin_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        // Two distinct ring-1 neighbors of the (unindexed) origin cell — the
+        // origin itself is never added as a node, so ring 0 is empty and the
+        // search must resolve the tie within ring 1.
+        let ring1: Vec<h3o::CellIndex> = origin_cell.grid_ring(1);
+        assert!(ring1.len() >= 2, "expected at least two ring-1 neighbors");
+        let a = ring1[0];
+        let b = ring1[1];
+        let a_ll = h3o::LatLng::from(a);
+        let b_ll = h3o::LatLng::from(b);
+
+        let mut entries: Vec<(u64, f64, f64)> = vec![
+            (u64::from(a), a_ll.lat(), a_ll.lng()),
+            (u64::from(b), b_ll.lat(), b_ll.lng()),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+        assert_eq!(entries.len(), 2, "ring-1 neighbors must be distinct cells");
+
+        let mut builder = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(builder.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            builder.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = builder.build();
+        let state = AppState::new(graph);
+
+        let result = state.nearest_node(origin_pos.0, origin_pos.1);
+        assert!(result.is_some(), "should find a ring-1 candidate");
+        let (_, dist) = result.unwrap();
+
+        let dist_a = asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, a_ll.lat(), a_ll.lng());
+        let dist_b = asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, b_ll.lat(), b_ll.lng());
+        let expected = dist_a.min(dist_b);
+
+        assert!(
+            (dist - expected).abs() < 1e-9,
+            "expected closest candidate at {expected} nm, got {dist} nm"
+        );
+    }
+
+    /// Regression test for the incremental-k rewrite of `search_resolution`:
+    /// a near match at ring 2 (inside the first doubling step, bound=4) must
+    /// win over a farther main-component match at ring 5 (inside the second
+    /// step), and the search must stop after ring 2's k-level is fully
+    /// scanned — i.e. the ring-5 node's mere existence in the graph must not
+    /// change the result. This exercises the "stop at the first k with a hit"
+    /// contract across a doubling-step boundary.
+    #[test]
+    fn nearer_ring_wins_over_farther_ring_and_stops_early() {
+        let origin_pos = (10.0, 20.0);
+        let origin_cell = h3o::LatLng::new(origin_pos.0, origin_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let ring2: Vec<h3o::CellIndex> = origin_cell.grid_ring(2);
+        let ring5: Vec<h3o::CellIndex> = origin_cell.grid_ring(5);
+        let near = ring2[0];
+        let far = ring5[0];
+        let near_ll = h3o::LatLng::from(near);
+        let far_ll = h3o::LatLng::from(far);
+
+        let mut entries: Vec<(u64, f64, f64)> = vec![
+            (u64::from(near), near_ll.lat(), near_ll.lng()),
+            (u64::from(far), far_ll.lat(), far_ll.lng()),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+        assert_eq!(entries.len(), 2, "ring-2 and ring-5 cells must be distinct");
+
+        let mut builder = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(builder.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            builder.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = builder.build();
+        let state = AppState::new(graph);
+
+        let result = state.nearest_node(origin_pos.0, origin_pos.1);
+        assert!(result.is_some(), "should find the ring-2 candidate");
+        let (_, dist) = result.unwrap();
+
+        let dist_near =
+            asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, near_ll.lat(), near_ll.lng());
+        let dist_far =
+            asw_core::h3::haversine_nm(origin_pos.0, origin_pos.1, far_ll.lat(), far_ll.lng());
+        assert!(
+            dist_near < dist_far,
+            "test setup: ring-2 must be closer than ring-5"
+        );
+
+        assert!(
+            (dist - dist_near).abs() < 1e-9,
+            "expected nearer ring-2 candidate at {dist_near} nm, got {dist} nm (far candidate at {dist_far} nm must not win)"
+        );
+    }
+
+    /// Doubling-boundary regression test: a match sitting EXACTLY at a
+    /// doubling step's bound (k=8, the last ring of the 4→8 step) must be
+    /// found and must win over a match at k=9 (the first ring of the next
+    /// step, 8→16). This pins down two off-by-one hazards at the seam:
+    /// a step skipping its own boundary ring (k=8 dropped by both the
+    /// bound=8 and bound=16 steps would lose the node entirely), and a step
+    /// returning early before its boundary ring is fully scanned (the k=9
+    /// node must never be examined once k=8 has a hit).
+    #[test]
+    fn hit_exactly_at_doubling_boundary_k8_wins_over_k9() {
+        // Sanity-check the boundary assumption this test encodes: with the
+        // doubling schedule 4, 8, 16, ... k=8 is the last ring of step 2.
+        assert_eq!(AppState::DISK_DOUBLING_START, 4);
+
+        let origin_pos = (10.0, 20.0);
+        let origin_cell = h3o::LatLng::new(origin_pos.0, origin_pos.1)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+
+        let ring8: Vec<h3o::CellIndex> = origin_cell.grid_ring(8);
+        let ring9: Vec<h3o::CellIndex> = origin_cell.grid_ring(9);
+        let boundary = ring8[0];
+        let beyond = ring9[0];
+        let boundary_ll = h3o::LatLng::from(boundary);
+        let beyond_ll = h3o::LatLng::from(beyond);
+
+        let mut entries: Vec<(u64, f64, f64)> = vec![
+            (u64::from(boundary), boundary_ll.lat(), boundary_ll.lng()),
+            (u64::from(beyond), beyond_ll.lat(), beyond_ll.lng()),
+        ];
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        entries.dedup_by_key(|(h3, _, _)| *h3);
+        assert_eq!(entries.len(), 2, "ring-8 and ring-9 cells must be distinct");
+
+        let mut builder = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(builder.add_node(h3, lat, lng));
+        }
+        for i in 0..ids.len().saturating_sub(1) {
+            builder.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let graph = builder.build();
+        let state = AppState::new(graph);
+
+        let result = state.nearest_node(origin_pos.0, origin_pos.1);
+        assert!(
+            result.is_some(),
+            "should find the ring-8 boundary candidate"
+        );
+        let (_, dist) = result.unwrap();
+
+        let dist_boundary = asw_core::h3::haversine_nm(
+            origin_pos.0,
+            origin_pos.1,
+            boundary_ll.lat(),
+            boundary_ll.lng(),
+        );
+        let dist_beyond = asw_core::h3::haversine_nm(
+            origin_pos.0,
+            origin_pos.1,
+            beyond_ll.lat(),
+            beyond_ll.lng(),
+        );
+        assert!(
+            dist_boundary < dist_beyond,
+            "test setup: ring-8 must be closer than ring-9"
+        );
+
+        assert!(
+            (dist - dist_boundary).abs() < 1e-9,
+            "expected boundary ring-8 candidate at {dist_boundary} nm, got {dist} nm (ring-9 candidate at {dist_beyond} nm must not win)"
+        );
     }
 }

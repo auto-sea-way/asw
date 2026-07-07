@@ -3,6 +3,7 @@ use asw_core::geo_index::{LandIndex, LandPolygon};
 use geo::{Coord, LineString, Polygon};
 use indicatif::{ProgressBar, ProgressStyle};
 use shapefile::PolygonRing;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -209,29 +210,171 @@ pub fn download_and_extract(output_dir: &Path) -> Result<PathBuf> {
     let mut resp = client
         .get(url)
         .send()
-        .context("Failed to download shapefile")?;
+        .context("Failed to download shapefile")?
+        .error_for_status()
+        .context("Shapefile download returned a non-success HTTP status")?;
     let mut out_file = std::fs::File::create(&zip_path).context("Failed to create zip file")?;
     let bytes_copied = std::io::copy(&mut resp, &mut out_file).context("Failed to write zip")?;
     info!("Downloaded {} MB", bytes_copied / 1_000_000);
 
     info!("Extracting...");
     let file = std::fs::File::open(&zip_path).context("Failed to open zip")?;
-    let mut archive = zip::ZipArchive::new(file).context("Failed to read zip")?;
-
-    std::fs::create_dir_all(&extract_dir)?;
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let name = entry.name().to_string();
-        if let Some(filename) = name.rsplit('/').next() {
-            if !filename.is_empty() {
-                let out_path = extract_dir.join(filename);
-                let mut out_file = std::fs::File::create(&out_path)?;
-                std::io::copy(&mut entry, &mut out_file)?;
-            }
-        }
-    }
+    extract_zip_atomic(file, &extract_dir).context("Failed to extract shapefile zip")?;
 
     let _ = std::fs::remove_file(&zip_path);
     info!("Extracted shapefiles to {:?}", extract_dir);
     Ok(extract_dir)
+}
+
+/// Extract the flat (non-directory) files of a zip archive into `extract_dir`, atomically.
+///
+/// Entries are written into a temporary sibling directory first; `extract_dir` itself is
+/// only populated (via `fs::rename`) once every entry has been extracted without error. This
+/// means a failure partway through extraction (corrupt zip entry, truncated/interrupted
+/// download, disk full) never leaves a partial `extract_dir` behind for a later run's cache
+/// check (`find_shp_files(&extract_dir)` in `download_and_extract`) to mistake for a
+/// complete, valid extraction. Mirrors the `.pbf.tmp` download-then-rename pattern already
+/// used in `canal_water.rs`.
+fn extract_zip_atomic<R: Read + Seek>(reader: R, extract_dir: &Path) -> Result<()> {
+    let mut archive = zip::ZipArchive::new(reader).context("Failed to read zip")?;
+
+    let tmp_name = format!(
+        "{}.extracting.tmp",
+        extract_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "extract".to_string())
+    );
+    let tmp_dir = extract_dir.with_file_name(tmp_name);
+    // Clean up any leftovers from a previously interrupted extraction attempt.
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    std::fs::create_dir_all(&tmp_dir).context("Failed to create temporary extraction dir")?;
+
+    let extracted: Result<()> = (|| {
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i)?;
+            let name = entry.name().to_string();
+            if let Some(filename) = name.rsplit('/').next() {
+                if !filename.is_empty() {
+                    let out_path = tmp_dir.join(filename);
+                    let mut out_file = std::fs::File::create(&out_path)
+                        .with_context(|| format!("Failed to create {:?}", out_path))?;
+                    std::io::copy(&mut entry, &mut out_file)
+                        .with_context(|| format!("Failed to extract entry {:?}", name))?;
+                }
+            }
+        }
+        Ok(())
+    })();
+
+    if let Err(e) = extracted {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e);
+    }
+
+    // extract_dir should not exist yet (the caller only reaches here when the cache check
+    // failed), but guard against a stale partial directory from an older, pre-atomic run.
+    let _ = std::fs::remove_dir_all(extract_dir);
+    std::fs::rename(&tmp_dir, extract_dir).context("Failed to move extracted files into place")?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Write};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use zip::write::SimpleFileOptions;
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// A directory path under the system temp dir, unique per call (nanosecond timestamp +
+    /// atomic counter), so parallel tests never collide.
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let n = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("asw_build_shapefile_test_{label}_{nanos}_{n}"))
+    }
+
+    fn build_test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buf);
+            let options =
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            for (name, data) in entries {
+                writer.start_file(*name, options).unwrap();
+                writer.write_all(data).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buf.into_inner()
+    }
+
+    #[test]
+    fn extract_zip_atomic_extracts_valid_entries() {
+        let zip_bytes = build_test_zip(&[
+            ("land-polygons/a.shp", b"AAAA-shape-data"),
+            ("land-polygons/b.dbf", b"BBBB-attribute-data"),
+        ]);
+        let extract_dir = unique_temp_dir("valid");
+        let _ = std::fs::remove_dir_all(&extract_dir);
+
+        let result = extract_zip_atomic(Cursor::new(zip_bytes), &extract_dir);
+        assert!(result.is_ok(), "expected success, got {:?}", result.err());
+        assert!(extract_dir.join("a.shp").is_file());
+        assert!(extract_dir.join("b.dbf").is_file());
+        assert_eq!(
+            std::fs::read(extract_dir.join("a.shp")).unwrap(),
+            b"AAAA-shape-data"
+        );
+
+        let _ = std::fs::remove_dir_all(&extract_dir);
+    }
+
+    /// Covers the extraction-atomicity half of finding 10: a zip that opens fine but has a
+    /// corrupted entry partway through must not leave a usable `extract_dir` behind for a
+    /// later run's cache check (`download_and_extract`'s `find_shp_files` probe) to mistake
+    /// for a complete, valid extraction. The HTTP-status half (`.error_for_status()`) is not
+    /// covered here since it requires a live/mocked network response; that call is a single
+    /// line reviewed by hand (see `download_and_extract`).
+    #[test]
+    fn extract_zip_atomic_leaves_no_extract_dir_on_corrupt_entry() {
+        let mut zip_bytes = build_test_zip(&[
+            ("a.shp", b"good-data-one"),
+            ("b.dbf", b"CORRUPT-ME-PAYLOAD"),
+        ]);
+
+        // Flip a byte inside the second entry's raw (stored, uncompressed) payload so its
+        // CRC32 check fails on read, without touching the archive's local/central headers —
+        // this simulates a truncated/interrupted download or a bad zip entry, distinct from
+        // an outright unparsable archive.
+        let marker: &[u8] = b"CORRUPT-ME-PAYLOAD";
+        let pos = zip_bytes
+            .windows(marker.len())
+            .position(|w| w == marker)
+            .expect("marker bytes not found in zip data");
+        zip_bytes[pos] ^= 0xFF;
+
+        let extract_dir = unique_temp_dir("corrupt");
+        let _ = std::fs::remove_dir_all(&extract_dir);
+
+        let result = extract_zip_atomic(Cursor::new(zip_bytes), &extract_dir);
+        assert!(result.is_err(), "expected corrupt entry to fail extraction");
+        assert!(
+            !extract_dir.exists(),
+            "a failed extraction must not leave a usable extract_dir behind (a later run's \
+             cache check would mistake it for a complete extraction)"
+        );
+
+        // No temp directory should be left behind either.
+        let tmp_name = format!(
+            "{}.extracting.tmp",
+            extract_dir.file_name().unwrap().to_string_lossy()
+        );
+        assert!(!extract_dir.with_file_name(tmp_name).exists());
+    }
 }

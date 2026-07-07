@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Edge weight quantization: clamp to >= 1 centi-nm so res-13 passage-corridor edges (Panama, Kiel, Corinth, Welland) are no longer free for A*; hard error (was debug-only assert) on u16 weight overflow. Requires a graph rebuild to take effect
+- Antimeridian handling: `crosses_land` splits seam-crossing segments instead of testing a near-global planar chord; edge midpoints wrap longitudes before averaging; `cell_polygon` unwraps transmeridian H3 cells instead of producing degenerate world-spanning rings (fixes false land classification around the date line — Bering Strait, Fiji, Chukchi Sea)
+- Cloud build step cache keyed by bbox: changing the bbox no longer silently reuses a stale remote graph or local download; scp downloads are atomic (`.tmp` + rename)
+- Remote compile cache probe now works: `asw --version` exists (clap `version` attribute added)
+- Hetzner SSH key creation: uniqueness-conflict recovery reads the error body and retries with a uniquified name instead of silently binding an arbitrary existing key; non-ASCII key comments no longer panic
+- `asw cloud build` resolves the source directory at runtime (CWD, `--src` flag) instead of embedding the compile-time workspace path; warns when the working tree is dirty
+- Shapefile download: HTTP status checked; extraction is atomic (temp dir + rename), so a failed download no longer poisons the cache
+- Passage zone split probes every distinct `zone_resolution` instead of assuming all passages share the first one
+
+### Changed
+
+- A* buffer pool: O(1) generation-counter reset instead of a full-graph memset (~358 MB of writes per request at planet scale, previously hidden from benchmarks); per-node heuristic cached per query. Measured on Linux (Docker, planet graph): ~4.1 GiB RSS after load, 4.3 GiB after a globally diverse route mix, ~4.8 GiB hard ceiling as lazily-touched buffer pages accumulate (the `gen`/`h_score`/`closed` arrays start on untouched zero pages). Short-route p50 improves 1.1-2x and served-request latency no longer pays a hidden 10-35 ms reset
+- `/route` computation runs on `tokio::task::spawn_blocking` (long routes no longer stall health probes); `ServerState` holds `Arc<AppState>`
+- `nearest_node` exhaustive fallback uses geometrically-doubled eager disk scans (worst case ~1.56x one full-disk call, typical early exit far cheaper)
+- `min_distance_deg` iterates coastline pairs without per-segment allocation
+
 ## [0.4.0] - 2026-03-28
 
 ### Added
