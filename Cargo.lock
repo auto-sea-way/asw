@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "asw-build"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "asw-core",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "asw-cli"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "asw-build",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "asw-cloud"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -185,7 +185,7 @@ dependencies = [
 
 [[package]]
 name = "asw-core"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bitcode",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "asw-serve"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "asw-core",
