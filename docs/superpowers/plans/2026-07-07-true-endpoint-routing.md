@@ -1,61 +1,52 @@
 # True-Endpoint Routing Implementation Plan
 
-> **BLOCKED — do not execute yet (decision 2026-07-07):** this plan waits for
-> the `feature/shore-buffer` branch (issue #26) to merge into `main`. After the
-> merge, rebase `feature/true-endpoint-routing` onto `main` and REVISE this
-> plan before executing:
-> 1. The code snippets were written against a pre-merge state; re-check every
->    signature (`smooth` now takes `shore_buffer_nm` and enforces clearance
->    via per-node `shore_dist`; `compute_route` and `/route` carry a
->    `shore_buffer` parameter).
-> 2. `smooth_coords` must become buffer-aware: stitched pin coordinates have
->    no node `shore_dist`, so pin clearance needs a coastline distance query
->    (`segment_min_distance_nm`), and the running-min logic needs a
->    per-waypoint distance slice instead of node lookups.
-> 3. The direct-line shortcut MUST be skipped (or clearance-checked) when
->    `shore_buffer > 0` — see the spec's shore-buffer interaction note.
+> **Revised 2026-07-07 after the shore-buffer merge (PR #34).** This version is
+> written against post-merge `main` (`bf54049`): `smooth` is buffer-aware
+> (per-node `shore_dist` + `segment_min_distance_nm`), `compute_route` and
+> `/route` carry `shore_buffer_nm`. The direct-line shortcut is gated on shore
+> clearance, and coordinate smoothing carries a parallel `shore_dist` slice so
+> stitched pins participate in the buffer rules.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Routes start and end exactly at the requested coordinates; clear open-water point pairs return a direct 2-point route without a graph search.
+**Goal:** Routes start and end exactly at the requested coordinates; clear open-water point pairs return a direct 2-point route without a graph search; both honor a requested shore buffer.
 
-**Architecture:** Query-time change in `asw-core::routing::compute_route`: (1) a direct-line shortcut via `CoastlineIndex::crosses_land` before snapping, (2) the true pin coordinates are prepended/appended to the A* node path and line-of-sight smoothing runs over the coordinate sequence, so the route stitches to the pins. `smooth` (node-id based) is replaced by `smooth_coords` (coordinate based). No graph format change, no `asw-serve` API change.
+**Architecture:** Query-time change in `asw-core::routing`: (1) `smooth_indices` — the existing buffer-aware line-of-sight smoothing generalized to raw `[lon, lat]` coordinates plus a parallel quantized `shore_dist` slice, returning kept indices; the node-based `smooth` becomes a thin wrapper over it. (2) `compute_route` gains a direct-line shortcut (skipped or clearance-checked when a shore buffer is requested) and stitches the true pin coordinates onto the A* path before smoothing; pins get their own quantized shore distance via `CoastlineIndex::min_distance_nm`. No graph format change, no `asw-serve` API change.
 
 **Tech Stack:** Rust workspace. Crates touched: `asw-core` (routing), `asw-serve` (tests only). Spec: `docs/superpowers/specs/2026-07-07-true-endpoint-routing-design.md`.
 
 ## Global Constraints
 
-- Branch: `feature/true-endpoint-routing` (already created off `origin/main`; spec committed).
+- Branch: `feature/true-endpoint-routing`, rebased onto `origin/main` at `bf54049` (shore-buffer merged).
 - `cargo` is not on the default PATH. Every shell session: `export PATH="$HOME/.cargo/bin:$PATH"`.
 - All distances in nautical miles (project standard, never km).
-- Coordinate convention: `[f64; 2]` arrays are `[lon, lat]` (GeoJSON order). `haversine_nm(lat1, lon1, lat2, lon2)` and `crosses_land(lon1, lat1, lon2, lat2)` keep their existing argument orders — be careful, they differ.
+- Coordinate convention: `[f64; 2]` arrays are `[lon, lat]` (GeoJSON order). `haversine_nm(lat1, lon1, lat2, lon2)`, `crosses_land(lon1, lat1, lon2, lat2)`, `min_distance_nm(lon, lat, max_nm)`, `segment_min_distance_nm(lon1, lat1, lon2, lat2, max_nm)` keep their existing argument orders — lat/lon orders differ between them, be careful.
+- Quantized shore distances: `u8` in `SHORE_DIST_UNIT_NM` (0.02 nm) units, saturating at 255 (= 5.1 nm); `crate::graph::quantize_shore_dist(nm) -> u8`.
 - Run `cargo fmt --all` before every commit (CI rejects unformatted code).
 - End every commit message with the trailer line: `Claude-Session: https://claude.ai/code/session_01AMx13pMriCc6KubjyQJe1q`
 - Land-pin policy (approved in spec): never error; a pin that cannot see its snapped node keeps the direct (land-clipping) segment.
 
 ---
 
-### Task 1: `smooth_coords` — coordinate-based line-of-sight smoothing
+### Task 1: `smooth_indices` — coordinate-based, buffer-aware smoothing core
 
 **Files:**
-- Modify: `crates/asw-core/src/routing.rs` (add `smooth_coords` next to the existing `smooth`; `smooth` is deleted in Task 2)
+- Modify: `crates/asw-core/src/routing.rs` (add `smooth_indices`; shrink `smooth` to a wrapper over it)
 - Test: same file, `#[cfg(test)] mod tests`
 
 **Interfaces:**
-- Consumes: `CoastlineIndex::crosses_land(lon1, lat1, lon2, lat2) -> bool` (exists, `crates/asw-core/src/geo_index.rs:250`)
-- Produces: `pub fn smooth_coords(coords: &[[f64; 2]], coastline: &CoastlineIndex) -> Vec<[f64; 2]>` — coords are `[lon, lat]`; returns a subsequence of `coords` always containing the first and last element. Task 2 calls this.
+- Consumes: `CoastlineIndex::crosses_land(lon1, lat1, lon2, lat2) -> bool`, `CoastlineIndex::segment_min_distance_nm(lon1, lat1, lon2, lat2, max_nm) -> f64`, the private `RangeMin` sparse table, `crate::graph::SHORE_DIST_UNIT_NM` — all existing.
+- Produces: `pub fn smooth_indices(coords: &[[f64; 2]], shore_dist: &[u8], coastline: &CoastlineIndex, shore_buffer_nm: f64) -> Vec<usize>` — `coords` are `[lon, lat]`, `shore_dist[i]` is the quantized shore distance of `coords[i]` (only read when `shore_buffer_nm > 0`, but the slice must always be the same length as `coords`). Returns strictly increasing indices into `coords`, always containing `0` and `coords.len() - 1`. `pub fn smooth(...)` keeps its exact current signature and behavior (its three existing tests must pass unchanged). Task 2 calls `smooth_indices`.
 
 - [ ] **Step 1: Write the failing tests**
 
-Add to the `tests` module in `crates/asw-core/src/routing.rs` (it already has `use super::*; use crate::graph::GraphBuilder;`):
+Add to the `tests` module in `crates/asw-core/src/routing.rs` (it already has `use super::*;`, `use crate::graph::GraphBuilder;`, and the `dogleg`/`dogleg_with_shore` fixtures):
 
 ```rust
-    use crate::geo_index::CoastlineSegment;
-
     /// Vertical coastline "wall" at `lon`, spanning `lat_min..lat_max`.
     fn wall_index(lon: f64, lat_min: f64, lat_max: f64) -> CoastlineIndex {
         let line = geo::LineString::from(vec![(lon, lat_min), (lon, lat_max)]);
-        CoastlineIndex::new(vec![CoastlineSegment::new(line)])
+        CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(line)])
     }
 
     /// Closed square ring around (0, 0), side 0.2 degrees — a tiny "island"
@@ -68,97 +59,191 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs` (it already has `u
             (-0.1, 0.1),
             (-0.1, -0.1),
         ]);
-        CoastlineIndex::new(vec![CoastlineSegment::new(ring)])
+        CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(ring)])
     }
 
     #[test]
-    fn smooth_coords_collapses_clear_path() {
+    fn smooth_indices_collapses_clear_path() {
         let coastline = CoastlineIndex::new(vec![]);
         let coords = [[0.0, 0.0], [0.3, 0.1], [0.6, -0.1], [1.0, 0.0]];
-        let out = smooth_coords(&coords, &coastline);
-        assert_eq!(out, vec![[0.0, 0.0], [1.0, 0.0]]);
+        let out = smooth_indices(&coords, &[255; 4], &coastline, 0.0);
+        assert_eq!(out, vec![0, 3]);
     }
 
     #[test]
-    fn smooth_coords_keeps_necessary_corner() {
+    fn smooth_indices_keeps_necessary_corner() {
         // Wall at lon 0.5 (lat -1..1); the path detours over its top at lat 1.5.
         // Only the corner above the wall must survive smoothing.
         let coastline = wall_index(0.5, -1.0, 1.0);
         let coords = [[0.0, 0.0], [0.2, 0.5], [0.5, 1.5], [0.8, 0.5], [1.0, 0.0]];
-        let out = smooth_coords(&coords, &coastline);
-        assert_eq!(out, vec![[0.0, 0.0], [0.5, 1.5], [1.0, 0.0]]);
+        let out = smooth_indices(&coords, &[255; 5], &coastline, 0.0);
+        assert_eq!(out, vec![0, 2, 4]);
     }
 
     #[test]
-    fn smooth_coords_short_input_passthrough() {
+    fn smooth_indices_short_input_passthrough() {
         let coastline = wall_index(0.5, -1.0, 1.0);
         let coords = [[0.0, 0.0], [1.0, 0.0]];
-        assert_eq!(smooth_coords(&coords, &coastline), coords.to_vec());
+        assert_eq!(
+            smooth_indices(&coords, &[255; 2], &coastline, 0.0),
+            vec![0, 1]
+        );
     }
 
     #[test]
-    fn smooth_coords_blocked_next_hop_still_progresses() {
+    fn smooth_indices_blocked_next_hop_still_progresses() {
         // First point sits inside a ring "island": it can see nothing, so the
         // smoother must keep the (land-clipping) segment to the next point and
         // continue — this is the approved land-pin behavior.
         let coastline = island_around_origin();
         let coords = [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]];
-        let out = smooth_coords(&coords, &coastline);
-        assert_eq!(out.first().unwrap(), &[0.0, 0.0]);
-        assert_eq!(out.last().unwrap(), &[1.0, 0.0]);
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
+        assert_eq!(*out.first().unwrap(), 0);
+        assert_eq!(*out.last().unwrap(), 2);
+    }
+
+    #[test]
+    fn smooth_indices_respects_buffer() {
+        // Same geometry as the node-based dogleg tests: coastline at lon 28.0
+        // (lat 36.45..36.55), direct P0->P2 line ~2.41 nm off the coast.
+        let coastline = wall_index(28.0, 36.45, 36.55);
+        let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
+        let loose = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
+        assert_eq!(loose, vec![0, 2]);
+        let strict = smooth_indices(&coords, &[255; 3], &coastline, 3.0);
+        assert_eq!(strict, vec![0, 1, 2], "3 nm buffer must keep the dogleg");
+    }
+
+    #[test]
+    fn smooth_indices_relaxes_for_near_shore_endpoints() {
+        // Endpoints themselves are close to shore (q=20 = 0.4 nm): threshold
+        // becomes min(3.0, 0.4) = 0.4 nm, so the ~2.4 nm direct line passes.
+        let coastline = wall_index(28.0, 36.45, 36.55);
+        let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
+        let out = smooth_indices(&coords, &[20, 255, 20], &coastline, 3.0);
+        assert_eq!(out, vec![0, 2]);
     }
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-core smooth_coords`
-Expected: compile error — `smooth_coords` not found.
+Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-core smooth_indices`
+Expected: compile error — `smooth_indices` not found.
 
-- [ ] **Step 3: Implement `smooth_coords`**
+- [ ] **Step 3: Implement `smooth_indices`, shrink `smooth` to a wrapper**
 
-Add to `crates/asw-core/src/routing.rs`, directly below the existing `smooth` function. It is the same algorithm operating on raw coordinates instead of node IDs:
+In `crates/asw-core/src/routing.rs`, replace the entire body of `smooth` and add `smooth_indices` below it. The algorithm is the current `smooth` verbatim, with `graph.node_pos(path[j])` replaced by `coords[j]` and `graph.shore_dist[node]` by `shore_dist[j]`:
 
 ```rust
+/// Greedy line-of-sight smoothing over a node path (see `smooth_indices`,
+/// which this delegates to after decoding node positions and shore
+/// distances).
+pub fn smooth(
+    graph: &RoutingGraph,
+    path: &[u32],
+    coastline: &CoastlineIndex,
+    shore_buffer_nm: f64,
+) -> Vec<u32> {
+    let coords: Vec<[f64; 2]> = path
+        .iter()
+        .map(|&n| {
+            let (lat, lon) = graph.node_pos(n);
+            [lon, lat]
+        })
+        .collect();
+    let shore_dist: Vec<u8> = path
+        .iter()
+        .map(|&n| graph.shore_dist[n as usize])
+        .collect();
+    smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm)
+        .into_iter()
+        .map(|i| path[i])
+        .collect()
+}
+
 /// Greedy line-of-sight smoothing over raw `[lon, lat]` coordinates.
 ///
-/// Removes waypoints whose direct predecessor→successor line does not cross
-/// any coastline. The first and last coordinates are always kept. When even
-/// the next hop is blocked (e.g. a pin on land), the blocked segment is kept
-/// and smoothing continues from the next point.
-pub fn smooth_coords(coords: &[[f64; 2]], coastline: &CoastlineIndex) -> Vec<[f64; 2]> {
+/// Removes waypoints whose direct predecessor→successor line (a) doesn't
+/// cross any coastline and (b) when `shore_buffer_nm > 0`, doesn't come
+/// closer to the coastline than min(buffer, the input's own minimum
+/// clearance over the skipped span, per `shore_dist`). Rule (b) means
+/// smoothing never brings the route closer to shore than the raw input
+/// already accepted — full buffer in open water, graceful degradation near
+/// endpoints/in coves.
+///
+/// `shore_dist[i]` is the quantized (`SHORE_DIST_UNIT_NM` units) shore
+/// distance of `coords[i]`; it must have the same length as `coords` and is
+/// only consulted when `shore_buffer_nm > 0`. Returns strictly increasing
+/// indices into `coords`, always keeping the first and last. When even the
+/// next hop is blocked (e.g. a pin on land), the blocked segment is kept and
+/// smoothing continues from that point.
+pub fn smooth_indices(
+    coords: &[[f64; 2]],
+    shore_dist: &[u8],
+    coastline: &CoastlineIndex,
+    shore_buffer_nm: f64,
+) -> Vec<usize> {
     if coords.len() <= 2 {
-        return coords.to_vec();
+        return (0..coords.len()).collect();
     }
+    let use_buffer = shore_buffer_nm > 0.0;
+    debug_assert!(
+        !use_buffer || shore_dist.len() == coords.len(),
+        "shore_dist must be parallel to coords when a buffer is requested"
+    );
 
-    let mut result = vec![coords[0]];
+    // Range-min over the whole input's shore_dist, built once per call (not
+    // per anchor) so smoothing is O(n log n) overall instead of O(n^2).
+    let range_min = if use_buffer {
+        Some(RangeMin::build(shore_dist))
+    } else {
+        None
+    };
+
+    let mut result = vec![0];
     let mut current_idx = 0;
     let end_idx = coords.len() - 1;
 
     while current_idx < end_idx {
         let [c_lon, c_lat] = coords[current_idx];
 
+        let clear = |j: usize| -> bool {
+            let [t_lon, t_lat] = coords[j];
+            if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
+                return false;
+            }
+            if let Some(rm) = &range_min {
+                let raw_min_nm =
+                    rm.query(current_idx, j) as f64 * crate::graph::SHORE_DIST_UNIT_NM;
+                let threshold = shore_buffer_nm.min(raw_min_nm);
+                if threshold > 0.0
+                    && coastline.segment_min_distance_nm(c_lon, c_lat, t_lon, t_lat, threshold)
+                        < threshold
+                {
+                    return false;
+                }
+            }
+            true
+        };
+
         // Try direct line to destination
-        let [e_lon, e_lat] = coords[end_idx];
-        if !coastline.crosses_land(c_lon, c_lat, e_lon, e_lat) {
-            result.push(coords[end_idx]);
+        if clear(end_idx) {
+            result.push(end_idx);
             break;
         }
 
         // Exponential forward search: find boundary between clear and blocked
         let mut step = 1usize;
-        let mut v_lo = current_idx + 1; // Last known clear
+        let mut v_lo = current_idx + 1;
         let mut v_hi;
-
         loop {
             let test_idx = (current_idx + step).min(end_idx);
-            let [t_lon, t_lat] = coords[test_idx];
-            if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
+            if !clear(test_idx) {
                 v_hi = test_idx;
                 break;
             }
             v_lo = test_idx;
             if test_idx >= end_idx {
-                // Can see all the way to the end
                 v_lo = end_idx;
                 v_hi = end_idx;
                 break;
@@ -167,15 +252,14 @@ pub fn smooth_coords(coords: &[[f64; 2]], coastline: &CoastlineIndex) -> Vec<[f6
         }
 
         if v_lo == end_idx {
-            result.push(coords[end_idx]);
+            result.push(end_idx);
             break;
         }
 
         // Binary search between v_lo (clear) and v_hi (blocked)
         while v_hi - v_lo > 1 {
             let mid = (v_lo + v_hi) / 2;
-            let [m_lon, m_lat] = coords[mid];
-            if coastline.crosses_land(c_lon, c_lat, m_lon, m_lat) {
+            if !clear(mid) {
                 v_hi = mid;
             } else {
                 v_lo = mid;
@@ -187,7 +271,7 @@ pub fn smooth_coords(coords: &[[f64; 2]], coastline: &CoastlineIndex) -> Vec<[f6
         if v_lo <= current_idx {
             v_lo = current_idx + 1;
         }
-        result.push(coords[v_lo]);
+        result.push(v_lo);
         current_idx = v_lo;
     }
 
@@ -195,32 +279,34 @@ pub fn smooth_coords(coords: &[[f64; 2]], coastline: &CoastlineIndex) -> Vec<[f6
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+The `RangeMin` struct stays where it is — `smooth_indices` uses it.
 
-Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-core smooth_coords`
-Expected: 4 tests PASS.
+- [ ] **Step 4: Run the core test suite**
+
+Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-core`
+Expected: all PASS — the 6 new `smooth_indices` tests AND the pre-existing `smooth_without_buffer_cuts_the_corner`, `smooth_respects_buffer`, `smooth_relaxes_near_endpoints` (they now exercise the wrapper and must be bit-identical).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all
 git add crates/asw-core/src/routing.rs
-git commit -m "feat(core): coordinate-based line-of-sight smoothing (smooth_coords)
+git commit -m "refactor(core): coordinate-based buffer-aware smoothing core (smooth_indices)
 
 Claude-Session: https://claude.ai/code/session_01AMx13pMriCc6KubjyQJe1q"
 ```
 
 ---
 
-### Task 2: `compute_route` — direct-line shortcut + endpoint stitching
+### Task 2: `compute_route` — buffer-gated shortcut + endpoint stitching
 
 **Files:**
-- Modify: `crates/asw-core/src/routing.rs` (rewrite `compute_route`, delete the old node-id `smooth`)
+- Modify: `crates/asw-core/src/routing.rs` (rewrite `compute_route`, add private `direct_line_ok`)
 - Test: same file, `tests` module
 
 **Interfaces:**
-- Consumes: `smooth_coords(&[[f64; 2]], &CoastlineIndex) -> Vec<[f64; 2]>` from Task 1; the Task 1 test helpers `wall_index(lon, lat_min, lat_max) -> CoastlineIndex` and `island_around_origin() -> CoastlineIndex` (already in the `tests` module); `astar(...)`, `haversine_nm(lat1, lon1, lat2, lon2)`, `RoutingGraph::node_pos(node) -> (lat, lon)` — all existing.
-- Produces: `compute_route` with an **unchanged signature** (callers in `asw-serve/src/api.rs` and `asw-cli/src/bench.rs` keep compiling untouched). Behavior contract for later tasks: `RouteResult.coordinates` always begins with `[from_lon, from_lat]` and ends with `[to_lon, to_lat]`; the shortcut path reports `raw_hops == 2, smooth_hops == 2`. The old `pub fn smooth` no longer exists.
+- Consumes: `smooth_indices` from Task 1; the Task 1 test helpers `wall_index(lon, lat_min, lat_max) -> CoastlineIndex` and `island_around_origin() -> CoastlineIndex`; `astar(graph, start, goal, buffers, Option<ShorePenalty>)`, `ShorePenalty::from_nm`, `haversine_nm(lat1, lon1, lat2, lon2)`, `RoutingGraph::node_pos(node) -> (lat, lon)`, `graph.shore_dist: Vec<u8>`, `CoastlineIndex::min_distance_nm(lon, lat, max_nm)`, `CoastlineIndex::segment_min_distance_nm(lon1, lat1, lon2, lat2, max_nm)`, `crate::graph::{quantize_shore_dist, SHORE_DIST_UNIT_NM}` — all existing.
+- Produces: `compute_route` with an **unchanged signature** (callers in `asw-serve/src/api.rs` and `asw-cli/src/bench.rs` keep compiling untouched). Behavior contract for later tasks: `RouteResult.coordinates` always begins with `[from_lon, from_lat]` and ends with `[to_lon, to_lat]`; the shortcut path reports `raw_hops == 2, smooth_hops == 2`; with `shore_buffer_nm > 0` the shortcut only fires when the direct line keeps `min(buffer, both pins' own shore clearance)` from the coastline.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -262,7 +348,8 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs`:
         // knn returning None proves the shortcut runs BEFORE snapping.
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
-        let r = compute_route(&g, 0.0, 0.0, 0.3, 0.2, &coastline, &knn, &mut buffers).unwrap();
+        let r =
+            compute_route(&g, 0.0, 0.0, 0.3, 0.2, &coastline, &knn, &mut buffers, 0.0).unwrap();
         assert_eq!(r.coordinates, vec![[0.0, 0.0], [0.2, 0.3]]);
         assert!((r.distance_nm - haversine_nm(0.0, 0.0, 0.3, 0.2)).abs() < 1e-9);
         assert_eq!(r.raw_hops, 2);
@@ -275,9 +362,51 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs`:
         let g = GraphBuilder::new().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
-        let r = compute_route(&g, 0.5, 0.5, 0.5, 0.5, &coastline, &knn, &mut buffers).unwrap();
+        let r =
+            compute_route(&g, 0.5, 0.5, 0.5, 0.5, &coastline, &knn, &mut buffers, 0.0).unwrap();
         assert!(r.distance_nm.abs() < 1e-9);
         assert_eq!(r.coordinates.len(), 2);
+    }
+
+    #[test]
+    fn shortcut_respects_shore_buffer() {
+        // Dogleg geometry: wall at lon 28.0 (lat 36.45..36.55); the direct
+        // pin-to-pin line at lon 28.05 passes ~2.41 nm off the coast.
+        let coastline = wall_index(28.0, 36.45, 36.55);
+        let g = GraphBuilder::new().build();
+        let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(1);
+
+        // 2 nm buffer: 2.41 nm clearance suffices -> shortcut fires.
+        let loose = compute_route(
+            &g, 36.3, 28.05, 36.7, 28.05, &coastline, &knn, &mut buffers, 2.0,
+        );
+        assert!(loose.is_some_and(|r| r.coordinates.len() == 2));
+
+        // 3 nm buffer: clearance violated -> shortcut declined, falls through
+        // to snapping (knn None -> no route). Proves the gate.
+        let strict = compute_route(
+            &g, 36.3, 28.05, 36.7, 28.05, &coastline, &knn, &mut buffers, 3.0,
+        );
+        assert!(strict.is_none());
+    }
+
+    #[test]
+    fn shortcut_relaxes_for_near_shore_pins() {
+        // From-pin is only ~0.39 nm off the wall, so the threshold degrades
+        // to min(3.0, pin clearance) and the direct line (whose closest
+        // approach IS the from-pin) passes despite the 3 nm buffer.
+        let coastline = wall_index(28.0, 36.45, 36.55);
+        let g = GraphBuilder::new().build();
+        let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(1);
+        let r = compute_route(
+            &g, 36.5, 28.008, 36.5, 28.4, &coastline, &knn, &mut buffers, 3.0,
+        );
+        assert!(
+            r.is_some_and(|r| r.coordinates.len() == 2),
+            "graceful degradation: pins closer than the buffer keep their own clearance"
+        );
     }
 
     #[test]
@@ -291,8 +420,8 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs`:
             Some(if lon < 0.5 { (s, 0.0) } else { (goal, 0.0) })
         };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let r =
-            compute_route(&g, 0.0, -0.1, 0.0, 1.1, &coastline, &knn, &mut buffers).unwrap();
+        let r = compute_route(&g, 0.0, -0.1, 0.0, 1.1, &coastline, &knn, &mut buffers, 0.0)
+            .unwrap();
 
         assert_eq!(r.coordinates.first().unwrap(), &[-0.1, 0.0]);
         assert_eq!(r.coordinates.last().unwrap(), &[1.1, 0.0]);
@@ -314,14 +443,15 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs`:
     fn same_node_snap_yields_positive_distance() {
         // Both pins snap to the single node N above the wall; the direct
         // pin-to-pin line is blocked. Expect [from, N, to] with the exact
-        // two-leg distance — this is the Image-2 (0.00 NM) regression test.
+        // two-leg distance — this is the "0.00 NM inside one deep-ocean
+        // hexagon" regression test.
         let coastline = wall_index(0.5, -1.0, 1.0);
         let (g, ids) = chain_graph(&[(1.5, 0.5)]);
         let n = ids[0];
         let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let r =
-            compute_route(&g, 0.0, 0.4, 0.0, 0.6, &coastline, &knn, &mut buffers).unwrap();
+        let r = compute_route(&g, 0.0, 0.4, 0.0, 0.6, &coastline, &knn, &mut buffers, 0.0)
+            .unwrap();
 
         let expected = haversine_nm(0.0, 0.4, 1.5, 0.5) + haversine_nm(1.5, 0.5, 0.0, 0.6);
         assert!(
@@ -346,7 +476,7 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs`:
             Some(if lon < 1.0 { (s, 0.0) } else { (goal, 0.0) })
         };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let r = compute_route(&g, 0.0, 0.0, 0.0, 2.2, &coastline, &knn, &mut buffers)
+        let r = compute_route(&g, 0.0, 0.0, 0.0, 2.2, &coastline, &knn, &mut buffers, 0.0)
             .expect("land pin must still produce a route");
         assert_eq!(r.coordinates.first().unwrap(), &[0.0, 0.0]);
         assert_eq!(r.coordinates.last().unwrap(), &[2.2, 0.0]);
@@ -357,13 +487,44 @@ Add to the `tests` module in `crates/asw-core/src/routing.rs`:
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-core routing`
-Expected: the 5 new tests FAIL (shortcut tests return `None` because `node_knn` returns `None`; stitched tests fail the first/last coordinate assertions because coordinates are node centers).
+Expected: the 7 new tests FAIL (shortcut tests return `None` because `node_knn` returns `None`; stitched tests fail the first/last coordinate assertions because coordinates are node centers).
 
-- [ ] **Step 3: Rewrite `compute_route`, delete `smooth`**
+- [ ] **Step 3: Rewrite `compute_route`, add `direct_line_ok`**
 
-Replace the entire `compute_route` function body and **delete the old `pub fn smooth`** (its only caller was `compute_route`; `smooth_coords` from Task 1 replaces it):
+Replace the entire `compute_route` function and add the private helper above it:
 
 ```rust
+/// Can the straight line between the requested points be used as the route?
+///
+/// Requires (a) no coastline crossing and (b) when a shore buffer is
+/// requested, that the line keeps min(buffer, both endpoints' own shore
+/// clearance) from the coastline — the same graceful-degradation rule
+/// `smooth_indices` applies, with the two pins as the whole "path". The
+/// small epsilon absorbs float noise when the closest approach is exactly
+/// an endpoint (its point clearance and the segment clearance are then the
+/// same geometric quantity computed via different code paths).
+fn direct_line_ok(
+    coastline: &CoastlineIndex,
+    from_lat: f64,
+    from_lon: f64,
+    to_lat: f64,
+    to_lon: f64,
+    shore_buffer_nm: f64,
+) -> bool {
+    if coastline.crosses_land(from_lon, from_lat, to_lon, to_lat) {
+        return false;
+    }
+    if shore_buffer_nm <= 0.0 {
+        return true;
+    }
+    let from_d = coastline.min_distance_nm(from_lon, from_lat, shore_buffer_nm);
+    let to_d = coastline.min_distance_nm(to_lon, to_lat, shore_buffer_nm);
+    let threshold = shore_buffer_nm.min(from_d).min(to_d);
+    threshold <= 0.0
+        || coastline.segment_min_distance_nm(from_lon, from_lat, to_lon, to_lat, threshold)
+            >= threshold - 1e-9
+}
+
 /// Compute a full route: direct-line shortcut → snap → A* → stitch true
 /// endpoints → smooth → build result.
 #[allow(clippy::too_many_arguments)]
@@ -376,16 +537,13 @@ pub fn compute_route(
     coastline: &CoastlineIndex,
     node_knn: &dyn Fn(f64, f64) -> Option<(u32, f64)>,
     buffers: &mut crate::astar_pool::AstarBuffers,
+    shore_buffer_nm: f64,
 ) -> Option<RouteResult> {
     // Direct-line shortcut: if the straight line between the requested
-    // points does not cross land, no graph search is needed. This also
-    // covers points that snap to the same deep-ocean node, which would
-    // otherwise produce a single-point route with distance 0.
-    //
-    // NOTE for shore-buffer work: when a ShorePenalty is threaded through
-    // here, this shortcut must be skipped (or clearance-checked) whenever a
-    // buffer is requested — see the 2026-07-07 true-endpoint routing spec.
-    if !coastline.crosses_land(from_lon, from_lat, to_lon, to_lat) {
+    // points is usable, no graph search is needed. This also covers points
+    // that snap to the same deep-ocean node, which would otherwise produce
+    // a single-point route with distance 0.
+    if direct_line_ok(coastline, from_lat, from_lon, to_lat, to_lon, shore_buffer_nm) {
         return Some(RouteResult {
             distance_nm: haversine_nm(from_lat, from_lon, to_lat, to_lon),
             raw_hops: 2,
@@ -397,24 +555,45 @@ pub fn compute_route(
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, None)?;
+    let shore = ShorePenalty::from_nm(shore_buffer_nm);
+    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, shore)?;
     let raw_hops = raw_path.len();
 
     // Stitch the true endpoints onto the node path so the route starts and
     // ends exactly at the requested coordinates. Smoothing from the pin
     // itself removes the dog-leg to the snapped node center (which can be
-    // tens of nm away on res-3 deep-ocean cells).
+    // tens of nm away on res-3 deep-ocean cells). Pins get their own
+    // quantized shore distance so buffer-aware smoothing treats them like
+    // any near-shore waypoint (graceful degradation, not a hard failure).
+    let pin_q = |lon: f64, lat: f64| -> u8 {
+        if shore_buffer_nm > 0.0 {
+            crate::graph::quantize_shore_dist(coastline.min_distance_nm(
+                lon,
+                lat,
+                255.0 * crate::graph::SHORE_DIST_UNIT_NM,
+            ))
+        } else {
+            u8::MAX
+        }
+    };
+
     let mut coords: Vec<[f64; 2]> = Vec::with_capacity(raw_path.len() + 2);
+    let mut shore_dist: Vec<u8> = Vec::with_capacity(raw_path.len() + 2);
     coords.push([from_lon, from_lat]);
+    shore_dist.push(pin_q(from_lon, from_lat));
     for &n in &raw_path {
         let (lat, lon) = graph.node_pos(n);
         coords.push([lon, lat]);
+        shore_dist.push(graph.shore_dist[n as usize]);
     }
     coords.push([to_lon, to_lat]);
+    shore_dist.push(pin_q(to_lon, to_lat));
 
-    let smoothed = smooth_coords(&coords, coastline);
+    let kept = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm);
+    let smoothed: Vec<[f64; 2]> = kept.into_iter().map(|i| coords[i]).collect();
     let smooth_hops = smoothed.len();
 
+    // Compute actual distance along smoothed path
     let mut smooth_dist = 0.0;
     for w in smoothed.windows(2) {
         smooth_dist += haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]);
@@ -432,18 +611,19 @@ pub fn compute_route(
 - [ ] **Step 4: Run the full core test suite**
 
 Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-core`
-Expected: all tests PASS (new ones plus all existing astar/shore-penalty tests). If `smooth` deletion breaks a compile elsewhere, that's a plan error — `grep -rn "routing::smooth\b" crates/` must come back empty.
+Expected: all tests PASS (7 new + all existing astar/shore-penalty/smooth tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH" && cargo fmt --all
 git add crates/asw-core/src/routing.rs
-git commit -m "feat(core): true-endpoint routing — direct-line shortcut and pin stitching
+git commit -m "feat(core): true-endpoint routing — buffer-gated shortcut and pin stitching
 
 Routes now start and end exactly at the requested coordinates. Clear
-open-water pairs return a direct 2-point route without a graph search;
-fixes floating polylines and 0.00 nm same-cell routes in deep water.
+open-water pairs return a direct 2-point route without a graph search
+(gated on shore clearance when a buffer is requested); fixes floating
+polylines and 0.00 nm same-cell routes in deep water.
 
 Claude-Session: https://claude.ai/code/session_01AMx13pMriCc6KubjyQJe1q"
 ```
@@ -456,12 +636,12 @@ Claude-Session: https://claude.ai/code/session_01AMx13pMriCc6KubjyQJe1q"
 - Modify: `crates/asw-serve/src/api.rs` (tests module only — no production code changes)
 
 **Interfaces:**
-- Consumes: `compute_route` behavior contract from Task 2 (geometry endpoints == requested pins; shortcut when no coastline blocks); `GraphBuilder.coastline_coords: Vec<Vec<(f32, f32)>>` public field (coords are `(lon, lat)` pairs, consumed by `AppState::new` via `CoastlineIndex::from_serialized`).
+- Consumes: `compute_route` behavior contract from Task 2 (geometry endpoints == requested pins; shortcut when no coastline blocks); `GraphBuilder.coastline_coords: Vec<Vec<(f32, f32)>>` public field (coords are `(lon, lat)` pairs, consumed by `AppState::new` via `CoastlineIndex::from_serialized`); existing test helpers `mark_ready`, `ready_state_with_small_graph`, `get_route`.
 - Produces: nothing consumed later; final test coverage at the HTTP layer.
 
 - [ ] **Step 1: Parameterize the ready-state test helper**
 
-In `crates/asw-serve/src/api.rs` tests, change `ready_state_with_small_graph` to build on a new helper that accepts coastline coords (existing callers keep working unchanged):
+In `crates/asw-serve/src/api.rs` tests, extract the body of `ready_state_with_small_graph` into a coastline-accepting variant; the original delegates (keep its doc comment):
 
 ```rust
     /// Like `ready_state_with_small_graph`, but with an injected coastline
@@ -507,42 +687,22 @@ In `crates/asw-serve/src/api.rs` tests, change `ready_state_with_small_graph` to
     }
 ```
 
-(Replace the old body of `ready_state_with_small_graph` with the delegation shown; keep its doc comment.)
-
 - [ ] **Step 2: Fix the 404 test (it would now hit the shortcut)**
 
-`route_returns_404_when_no_route_found_once_ready` uses an **empty graph with an empty coastline** — after Task 2 the direct-line shortcut turns that into a 200. Keep the test's intent (no snappable node ⇒ 404) by blocking the direct line with a coastline wall between the two query points:
+`route_returns_404_when_no_route_found_once_ready` uses an **empty graph with an empty coastline** — after Task 2 the direct-line shortcut turns that into a 200. Keep the test's intent (no snappable node ⇒ 404) by blocking the direct line with a coastline wall between the two query points. Replace the graph construction inside the test with:
 
 ```rust
-    /// A query whose direct line is blocked by land and with no reachable
-    /// node (empty graph) must still surface as 404, not hang or panic,
-    /// through the spawn_blocking path. (The coastline wall prevents the
-    /// direct-line shortcut from answering instead.)
-    #[tokio::test]
-    async fn route_returns_404_when_no_route_found_once_ready() {
-        use crate::state::AppState;
-        use asw_core::graph::GraphBuilder;
-
-        let state = Arc::new(ServerState::new(
-            "test.graph".into(),
-            "secret-key-1234567890".into(),
-        ));
         let mut b = GraphBuilder::new();
-        // Wall crossing the from->to line (lon 28.4, lat 36.0..37.5).
+        // Wall crossing the from->to line (lon 28.4, lat 36.0..37.5), so the
+        // direct-line shortcut cannot answer; with no nodes to snap to, the
+        // route must still surface as 404.
         b.coastline_coords = vec![vec![(28.4, 36.0), (28.4, 37.5)]];
         mark_ready(&state, AppState::new(b.build())).await;
-
-        let app = create_router(state);
-        let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")
-            .header("X-Api-Key", "secret-key-1234567890")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), HyperStatus::NOT_FOUND);
-    }
 ```
 
-- [ ] **Step 3: Add the two new integration tests**
+(and update the test's doc comment accordingly; the imports `AppState`/`GraphBuilder` are already inside the test).
+
+- [ ] **Step 3: Add the new integration tests**
 
 ```rust
     /// Deep-water fix, shortcut path: two points far from any graph node
@@ -576,8 +736,7 @@ In `crates/asw-serve/src/api.rs` tests, change `ready_state_with_small_graph` to
     async fn route_geometry_starts_and_ends_at_requested_points() {
         // Wall at lon 28.35 (lat 36.88..36.92): blocks pin->pin and
         // pin->node3, but not node2->pin_to — forcing a stitched route.
-        let state =
-            ready_state_with_graph(vec![vec![(28.35, 36.88), (28.35, 36.92)]]).await;
+        let state = ready_state_with_graph(vec![vec![(28.35, 36.88), (28.35, 36.92)]]).await;
         let app = create_router(state);
         let req = Request::get("/route?from=36.84,28.26&to=37.01,28.51")
             .header("X-Api-Key", "secret-key-1234567890")
@@ -601,7 +760,10 @@ In `crates/asw-serve/src/api.rs` tests, change `ready_state_with_small_graph` to
 - [ ] **Step 4: Run the serve test suite**
 
 Run: `export PATH="$HOME/.cargo/bin:$PATH" && cargo test -p asw-serve`
-Expected: all tests PASS, including the pre-existing `route_returns_200_with_valid_route_once_ready` (its assertions — distance > 0, `raw_hops >= 1`, LineString — hold on the new shortcut path) and `concurrent_route_requests_beyond_pool_capacity_all_succeed`.
+Expected: all tests PASS. Pre-existing tests worth watching (they now take the shortcut path since test graphs carry no coastline; their assertions still hold):
+- `route_returns_200_with_valid_route_once_ready` (distance > 0, `raw_hops >= 1`, LineString)
+- `concurrent_route_requests_beyond_pool_capacity_all_succeed`
+- `shore_buffer_echoed_in_response` / `shore_buffer_defaults_to_zero` (via `get_route`; with an empty coastline, `min_distance_nm` caps at the buffer so `direct_line_ok` passes and the response echoes the buffer)
 
 - [ ] **Step 5: Commit**
 
@@ -637,9 +799,9 @@ Under `## [Unreleased]` add:
 
 ### Changed
 
-- Direct-line shortcut: when the straight line between the requested points does not cross land, `/route` returns a 2-point great-circle route without a graph search (faster for open-water queries)
+- Direct-line shortcut: when the straight line between the requested points does not cross land — and keeps the requested `shore_buffer` clearance, degraded to the endpoints' own shore distance when they start closer — `/route` returns a 2-point great-circle route without a graph search (faster for open-water queries)
 - A pin on land (or blocked from its snapped node) still returns a route: the first/last segment keeps the direct connection to the graph (small shoreline clip) instead of erroring
-- `asw_core::routing::smooth` (node-id based) removed, replaced by coordinate-based `smooth_coords`
+- `asw_core::routing::smooth` is now a thin wrapper over the new coordinate-based `smooth_indices` (same algorithm, same buffer semantics)
 ```
 
 - [ ] **Step 2: Update CLAUDE.md Key Design Decisions**
@@ -647,13 +809,13 @@ Under `## [Unreleased]` add:
 Add one bullet to the existing list:
 
 ```markdown
-- Query-time endpoint stitching: routes start/end at the exact requested coordinates; clear line-of-sight pairs short-circuit to a direct great-circle leg without a graph search (no graph densification needed for deep water)
+- Query-time endpoint stitching: routes start/end at the exact requested coordinates; clear line-of-sight pairs short-circuit to a direct great-circle leg without a graph search (shore-buffer aware; no graph densification needed for deep water)
 ```
 
 - [ ] **Step 3: Audit README.md**
 
-Run: `grep -n -i "snap\|route\|smooth" README.md`
-Check every hit against the new behavior. Known candidate: the comparison table row `**Arbitrary coordinates** | Yes | Snaps to nearest lane node ...` — the "Yes" for asw is now more true, no change needed unless the cell text describes node-snapping for asw itself. If any sentence says routes are built "between nearest graph nodes" or similar, rewrite it to say routes start/end at the requested coordinates. If nothing is stale, make no edit.
+Run: `grep -n -i "snap\|route\|smooth\|shore" README.md`
+Check every hit against the new behavior. If any sentence says routes are built "between nearest graph nodes" or similar, rewrite it to say routes start/end at the requested coordinates. If nothing is stale, make no edit.
 
 - [ ] **Step 4: Workspace-wide verification**
 
@@ -675,7 +837,7 @@ cargo build --release -p asw-cli
 ./target/release/asw bench --graph export/asw.graph
 ```
 
-Compare against the previous local benchmark results (see git history / previous bench output). Expected: open-water routes faster (shortcut skips A*); no regression on coastal routes (one extra `crosses_land` call per query is noise). If no local graph file exists, note that in the final report instead of running.
+Compare against the previous local benchmark results. Expected: open-water routes faster (shortcut skips A*); no regression on coastal routes (one extra `crosses_land` call per query is noise). If no local graph file exists, note that in the final report instead of running.
 
 - [ ] **Step 6: Commit**
 
