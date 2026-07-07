@@ -113,6 +113,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify graph format version
+        run: |
+          MAGIC=$(head -c 4 asw.graph | xxd -p)
+          if [ "$MAGIC" != "41535703" ]; then
+            echo "::error::graph artifact is not format v3 — rebuild and republish the graph before releasing"
+            exit 1
+          fi
+
       - name: Collect binaries and generate checksums
         run: |
           mkdir -p release
