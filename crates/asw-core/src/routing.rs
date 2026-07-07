@@ -37,12 +37,53 @@ fn touch_and_cache_h(
     }
 }
 
+/// Query-time shore clearance penalty. Edges into nodes closer to shore than
+/// `buffer_q` get their weight multiplied by `1 + k * (1 - d/buffer_q)`.
+#[derive(Debug, Clone, Copy)]
+pub struct ShorePenalty {
+    /// Requested clearance in shore_dist units (SHORE_DIST_UNIT_NM each).
+    pub buffer_q: u8,
+    /// Penalty strength at distance 0.
+    pub k: f32,
+}
+
+impl ShorePenalty {
+    pub const DEFAULT_K: f32 = 15.0;
+
+    /// Build from a buffer in nautical miles. Returns None for buffer <= 0
+    /// (and for NaN). Quantizes UP so the requested clearance is never
+    /// understated.
+    pub fn from_nm(buffer_nm: f64) -> Option<Self> {
+        if !(buffer_nm > 0.0) {
+            return None;
+        }
+        let q = (buffer_nm / crate::graph::SHORE_DIST_UNIT_NM)
+            .ceil()
+            .clamp(1.0, 255.0) as u8;
+        Some(Self {
+            buffer_q: q,
+            k: Self::DEFAULT_K,
+        })
+    }
+
+    /// Weight multiplier for an edge into a node `d` shore_dist units from shore.
+    #[inline]
+    pub fn factor(&self, d: u8) -> f32 {
+        if d >= self.buffer_q {
+            1.0
+        } else {
+            1.0 + self.k * (1.0 - d as f32 / self.buffer_q as f32)
+        }
+    }
+}
+
 /// A* pathfinding with haversine heuristic.
 pub fn astar(
     graph: &RoutingGraph,
     start: u32,
     goal: u32,
     buffers: &mut crate::astar_pool::AstarBuffers,
+    shore: Option<ShorePenalty>,
 ) -> Option<(Vec<u32>, f64)> {
     // Priority queue: (f_score, node_id)
     let mut open: BinaryHeap<Reverse<(OrderedFloat<f32>, u32)>> = BinaryHeap::new();
@@ -81,6 +122,10 @@ pub fn astar(
             if buffers.closed[neighbor as usize] {
                 continue;
             }
+            let weight = match shore {
+                Some(sp) => weight * sp.factor(graph.shore_dist[neighbor as usize]),
+                None => weight,
+            };
             let tentative_g = current_g + weight;
             if tentative_g < buffers.g_score[neighbor as usize] {
                 buffers.g_score[neighbor as usize] = tentative_g;
@@ -184,7 +229,7 @@ pub fn compute_route(
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers)?;
+    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, None)?;
     let raw_hops = raw_path.len();
 
     let smoothed = smooth(graph, &raw_path, coastline);
@@ -263,7 +308,7 @@ mod tests {
     fn astar_shortest_path() {
         let (g, node_a, node_d) = diamond_graph();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let result = astar(&g, node_a, node_d, &mut buffers);
+        let result = astar(&g, node_a, node_d, &mut buffers, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert!((cost - 10.0).abs() < 1e-6, "cost was {cost}, expected 10.0");
@@ -276,7 +321,7 @@ mod tests {
     fn astar_same_node() {
         let (g, node_a, _) = diamond_graph();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let result = astar(&g, node_a, node_a, &mut buffers);
+        let result = astar(&g, node_a, node_a, &mut buffers, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert_eq!(path, vec![node_a]);
@@ -295,18 +340,21 @@ mod tests {
         let mut reused = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
 
         // First search touches (and closes) every node in the tiny diamond graph.
-        let first = astar(&g, node_a, node_d, &mut reused).expect("first search finds a path");
+        let first =
+            astar(&g, node_a, node_d, &mut reused, None).expect("first search finds a path");
 
         // Simulate AstarPool::release() + acquire(): O(1) generation bump, no
         // full-graph clear.
         reused.reset();
 
         // Second search on the same (now stale-but-reset) buffers.
-        let second = astar(&g, node_a, node_d, &mut reused).expect("second search finds a path");
+        let second =
+            astar(&g, node_a, node_d, &mut reused, None).expect("second search finds a path");
 
         // Baseline: identical query on completely fresh buffers.
         let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let baseline = astar(&g, node_a, node_d, &mut fresh).expect("baseline search finds a path");
+        let baseline =
+            astar(&g, node_a, node_d, &mut fresh, None).expect("baseline search finds a path");
 
         assert_eq!(
             second.0, baseline.0,
@@ -334,14 +382,14 @@ mod tests {
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
 
         // First: forward search closes/stamps every node on the A->D path.
-        let _ = astar(&g, node_a, node_d, &mut buffers).expect("path exists");
+        let _ = astar(&g, node_a, node_d, &mut buffers, None).expect("path exists");
 
         buffers.reset();
 
         // Second: reverse search (D -> A) on the same, now-stale buffers.
-        let reused_result = astar(&g, node_d, node_a, &mut buffers).expect("path exists");
+        let reused_result = astar(&g, node_d, node_a, &mut buffers, None).expect("path exists");
         let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let fresh_result = astar(&g, node_d, node_a, &mut fresh).expect("path exists");
+        let fresh_result = astar(&g, node_d, node_a, &mut fresh, None).expect("path exists");
 
         assert_eq!(reused_result.0, fresh_result.0);
         assert!((reused_result.1 - fresh_result.1).abs() < 1e-6);
@@ -363,7 +411,86 @@ mod tests {
         }
         let g = b.build();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let result = astar(&g, 0, 1, &mut buffers);
+        let result = astar(&g, 0, 1, &mut buffers, None);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn shore_penalty_from_nm_and_factor() {
+        assert!(ShorePenalty::from_nm(0.0).is_none());
+        assert!(ShorePenalty::from_nm(-1.0).is_none());
+        let p = ShorePenalty::from_nm(0.1).unwrap(); // 0.1 / 0.02 = 5
+        assert_eq!(p.buffer_q, 5);
+        let p2 = ShorePenalty::from_nm(0.001).unwrap(); // rounds UP to 1
+        assert_eq!(p2.buffer_q, 1);
+        let p3 = ShorePenalty::from_nm(99.0).unwrap(); // clamps to 255
+        assert_eq!(p3.buffer_q, 255);
+
+        assert_eq!(p.factor(5), 1.0); // at the buffer: no penalty
+        assert_eq!(p.factor(255), 1.0); // far offshore: no penalty
+        assert!((p.factor(0) - 16.0).abs() < 1e-6); // 1 + 15*1
+        assert!((p.factor(2) - (1.0 + 15.0 * 0.6)).abs() < 1e-4);
+    }
+
+    /// Two corridors S->A->G (short, A hugs the shore) and S->B->G (long, B
+    /// offshore). Without a buffer the short corridor wins; with one, the long.
+    fn corridor_graph() -> (RoutingGraph, u32, u32, u32, u32) {
+        let coords = [
+            (0.0, 0.0, "S", 255u8),
+            (1.0, 0.0, "A", 0u8), // on the shore
+            (0.0, 1.0, "B", 255u8),
+            (1.0, 1.0, "G", 255u8),
+        ];
+        let mut cells: Vec<(u64, f64, f64, u8, &str)> = coords
+            .iter()
+            .map(|&(lat, lng, label, q)| {
+                let cell = h3o::LatLng::new(lat, lng)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Five);
+                (u64::from(cell), lat, lng, q, label)
+            })
+            .collect();
+        cells.sort_by_key(|(h3, _, _, _, _)| *h3);
+
+        let mut b = GraphBuilder::new();
+        let mut ids = std::collections::HashMap::new();
+        for (h3, lat, lng, q, label) in &cells {
+            let id = b.add_node(*h3, *lat, *lng, *q);
+            ids.insert(*label, id);
+        }
+        b.add_edge(ids["S"], ids["A"], 5.0);
+        b.add_edge(ids["A"], ids["G"], 5.0); // near-shore total: 10
+        b.add_edge(ids["S"], ids["B"], 8.0);
+        b.add_edge(ids["B"], ids["G"], 8.0); // offshore total: 16
+        (b.build(), ids["S"], ids["A"], ids["B"], ids["G"])
+    }
+
+    #[test]
+    fn penalty_diverts_route_offshore() {
+        let (g, s, a, b_node, goal) = corridor_graph();
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+
+        // Without penalty: short near-shore corridor via A.
+        let (path, cost) = astar(&g, s, goal, &mut buffers, None).unwrap();
+        assert_eq!(path, vec![s, a, goal]);
+        assert!((cost - 10.0).abs() < 1e-4);
+
+        // With a 0.1 nm buffer: edge S->A costs 5 * 16 = 80 -> offshore wins.
+        buffers.reset();
+        let shore = ShorePenalty::from_nm(0.1);
+        let (path, cost) = astar(&g, s, goal, &mut buffers, shore).unwrap();
+        assert_eq!(path, vec![s, b_node, goal]);
+        assert!((cost - 16.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn penalty_with_all_nodes_offshore_is_identity() {
+        let (g, node_a, node_d) = diamond_graph(); // all nodes shore_dist=255
+        let mut b1 = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut b2 = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let plain = astar(&g, node_a, node_d, &mut b1, None).unwrap();
+        let with = astar(&g, node_a, node_d, &mut b2, ShorePenalty::from_nm(0.2)).unwrap();
+        assert_eq!(plain.0, with.0);
+        assert!((plain.1 - with.1).abs() < 1e-6);
     }
 }
