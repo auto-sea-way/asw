@@ -317,7 +317,7 @@ mod tests {
         let mut b = GraphBuilder::new();
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng));
+            ids.push(b.add_node(h3, lat, lng, 255));
         }
         for i in 0..ids.len().saturating_sub(1) {
             b.add_edge(ids[i], ids[i + 1], 1.0);

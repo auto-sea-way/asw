@@ -75,7 +75,7 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     let mut id_remap = vec![0u32; sorted_cells.len()];
     for (cell, old_id) in &sorted_cells {
         let (lat, lng) = cell_center(*cell);
-        let new_id = builder.add_node(u64::from(*cell), lat, lng);
+        let new_id = builder.add_node(u64::from(*cell), lat, lng, 255);
         id_remap[*old_id as usize] = new_id;
     }
 
@@ -126,7 +126,8 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
                 if labels[old_id as usize] == main_root {
                     let h3 = graph.node_h3[old_id as usize];
                     let (lat, lon) = graph.node_pos(old_id);
-                    let new_id = new_builder.add_node(h3, lat, lon);
+                    let new_id =
+                        new_builder.add_node(h3, lat, lon, graph.shore_dist[old_id as usize]);
                     old_to_new[old_id as usize] = Some(new_id);
                 }
             }

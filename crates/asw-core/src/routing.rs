@@ -248,7 +248,7 @@ mod tests {
         let mut b = GraphBuilder::new();
         let mut ids = std::collections::HashMap::new();
         for (h3, lat, lng, label) in &cells {
-            let id = b.add_node(*h3, *lat, *lng);
+            let id = b.add_node(*h3, *lat, *lng, 255);
             ids.insert(*label, id);
         }
 
@@ -359,7 +359,7 @@ mod tests {
         cells.sort_by_key(|(h3, _, _)| *h3);
         let mut b = GraphBuilder::new();
         for (h3, lat, lng) in &cells {
-            b.add_node(*h3, *lat, *lng);
+            b.add_node(*h3, *lat, *lng, 255);
         }
         let g = b.build();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);

@@ -368,7 +368,7 @@ mod app_state_tests {
         let mut b = GraphBuilder::new();
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng));
+            ids.push(b.add_node(h3, lat, lng, 255));
         }
         // Connect all nodes in a chain so they share one component
         for i in 0..ids.len().saturating_sub(1) {
@@ -443,7 +443,7 @@ mod app_state_tests {
         let mut ids = Vec::new();
         let mut is_main = Vec::new();
         for &(h3, lat, lng, main) in &entries {
-            ids.push(b.add_node(h3, lat, lng));
+            ids.push(b.add_node(h3, lat, lng, 255));
             is_main.push(main);
         }
         // Connect only the main-component nodes in a chain
@@ -500,7 +500,7 @@ mod app_state_tests {
 
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng));
+            ids.push(b.add_node(h3, lat, lng, 255));
         }
         // Connect all so they're in the same component
         for i in 0..ids.len().saturating_sub(1) {
@@ -536,7 +536,7 @@ mod app_state_tests {
             .to_cell(h3o::Resolution::Three);
 
         let mut b = GraphBuilder::new();
-        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1);
+        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1, 255);
         let graph = b.build();
         let state = AppState::new(graph);
 
@@ -556,7 +556,7 @@ mod app_state_tests {
             .to_cell(h3o::Resolution::Three);
 
         let mut b = GraphBuilder::new();
-        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1);
+        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1, 255);
         let graph = b.build();
         let state = AppState::new(graph);
 
@@ -598,7 +598,7 @@ mod app_state_tests {
         let mut builder = GraphBuilder::new();
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
-            ids.push(builder.add_node(h3, lat, lng));
+            ids.push(builder.add_node(h3, lat, lng, 255));
         }
         for i in 0..ids.len().saturating_sub(1) {
             builder.add_edge(ids[i], ids[i + 1], 1.0);
@@ -652,7 +652,7 @@ mod app_state_tests {
         let mut builder = GraphBuilder::new();
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
-            ids.push(builder.add_node(h3, lat, lng));
+            ids.push(builder.add_node(h3, lat, lng, 255));
         }
         for i in 0..ids.len().saturating_sub(1) {
             builder.add_edge(ids[i], ids[i + 1], 1.0);
@@ -716,7 +716,7 @@ mod app_state_tests {
         let mut builder = GraphBuilder::new();
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
-            ids.push(builder.add_node(h3, lat, lng));
+            ids.push(builder.add_node(h3, lat, lng, 255));
         }
         for i in 0..ids.len().saturating_sub(1) {
             builder.add_edge(ids[i], ids[i + 1], 1.0);
