@@ -13,9 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Per-node distance-to-shore stored in the graph (1 byte/node, 0.02 nm quantization, saturating at 5.1 nm)
 - `--shore-buffer` flag on `asw bench`
 
+### Fixed
+
+- Deep-water routes: geometry now starts and ends exactly at the requested coordinates instead of at snapped node centers (on res-3 ocean cells the nearest node can be tens of nm away, leaving the polyline visibly detached from the route markers); two points inside the same cell no longer return a single-point 0.00 nm route
+
 ### Changed
 
 - **BREAKING:** graph format v2 → v3 (adds `shore_dist`) — existing graph files must be rebuilt
+- Direct-line shortcut: when the straight line between the requested points does not cross land — and keeps the requested `shore_buffer` clearance, degraded to the endpoints' own shore distance when they start closer — `/route` returns a 2-point great-circle route without a graph search (faster for open-water queries)
+- A pin on land (or blocked from its snapped node) still returns a route: the first/last segment keeps the direct connection to the graph (small shoreline clip) instead of erroring
+- `asw_core::routing::smooth` is now a thin wrapper over the new coordinate-based `smooth_indices` (same algorithm, same buffer semantics)
 
 ## [0.5.0] - 2026-07-07
 

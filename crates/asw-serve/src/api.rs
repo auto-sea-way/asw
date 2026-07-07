@@ -307,12 +307,9 @@ mod tests {
         *state.inner.write().await = Some(Arc::new(app));
     }
 
-    /// Build a `ServerState` whose graph has already finished loading,
-    /// backed by a tiny 3-node chain graph. Used to exercise the `/route`
-    /// happy path end-to-end through the new `Arc<AppState>` +
-    /// `spawn_blocking` pipeline (finding 6), rather than only the "still
-    /// loading" 503 path the other tests cover.
-    async fn ready_state_with_small_graph() -> Arc<ServerState> {
+    /// Like `ready_state_with_small_graph`, but with an injected coastline
+    /// (lon, lat) polyline so tests can block specific lines of sight.
+    async fn ready_state_with_graph(coastline: Vec<Vec<(f32, f32)>>) -> Arc<ServerState> {
         use crate::state::AppState;
         use asw_core::graph::GraphBuilder;
 
@@ -330,6 +327,7 @@ mod tests {
         entries.dedup_by_key(|(h3, _, _)| *h3);
 
         let mut b = GraphBuilder::new();
+        b.coastline_coords = coastline;
         let mut ids = Vec::new();
         for &(h3, lat, lng) in &entries {
             ids.push(b.add_node(h3, lat, lng, 255));
@@ -345,6 +343,15 @@ mod tests {
         ));
         mark_ready(&state, AppState::new(graph)).await;
         state
+    }
+
+    /// Build a `ServerState` whose graph has already finished loading,
+    /// backed by a tiny 3-node chain graph. Used to exercise the `/route`
+    /// happy path end-to-end through the new `Arc<AppState>` +
+    /// `spawn_blocking` pipeline (finding 6), rather than only the "still
+    /// loading" 503 path the other tests cover.
+    async fn ready_state_with_small_graph() -> Arc<ServerState> {
+        ready_state_with_graph(Vec::new()).await
     }
 
     #[tokio::test]
@@ -490,8 +497,10 @@ mod tests {
         }
     }
 
-    /// A query point with no reachable node (empty ready graph) must still
-    /// surface as 404, not hang or panic, through the spawn_blocking path.
+    /// A query whose direct line is blocked by land and with no reachable
+    /// node (empty graph) must still surface as 404, not hang or panic,
+    /// through the spawn_blocking path. (The coastline wall prevents the
+    /// direct-line shortcut from answering instead.)
     #[tokio::test]
     async fn route_returns_404_when_no_route_found_once_ready() {
         use crate::state::AppState;
@@ -501,7 +510,12 @@ mod tests {
             "test.graph".into(),
             "secret-key-1234567890".into(),
         ));
-        mark_ready(&state, AppState::new(GraphBuilder::new().build())).await;
+        let mut b = GraphBuilder::new();
+        // Wall crossing the from->to line (lon 28.4, lat 36.0..37.5), so the
+        // direct-line shortcut cannot answer; with no nodes to snap to, the
+        // route must still surface as 404.
+        b.coastline_coords = vec![vec![(28.4, 36.0), (28.4, 37.5)]];
+        mark_ready(&state, AppState::new(b.build())).await;
 
         let app = create_router(state);
         let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")
@@ -510,6 +524,60 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), HyperStatus::NOT_FOUND);
+    }
+
+    /// Deep-water fix, shortcut path: two points far from any graph node
+    /// with a clear line of sight return the two requested points exactly
+    /// and a positive distance (was: polyline floating at distant node
+    /// centers, or 0.00 nm for same-cell pairs).
+    #[tokio::test]
+    async fn route_open_water_returns_requested_points_exactly() {
+        let app = create_router(ready_state_with_small_graph().await);
+        let req = Request::get("/route?from=36.5,28.0&to=36.6,28.1")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["distance_nm"].as_f64().unwrap() > 0.0);
+        let coords = json["geometry"]["coordinates"].as_array().unwrap();
+        assert_eq!(coords.first().unwrap(), &serde_json::json!([28.0, 36.5]));
+        assert_eq!(coords.last().unwrap(), &serde_json::json!([28.1, 36.6]));
+    }
+
+    /// Deep-water fix, stitched path: a wall blocks the direct line, so the
+    /// route goes through the graph — but the geometry must still start and
+    /// end exactly at the requested coordinates, not at node centers.
+    #[tokio::test]
+    async fn route_geometry_starts_and_ends_at_requested_points() {
+        // Wall at lon 28.35 (lat 36.88..36.92): blocks pin->pin and
+        // pin->node3, but not node2->pin_to — forcing a stitched route.
+        let state = ready_state_with_graph(vec![vec![(28.35, 36.88), (28.35, 36.92)]]).await;
+        let app = create_router(state);
+        let req = Request::get("/route?from=36.84,28.26&to=37.01,28.51")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json["distance_nm"].as_f64().unwrap() > 0.0);
+        let coords = json["geometry"]["coordinates"].as_array().unwrap();
+        assert_eq!(coords.first().unwrap(), &serde_json::json!([28.26, 36.84]));
+        assert_eq!(coords.last().unwrap(), &serde_json::json!([28.51, 37.01]));
+        assert!(
+            coords.len() >= 3,
+            "expected a stitched route, got {coords:?}"
+        );
     }
 
     #[tokio::test]
