@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A pin on land (or blocked from its snapped node) still returns a route: the first/last segment keeps the direct connection to the graph (small shoreline clip) instead of erroring
 - `asw_core::routing::smooth` is now a thin wrapper over the new coordinate-based `smooth_indices` (same algorithm, same buffer semantics)
 - Crate versions now track the release version — `asw --version` reports the actual release (was stuck at 0.1.0)
+- Planet graph rebuilt in format v3: 39,412,823 nodes / 299,517,836 edges, 717 MB (+15 MB for per-node shore distances; topology identical to v0.5.0)
 
 ## [0.5.0] - 2026-07-07
 

@@ -75,35 +75,37 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 20 routes, 50 iterations each. Graph v3 format (bitcode + H3 binary search). Graphs built with v2 must be rebuilt — v2 files are rejected at load time.
 
+Since v0.6.0, routes start and end at the exact requested coordinates (not at snapped graph nodes), so routed distances are slightly longer — and more honest — than in earlier releases.
+
 ### Sailing Routes
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 0.3ms | 0.3ms | 33>3 |
-| Aegean Hop | 25.3nm | 0.7ms | 0.8ms | 54>5 |
-| Strait of Gibraltar | 29.4nm | 0.7ms | 0.7ms | 63>3 |
-| Baltic Crossing | 41.9nm | 1.5ms | 1.7ms | 53>5 |
-| Balearic Sea | 127.6nm | 2.2ms | 2.2ms | 114>6 |
-| Florida Strait | 89.0nm | 0.4ms | 0.4ms | 22>2 |
-| Malacca Route | 534.3nm | 42.2ms | 58.9ms | 497>20 |
-| Tasman Sea | 1265.1nm | 59.8ms | 76.4ms | 408>16 |
-| South Atlantic | 3272.3nm | 32.8ms | 38.7ms | 392>7 |
-| North Atlantic | 3040.5nm | 865ms | 934ms | 682>17 |
+| English Channel | 22.1nm | 0.3ms | 0.3ms | 33>4 |
+| Aegean Hop | 26.1nm | 0.7ms | 0.8ms | 54>6 |
+| Strait of Gibraltar | 30.6nm | 0.8ms | 0.8ms | 63>5 |
+| Baltic Crossing | 42.0nm | 1.5ms | 1.6ms | 53>5 |
+| Balearic Sea | 128.4nm | 2.2ms | 2.3ms | 114>7 |
+| Florida Strait | 90.1nm | 0.5ms | 0.5ms | 22>4 |
+| Malacca Route | 536.0nm | 39.1ms | 41.7ms | 497>21 |
+| Tasman Sea | 1265.7nm | 54.3ms | 58.8ms | 408>17 |
+| South Atlantic | 3273.6nm | 29.7ms | 30.0ms | 392>8 |
+| North Atlantic | 3041.0nm | 842ms | 901ms | 682>18 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.5nm | 13.2ms | 13.8ms | 1155>23 |
-| Panama Canal | 53.4nm | 78.6ms | 84.8ms | 1029>53 |
-| Kiel Canal | 84.4nm | 39.6ms | 42.6ms | 1976>56 |
+| Suez Canal | 147.0nm | 12.9ms | 13.0ms | 1155>24 |
+| Panama Canal | 53.6nm | 75.2ms | 76.7ms | 1029>54 |
+| Kiel Canal | 95.0nm | 38.5ms | 39.3ms | 1976>57 |
 | Corinth Canal | 6.6nm | 1.5ms | 1.5ms | 364>8 |
-| Bosphorus | 32.3nm | 1.8ms | 1.9ms | 163>11 |
-| Dardanelles | 45.5nm | 1.3ms | 1.4ms | 116>5 |
-| Malacca Strait | 28.5nm | 1.3ms | 1.4ms | 89>5 |
-| Singapore Strait | 27.9nm | 1.0ms | 1.1ms | 46>5 |
-| Messina Strait | 15.7nm | 0.5ms | 0.5ms | 68>5 |
-| Dover Strait | 18.4nm | 0.4ms | 0.4ms | 17>3 |
+| Bosphorus | 32.7nm | 1.8ms | 5.9ms | 163>11 |
+| Dardanelles | 46.3nm | 1.3ms | 1.4ms | 116>6 |
+| Malacca Strait | 29.5nm | 1.3ms | 1.4ms | 89>6 |
+| Singapore Strait | 29.3nm | 1.0ms | 1.1ms | 46>5 |
+| Messina Strait | 17.2nm | 0.6ms | 0.6ms | 68>6 |
+| Dover Strait | 24.9nm | 0.4ms | 0.4ms | 17>5 |
 
 ## API Endpoints
 
@@ -130,12 +132,12 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 | Image | Tag | Description |
 |-------|-----|-------------|
 | `ghcr.io/auto-sea-way/asw` | `latest`, `0.6.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.6.0-full` | Full image — graph file included (~750 MB) |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.6.0-full` | Full image — graph file included (~740 MB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
-# Full image — zero config, graph included (~870 MB)
+# Full image — zero config, graph included (~740 MB)
 docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
@@ -173,7 +175,7 @@ Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in ~5 hours:
 |--------|-------|
 | Nodes | 39,412,823 |
 | Edges | 299,517,836 |
-| Graph file size | 702 MB |
+| Graph file size | 717 MB |
 | Connectivity | 100% (single connected component after build-time pruning) |
 | Server memory (RSS) | ~4.1 GiB after load, 4.3 GiB measured under global traffic (~4.8 GiB ceiling) |
 | Server memory (total) | plan for ~5 GiB (needs swap below 8 GB) |
