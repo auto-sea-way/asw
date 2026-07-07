@@ -294,6 +294,58 @@ impl RoutingGraph {
         self.coastline_coords = Vec::new();
     }
 
+    /// Keep only the largest connected component, remapping node IDs.
+    /// Returns self unchanged when the graph is already one component.
+    pub fn prune_to_main_component(self) -> RoutingGraph {
+        let labels = self.component_labels();
+        let mut comp_sizes: std::collections::HashMap<u32, usize> =
+            std::collections::HashMap::new();
+        for &root in &labels {
+            *comp_sizes.entry(root).or_insert(0) += 1;
+        }
+        let main_root = comp_sizes
+            .iter()
+            .max_by_key(|(_, count)| **count)
+            .map(|(&root, _)| root)
+            .unwrap_or(0);
+        let main_count = comp_sizes.get(&main_root).copied().unwrap_or(0);
+        let pruned_count = self.num_nodes as usize - main_count;
+
+        if pruned_count == 0 {
+            return self;
+        }
+        tracing::info!(
+            "Pruning {} nodes in {} small components (keeping {} in main component)",
+            pruned_count,
+            comp_sizes.len() - 1,
+            main_count,
+        );
+
+        let mut old_to_new: Vec<Option<u32>> = vec![None; self.num_nodes as usize];
+        let mut new_builder = GraphBuilder::new();
+        for old_id in 0..self.num_nodes {
+            if labels[old_id as usize] == main_root {
+                let h3 = self.node_h3[old_id as usize];
+                let (lat, lon) = self.node_pos(old_id);
+                let new_id = new_builder.add_node(h3, lat, lon, self.shore_dist[old_id as usize]);
+                old_to_new[old_id as usize] = Some(new_id);
+            }
+        }
+        for old_src in 0..self.num_nodes {
+            if labels[old_src as usize] != main_root {
+                continue;
+            }
+            let new_src = old_to_new[old_src as usize].unwrap();
+            for (old_dst, weight) in self.neighbors(old_src) {
+                if let Some(new_dst) = old_to_new[old_dst as usize] {
+                    new_builder.add_directed_edge(new_src, new_dst, weight);
+                }
+            }
+        }
+        new_builder.coastline_coords = self.coastline_coords;
+        new_builder.build()
+    }
+
     /// Returns a Vec where `result[i]` is the component root for node `i`.
     /// Uses u32 to halve memory vs usize (40M nodes * 4 bytes = 160 MB).
     pub fn component_labels(&self) -> Vec<u32> {
@@ -703,6 +755,41 @@ mod tests {
             err.to_string().contains("Unsupported ASW graph version 2"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn prune_keeps_main_component_and_shore_dist() {
+        // 3-node chain (main) + 1 isolated node, distinct shore_dist values.
+        let coords = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (10.0, 10.0)];
+        let mut entries: Vec<(u64, f64, f64, u8)> = coords
+            .iter()
+            .enumerate()
+            .map(|(i, &(lat, lng))| {
+                let cell = h3o::LatLng::new(lat, lng)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Five);
+                (u64::from(cell), lat, lng, (i as u8 + 1) * 10) // 10,20,30,40
+            })
+            .collect();
+        entries.sort_by_key(|(h3, _, _, _)| *h3);
+
+        let mut b = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng, q) in &entries {
+            ids.push(b.add_node(h3, lat, lng, q));
+        }
+        // Chain the first three entries (by sorted order); leave the last isolated.
+        b.add_edge(ids[0], ids[1], 1.0);
+        b.add_edge(ids[1], ids[2], 1.0);
+        let g = b.build();
+
+        let pruned = g.prune_to_main_component();
+        assert_eq!(pruned.num_nodes, 3);
+        // Every surviving node keeps the shore_dist of the entry with its H3 index.
+        for (i, &h3) in pruned.node_h3.iter().enumerate() {
+            let orig = entries.iter().find(|e| e.0 == h3).unwrap();
+            assert_eq!(pruned.shore_dist[i], orig.3, "node {i} shore_dist mismatch");
+        }
     }
 
     #[test]

@@ -71,11 +71,15 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     let mut sorted_cells: Vec<(CellIndex, u32)> = cells.iter().map(|(&c, &id)| (c, id)).collect();
     sorted_cells.sort_by_key(|(cell, _)| u64::from(*cell));
 
+    // Compute per-node distance to shore (straight-line, capped at 5.1 nm)
+    let shore_dist = crate::shore::compute_shore_distances(&sorted_cells, &coastline_index);
+    info!("Computed shore distances for {} cells", shore_dist.len());
+
     // Build node ID remapping: old_id -> new_id
     let mut id_remap = vec![0u32; sorted_cells.len()];
-    for (cell, old_id) in &sorted_cells {
+    for (i, (cell, old_id)) in sorted_cells.iter().enumerate() {
         let (lat, lng) = cell_center(*cell);
-        let new_id = builder.add_node(u64::from(*cell), lat, lng, 255);
+        let new_id = builder.add_node(u64::from(*cell), lat, lng, shore_dist[i]);
         id_remap[*old_id as usize] = new_id;
     }
 
@@ -95,68 +99,11 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     );
 
     // Prune: keep only the largest connected component
-    let graph = {
-        let labels = graph.component_labels();
-        let mut comp_sizes: std::collections::HashMap<u32, usize> =
-            std::collections::HashMap::new();
-        for &root in &labels {
-            *comp_sizes.entry(root).or_insert(0) += 1;
-        }
-        let main_root = comp_sizes
-            .iter()
-            .max_by_key(|(_, count)| **count)
-            .map(|(&root, _)| root)
-            .unwrap_or(0);
-
-        let main_count = comp_sizes.get(&main_root).copied().unwrap_or(0);
-        let pruned_count = graph.num_nodes as usize - main_count;
-
-        if pruned_count > 0 {
-            info!(
-                "Pruning {} nodes in {} small components (keeping {} in main component)",
-                pruned_count,
-                comp_sizes.len() - 1,
-                main_count,
-            );
-
-            // Build old→new ID mapping (only main-component nodes)
-            let mut old_to_new: Vec<Option<u32>> = vec![None; graph.num_nodes as usize];
-            let mut new_builder = GraphBuilder::new();
-            for old_id in 0..graph.num_nodes {
-                if labels[old_id as usize] == main_root {
-                    let h3 = graph.node_h3[old_id as usize];
-                    let (lat, lon) = graph.node_pos(old_id);
-                    let new_id =
-                        new_builder.add_node(h3, lat, lon, graph.shore_dist[old_id as usize]);
-                    old_to_new[old_id as usize] = Some(new_id);
-                }
-            }
-
-            // Re-add edges between main-component nodes
-            for old_src in 0..graph.num_nodes {
-                if labels[old_src as usize] != main_root {
-                    continue;
-                }
-                let new_src = old_to_new[old_src as usize].unwrap();
-                for (old_dst, weight) in graph.neighbors(old_src) {
-                    // Only add each directed edge once (neighbors returns directed edges)
-                    if let Some(new_dst) = old_to_new[old_dst as usize] {
-                        new_builder.add_directed_edge(new_src, new_dst, weight);
-                    }
-                }
-            }
-
-            new_builder.coastline_coords = graph.coastline_coords;
-            let pruned = new_builder.build();
-            info!(
-                "Pruned graph: {} nodes, {} edges",
-                pruned.num_nodes, pruned.num_edges
-            );
-            pruned
-        } else {
-            graph
-        }
-    };
+    let graph = graph.prune_to_main_component();
+    info!(
+        "Final graph: {} nodes, {} edges",
+        graph.num_nodes, graph.num_edges
+    );
 
     // Serialize
     info!("Saving graph to {:?}...", output_path);
