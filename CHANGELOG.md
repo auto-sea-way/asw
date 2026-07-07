@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-07
+
 ### Fixed
 
 - Edge weight quantization: clamp to >= 1 centi-nm so res-13 passage-corridor edges (Panama, Kiel, Corinth, Welland) are no longer free for A*; hard error (was debug-only assert) on u16 weight overflow. Requires a graph rebuild to take effect
@@ -24,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `/route` computation runs on `tokio::task::spawn_blocking` (long routes no longer stall health probes); `ServerState` holds `Arc<AppState>`
 - `nearest_node` exhaustive fallback uses geometrically-doubled eager disk scans (worst case ~1.56x one full-disk call, typical early exit far cheaper)
 - `min_distance_deg` iterates coastline pairs without per-segment allocation
+- Planet graph rebuilt (39,412,823 nodes / 299,517,836 edges, 702 MB): canal corridor edges carry real weights, and ~433K spurious fine-resolution nodes along the antimeridian are gone (previously over-refined by degenerate transmeridian cell polygons)
 
 ## [0.4.0] - 2026-03-28
 
@@ -125,7 +128,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
-[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/auto-sea-way/asw/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/auto-sea-way/asw/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/auto-sea-way/asw/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/auto-sea-way/asw/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/auto-sea-way/asw/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/auto-sea-way/asw/compare/v0.1.0...v0.2.0
