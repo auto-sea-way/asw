@@ -73,7 +73,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 ## Routing Benchmarks
 
-20 routes, 50 iterations each. Graph v2 format (bitcode + H3 binary search).
+20 routes, 50 iterations each. Graph v3 format (bitcode + H3 binary search). Graphs built with v2 must be rebuilt — v2 files are rejected at load time.
 
 ### Sailing Routes
 
@@ -115,6 +115,11 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 | `GET /ready` | None | Readiness probe (503 during graph load, 200 when ready) |
 
 Protected endpoints require an `X-Api-Key` header matching the configured `ASW_API_KEY`. Requests with a missing or invalid key receive `401 Unauthorized`.
+
+**`/route` parameters:**
+
+- `from`, `to` — `lat,lon` coordinates
+- `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the applied value as `shore_buffer_nm`
 
 ## Packages
 
@@ -235,7 +240,7 @@ cargo build --release -p asw-cli
 
 ## Known Limitations
 
-- **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas.
+- **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas. The `shore_buffer` parameter partially mitigates this by keeping routes off headlands and uncharted near-shore hazards, but it is not a substitute for nautical charts.
 
 ## Data Sources
 
