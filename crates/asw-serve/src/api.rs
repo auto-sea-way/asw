@@ -20,6 +20,8 @@ pub struct RouteQuery {
     pub from: String,
     /// "lat,lon"
     pub to: String,
+    /// Minimum distance from shore in nautical miles (0..=5.0, default 0).
+    pub shore_buffer: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -28,6 +30,7 @@ pub struct RouteResponse {
     pub raw_hops: usize,
     pub smooth_hops: usize,
     pub geometry: serde_json::Value,
+    pub shore_buffer_nm: f64,
 }
 
 #[derive(Serialize)]
@@ -88,6 +91,16 @@ async fn route_handler(
         )
     })?;
 
+    let shore_buffer_nm = params.shore_buffer.unwrap_or(0.0);
+    if !shore_buffer_nm.is_finite() || !(0.0..=5.0).contains(&shore_buffer_nm) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Invalid 'shore_buffer' parameter. Expected nautical miles in 0..5.0".into(),
+            }),
+        ));
+    }
+
     // Bound concurrent A* computations to the buffer pool's capacity before
     // handing off to the blocking pool: without this, `spawn_blocking` can
     // spin up to Tokio's 512-thread blocking pool, and each thread beyond the
@@ -124,7 +137,7 @@ async fn route_handler(
                 &app.coastline,
                 &knn,
                 buffers,
-                0.0,
+                shore_buffer_nm,
             )
         })
     })
@@ -156,6 +169,7 @@ async fn route_handler(
         raw_hops: result.raw_hops,
         smooth_hops: result.smooth_hops,
         geometry,
+        shore_buffer_nm,
     }))
 }
 
@@ -511,6 +525,71 @@ mod tests {
             resp.headers().contains_key("access-control-allow-origin"),
             "expected Access-Control-Allow-Origin header on response"
         );
+    }
+
+    async fn ready_state() -> Arc<ServerState> {
+        use asw_core::graph::GraphBuilder;
+        let state = test_state();
+        let coords = [(36.0, 28.0), (36.5, 28.5)];
+        let mut entries: Vec<(u64, f64, f64)> = coords
+            .iter()
+            .map(|&(lat, lng)| {
+                let cell = h3o::LatLng::new(lat, lng)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Five);
+                (u64::from(cell), lat, lng)
+            })
+            .collect();
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        let mut b = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(b.add_node(h3, lat, lng, 255));
+        }
+        b.add_edge(ids[0], ids[1], 30.0);
+        let app = crate::state::AppState::new(b.build());
+        *state.inner.write().await = Some(Arc::new(app));
+        state
+    }
+
+    async fn get_route(query: &str) -> (HyperStatus, serde_json::Value) {
+        let app = create_router(ready_state().await);
+        let req = Request::get(format!("/route?{query}"))
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn shore_buffer_out_of_range_is_400() {
+        let (status, body) = get_route("from=36.0,28.0&to=36.5,28.5&shore_buffer=5.1").await;
+        assert_eq!(status, HyperStatus::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("shore_buffer"));
+
+        let (status, _) = get_route("from=36.0,28.0&to=36.5,28.5&shore_buffer=-0.1").await;
+        assert_eq!(status, HyperStatus::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn shore_buffer_echoed_in_response() {
+        let (status, body) = get_route("from=36.0,28.0&to=36.5,28.5&shore_buffer=0.2").await;
+        assert_eq!(status, HyperStatus::OK, "body: {body}");
+        assert!((body["shore_buffer_nm"].as_f64().unwrap() - 0.2).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn shore_buffer_defaults_to_zero() {
+        let (status, body) = get_route("from=36.0,28.0&to=36.5,28.5").await;
+        assert_eq!(status, HyperStatus::OK, "body: {body}");
+        assert_eq!(body["shore_buffer_nm"].as_f64().unwrap(), 0.0);
     }
 
     #[tokio::test]
