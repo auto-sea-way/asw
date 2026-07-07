@@ -106,6 +106,10 @@ enum Commands {
         /// Compare against previous JSON baseline
         #[arg(long)]
         compare: Option<PathBuf>,
+
+        /// Shore clearance in nautical miles (0 = off); applies the routing penalty
+        #[arg(long, default_value_t = 0.0, value_parser = parse_shore_buffer)]
+        shore_buffer: f64,
     },
     /// Health check: exit 0 if server is ready, 1 otherwise (for Docker HEALTHCHECK)
     Healthcheck {
@@ -117,6 +121,22 @@ enum Commands {
         #[arg(long, env = "ASW_HOST", default_value = "127.0.0.1")]
         host: String,
     },
+}
+
+/// clap `value_parser` for `--shore-buffer`: must be finite and within the
+/// same 0.0..=5.0 nm range the `/route` HTTP API enforces (see
+/// asw-serve/src/api.rs), so an out-of-range value fails fast at the CLI
+/// instead of silently reaching `ShorePenalty::from_nm`.
+fn parse_shore_buffer(s: &str) -> Result<f64, String> {
+    let value: f64 = s
+        .parse()
+        .map_err(|_| format!("invalid nautical-mile value: {s}"))?;
+    if !value.is_finite() || !(0.0..=5.0).contains(&value) {
+        return Err(format!(
+            "shore-buffer must be a finite number between 0.0 and 5.0 nautical miles inclusive, got {value}"
+        ));
+    }
+    Ok(value)
 }
 
 #[derive(Subcommand)]
@@ -337,6 +357,7 @@ fn main() -> Result<()> {
             json,
             output,
             compare,
+            shore_buffer,
         } => {
             bench::run(
                 &graph,
@@ -344,6 +365,7 @@ fn main() -> Result<()> {
                 json,
                 output.as_deref(),
                 compare.as_deref(),
+                shore_buffer,
             )?;
         }
         Commands::Healthcheck { port, host } => {

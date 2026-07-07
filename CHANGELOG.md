@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `shore_buffer` query parameter on `/route` (nautical miles, 0–5.0): keeps routes a configurable clearance from the coastline via a graded A* cost penalty and buffer-aware path smoothing (#26 — thanks to @Damiasroca for highlighting a real safety gap in near-shore routing)
+- Per-node distance-to-shore stored in the graph (1 byte/node, 0.02 nm quantization, saturating at 5.1 nm)
+- `--shore-buffer` flag on `asw bench`
+
+### Changed
+
+- **BREAKING:** graph format v2 → v3 (adds `shore_dist`) — existing graph files must be rebuilt
+
 ## [0.5.0] - 2026-07-07
 
 ### Fixed
