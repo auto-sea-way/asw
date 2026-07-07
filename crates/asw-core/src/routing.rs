@@ -54,7 +54,7 @@ impl ShorePenalty {
     /// (and for NaN). Quantizes UP so the requested clearance is never
     /// understated.
     pub fn from_nm(buffer_nm: f64) -> Option<Self> {
-        if !(buffer_nm > 0.0) {
+        if buffer_nm.is_nan() || buffer_nm <= 0.0 {
             return None;
         }
         let q = (buffer_nm / crate::graph::SHORE_DIST_UNIT_NM)
