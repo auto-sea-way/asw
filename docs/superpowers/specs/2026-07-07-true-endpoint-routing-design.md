@@ -10,7 +10,7 @@ polyline of graph node positions only. The user's actual coordinates are never
 part of the returned geometry.
 
 - Near the coast (res-9 nodes, ~0.1 nm spacing) the snap error is invisible.
-- In open water (res-3 nodes, ~59 nm edge length) the nearest node center can
+- In open water (res-3 nodes, ~32 nm edge length) the nearest node center can
   be tens of nm from the requested point, so the polyline visibly floats away
   from both route markers.
 - When both points snap to the same res-3 node, A* returns a single-node path
