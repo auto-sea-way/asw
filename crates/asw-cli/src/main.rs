@@ -106,6 +106,10 @@ enum Commands {
         /// Compare against previous JSON baseline
         #[arg(long)]
         compare: Option<PathBuf>,
+
+        /// Shore clearance in nautical miles (0 = off); applies the routing penalty
+        #[arg(long, default_value_t = 0.0)]
+        shore_buffer: f64,
     },
     /// Health check: exit 0 if server is ready, 1 otherwise (for Docker HEALTHCHECK)
     Healthcheck {
@@ -337,6 +341,7 @@ fn main() -> Result<()> {
             json,
             output,
             compare,
+            shore_buffer,
         } => {
             bench::run(
                 &graph,
@@ -344,6 +349,7 @@ fn main() -> Result<()> {
                 json,
                 output.as_deref(),
                 compare.as_deref(),
+                shore_buffer,
             )?;
         }
         Commands::Healthcheck { port, host } => {

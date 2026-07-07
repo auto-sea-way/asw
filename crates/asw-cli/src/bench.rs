@@ -166,7 +166,7 @@ fn git_commit() -> String {
 ///
 /// Skips routes whose endpoints can't be snapped to graph nodes or
 /// aren't in the same connected component.
-fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
+fn resolve_routes(app: &AppState, shore_buffer_nm: f64) -> Vec<BenchRoute> {
     let mut routes = Vec::new();
     let mut buffers = asw_core::astar_pool::AstarBuffers::new(app.graph.num_nodes as usize);
 
@@ -188,7 +188,7 @@ fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
                     &app.coastline,
                     &knn,
                     &mut buffers,
-                    0.0,
+                    shore_buffer_nm,
                 )
                 .is_none()
                 {
@@ -220,6 +220,7 @@ fn run_benchmark(
     graph: &RoutingGraph,
     routes: &[BenchRoute],
     iterations: usize,
+    shore_buffer_nm: f64,
 ) -> Vec<RouteStats> {
     let warmup = 3;
     let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
@@ -240,7 +241,7 @@ fn run_benchmark(
                     &app.coastline,
                     &knn,
                     &mut buffers,
-                    0.0,
+                    shore_buffer_nm,
                 );
             }
 
@@ -255,7 +256,7 @@ fn run_benchmark(
                 &app.coastline,
                 &knn,
                 &mut buffers,
-                0.0,
+                shore_buffer_nm,
             );
             let (distance_nm, raw_hops, smooth_hops, coordinates) = match &first {
                 Some(r) => (
@@ -282,7 +283,7 @@ fn run_benchmark(
                     &app.coastline,
                     &knn,
                     &mut buffers,
-                    0.0,
+                    shore_buffer_nm,
                 );
                 timings_us.push(start.elapsed().as_micros() as u64);
             }
@@ -653,6 +654,7 @@ pub fn run(
     json: bool,
     output: Option<&Path>,
     compare: Option<&Path>,
+    shore_buffer_nm: f64,
 ) -> Result<()> {
     info!("Loading graph from {:?}...", graph_path);
     let file = std::fs::File::open(graph_path).context("Failed to open graph file")?;
@@ -668,7 +670,7 @@ pub fn run(
     info!("App state ready");
 
     info!("Resolving benchmark routes...");
-    let routes = resolve_routes(&app);
+    let routes = resolve_routes(&app, shore_buffer_nm);
     if routes.is_empty() {
         anyhow::bail!("No routable benchmark routes found in graph");
     }
@@ -689,7 +691,7 @@ pub fn run(
     }
 
     info!("Running {} iterations per route...", iterations);
-    let stats = run_benchmark(&app, &app.graph, &routes, iterations);
+    let stats = run_benchmark(&app, &app.graph, &routes, iterations, shore_buffer_nm);
 
     let graph_path_str = graph_path.display().to_string();
     let result = build_result(&stats, &app.graph, &graph_path_str, iterations);
