@@ -188,6 +188,7 @@ fn resolve_routes(app: &AppState) -> Vec<BenchRoute> {
                     &app.coastline,
                     &knn,
                     &mut buffers,
+                    0.0,
                 )
                 .is_none()
                 {
@@ -239,6 +240,7 @@ fn run_benchmark(
                     &app.coastline,
                     &knn,
                     &mut buffers,
+                    0.0,
                 );
             }
 
@@ -253,6 +255,7 @@ fn run_benchmark(
                 &app.coastline,
                 &knn,
                 &mut buffers,
+                0.0,
             );
             let (distance_nm, raw_hops, smooth_hops, coordinates) = match &first {
                 Some(r) => (
@@ -279,6 +282,7 @@ fn run_benchmark(
                     &app.coastline,
                     &knn,
                     &mut buffers,
+                    0.0,
                 );
                 timings_us.push(start.elapsed().as_micros() as u64);
             }

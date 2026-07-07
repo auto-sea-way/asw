@@ -142,12 +142,22 @@ pub fn astar(
 
 /// Greedy line-of-sight smoothing.
 ///
-/// Takes the raw A* path and removes unnecessary waypoints by checking
-/// if direct lines between waypoints cross any coastline.
-pub fn smooth(graph: &RoutingGraph, path: &[u32], coastline: &CoastlineIndex) -> Vec<u32> {
+/// Removes unnecessary waypoints by checking that direct lines between
+/// waypoints (a) don't cross any coastline and (b) when `shore_buffer_nm > 0`,
+/// don't come closer to the coastline than min(buffer, the raw path's own
+/// minimum clearance over the skipped span). Rule (b) means smoothing never
+/// brings the route closer to shore than penalized A* already accepted —
+/// full buffer in open water, graceful degradation near endpoints/in coves.
+pub fn smooth(
+    graph: &RoutingGraph,
+    path: &[u32],
+    coastline: &CoastlineIndex,
+    shore_buffer_nm: f64,
+) -> Vec<u32> {
     if path.len() <= 2 {
         return path.to_vec();
     }
+    let use_buffer = shore_buffer_nm > 0.0;
 
     let mut result = vec![path[0]];
     let mut current_idx = 0;
@@ -156,29 +166,57 @@ pub fn smooth(graph: &RoutingGraph, path: &[u32], coastline: &CoastlineIndex) ->
     while current_idx < end_idx {
         let (c_lat, c_lon) = graph.node_pos(path[current_idx]);
 
+        // Running min of shore_dist from the anchor: range_min[j - current_idx]
+        // = min shore_dist over path[current_idx..=j]. O(n) per anchor.
+        let range_min: Vec<u8> = if use_buffer {
+            let mut v = Vec::with_capacity(end_idx - current_idx + 1);
+            let mut m = u8::MAX;
+            for &node in &path[current_idx..=end_idx] {
+                m = m.min(graph.shore_dist[node as usize]);
+                v.push(m);
+            }
+            v
+        } else {
+            Vec::new()
+        };
+
+        let clear = |j: usize| -> bool {
+            let (t_lat, t_lon) = graph.node_pos(path[j]);
+            if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
+                return false;
+            }
+            if use_buffer {
+                let raw_min_nm =
+                    range_min[j - current_idx] as f64 * crate::graph::SHORE_DIST_UNIT_NM;
+                let threshold = shore_buffer_nm.min(raw_min_nm);
+                if threshold > 0.0
+                    && coastline.segment_min_distance_nm(c_lon, c_lat, t_lon, t_lat, threshold)
+                        < threshold
+                {
+                    return false;
+                }
+            }
+            true
+        };
+
         // Try direct line to destination
-        let (e_lat, e_lon) = graph.node_pos(path[end_idx]);
-        if !coastline.crosses_land(c_lon, c_lat, e_lon, e_lat) {
+        if clear(end_idx) {
             result.push(path[end_idx]);
             break;
         }
 
         // Exponential forward search: find boundary between clear and blocked
         let mut step = 1usize;
-        let mut v_lo = current_idx + 1; // Last known clear
+        let mut v_lo = current_idx + 1;
         let mut v_hi;
-
-        // First, find a clear starting point (next hop should always be clear)
         loop {
             let test_idx = (current_idx + step).min(end_idx);
-            let (t_lat, t_lon) = graph.node_pos(path[test_idx]);
-            if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
+            if !clear(test_idx) {
                 v_hi = test_idx;
                 break;
             }
             v_lo = test_idx;
             if test_idx >= end_idx {
-                // Can see all the way to the end
                 v_lo = end_idx;
                 v_hi = end_idx;
                 break;
@@ -194,16 +232,13 @@ pub fn smooth(graph: &RoutingGraph, path: &[u32], coastline: &CoastlineIndex) ->
         // Binary search between v_lo (clear) and v_hi (blocked)
         while v_hi - v_lo > 1 {
             let mid = (v_lo + v_hi) / 2;
-            let (m_lat, m_lon) = graph.node_pos(path[mid]);
-            if coastline.crosses_land(c_lon, c_lat, m_lon, m_lat) {
+            if !clear(mid) {
                 v_hi = mid;
             } else {
                 v_lo = mid;
             }
         }
 
-        // v_lo is the farthest visible point
-        // Ensure we make progress
         if v_lo <= current_idx {
             v_lo = current_idx + 1;
         }
@@ -225,14 +260,16 @@ pub fn compute_route(
     coastline: &CoastlineIndex,
     node_knn: &dyn Fn(f64, f64) -> Option<(u32, f64)>,
     buffers: &mut crate::astar_pool::AstarBuffers,
+    shore_buffer_nm: f64,
 ) -> Option<RouteResult> {
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, None)?;
+    let shore = ShorePenalty::from_nm(shore_buffer_nm);
+    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, shore)?;
     let raw_hops = raw_path.len();
 
-    let smoothed = smooth(graph, &raw_path, coastline);
+    let smoothed = smooth(graph, &raw_path, coastline, shore_buffer_nm);
     let smooth_hops = smoothed.len();
 
     // Compute actual distance along smoothed path
@@ -492,5 +529,68 @@ mod tests {
         let with = astar(&g, node_a, node_d, &mut b2, ShorePenalty::from_nm(0.2)).unwrap();
         assert_eq!(plain.0, with.0);
         assert!((plain.1 - with.1).abs() < 1e-6);
+    }
+
+    /// Coastline at lon 28.0 (lat 36.45..36.55) and a 3-node dogleg around it.
+    /// Direct P0->P2 passes ~2.4 nm off the coast; the dogleg via P1 ~7 nm.
+    fn dogleg() -> (RoutingGraph, CoastlineIndex, Vec<u32>) {
+        dogleg_with_shore(&[255, 255, 255])
+    }
+
+    fn dogleg_with_shore(shore_q: &[u8; 3]) -> (RoutingGraph, CoastlineIndex, Vec<u32>) {
+        use geo::LineString;
+        let coastline = CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(
+            LineString::from(vec![(28.0, 36.45), (28.0, 36.55)]),
+        )]);
+
+        let coords = [(36.3, 28.05), (36.5, 28.15), (36.7, 28.05)];
+        let mut cells: Vec<(u64, f64, f64, u8, usize)> = coords
+            .iter()
+            .enumerate()
+            .map(|(i, &(lat, lng))| {
+                let cell = h3o::LatLng::new(lat, lng)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Nine);
+                (u64::from(cell), lat, lng, shore_q[i], i)
+            })
+            .collect();
+        cells.sort_by_key(|(h3, _, _, _, _)| *h3);
+
+        let mut b = GraphBuilder::new();
+        let mut id_by_orig = [0u32; 3];
+        for (h3, lat, lng, q, orig) in &cells {
+            id_by_orig[*orig] = b.add_node(*h3, *lat, *lng, *q);
+        }
+        b.add_edge(id_by_orig[0], id_by_orig[1], 1.0);
+        b.add_edge(id_by_orig[1], id_by_orig[2], 1.0);
+        let path = id_by_orig.to_vec();
+        (b.build(), coastline, path)
+    }
+
+    #[test]
+    fn smooth_without_buffer_cuts_the_corner() {
+        let (g, coast, path) = dogleg();
+        let smoothed = smooth(&g, &path, &coast, 0.0);
+        assert_eq!(smoothed, vec![path[0], path[2]]);
+    }
+
+    #[test]
+    fn smooth_respects_buffer() {
+        let (g, coast, path) = dogleg();
+        // Direct line is ~2.41 nm off the coast: allowed at 2.0, blocked at 3.0.
+        let loose = smooth(&g, &path, &coast, 2.0);
+        assert_eq!(loose, vec![path[0], path[2]]);
+        let strict = smooth(&g, &path, &coast, 3.0);
+        assert_eq!(strict, path, "3 nm buffer must keep the dogleg waypoint");
+    }
+
+    #[test]
+    fn smooth_relaxes_near_endpoints() {
+        // Path nodes themselves are close to shore (q=20 = 0.4 nm): the
+        // threshold becomes min(3.0, 0.4) = 0.4 nm, so the direct line
+        // (~2.4 nm off) is allowed even under a 3 nm buffer.
+        let (g, coast, path) = dogleg_with_shore(&[20, 255, 20]);
+        let smoothed = smooth(&g, &path, &coast, 3.0);
+        assert_eq!(smoothed, vec![path[0], path[2]]);
     }
 }

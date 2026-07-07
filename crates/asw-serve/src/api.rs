@@ -124,6 +124,7 @@ async fn route_handler(
                 &app.coastline,
                 &knn,
                 buffers,
+                0.0,
             )
         })
     })
