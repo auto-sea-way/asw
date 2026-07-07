@@ -334,6 +334,142 @@ impl CoastlineIndex {
     pub fn segment_count(&self) -> usize {
         self.tree.size()
     }
+
+    /// Minimum distance in nautical miles from (lon, lat) to any coastline
+    /// segment, capped at `max_nm`. Returns `max_nm` when no segment lies
+    /// within the search envelope.
+    ///
+    /// Antimeridian-aware: when the buffer-expanded envelope overflows
+    /// lon +/-180, the query also runs shifted by -/+360 (stored segments
+    /// always live within [-180, 180]) and the minimum is taken.
+    pub fn min_distance_nm(&self, lon: f64, lat: f64, max_nm: f64) -> f64 {
+        let coslat = cos_lat_clamped(lat);
+        let dlon = max_nm / (60.0 * coslat);
+        let mut best = self.min_distance_nm_planar(lon, lat, max_nm, coslat);
+        if lon + dlon > 180.0 {
+            best = best.min(self.min_distance_nm_planar(lon - 360.0, lat, max_nm, coslat));
+        } else if lon - dlon < -180.0 {
+            best = best.min(self.min_distance_nm_planar(lon + 360.0, lat, max_nm, coslat));
+        }
+        best
+    }
+
+    fn min_distance_nm_planar(&self, lon: f64, lat: f64, max_nm: f64, coslat: f64) -> f64 {
+        let dlat = max_nm / 60.0;
+        let dlon = max_nm / (60.0 * coslat);
+        let envelope = AABB::from_corners([lon - dlon, lat - dlat], [lon + dlon, lat + dlat]);
+
+        let origin = Coord { x: 0.0, y: 0.0 };
+        let mut best = max_nm;
+        for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
+            for line in seg.line.lines() {
+                let a = nm_frame(line.start, lon, lat, coslat);
+                let b = nm_frame(line.end, lon, lat, coslat);
+                let d = point_to_segment_dist(origin, a, b);
+                if d < best {
+                    best = d;
+                }
+            }
+        }
+        best
+    }
+
+    /// Minimum distance in nm from the segment (lon1,lat1)-(lon2,lat2) to any
+    /// coastline segment, capped at `max_nm`. Returns 0.0 on intersection.
+    /// For non-intersecting segments the minimum is attained at an endpoint,
+    /// so the four endpoint-to-segment distances are exact.
+    ///
+    /// Seam-crossing query segments are split at lon +/-180 first (same
+    /// predicate as `crosses_land`); each half also retries shifted by
+    /// -/+360 when its buffer-expanded envelope overflows the seam.
+    pub fn segment_min_distance_nm(
+        &self,
+        lon1: f64,
+        lat1: f64,
+        lon2: f64,
+        lat2: f64,
+        max_nm: f64,
+    ) -> f64 {
+        if (lon1 - lon2).abs() > 180.0 {
+            let (a, b) = split_at_antimeridian(lon1, lat1, lon2, lat2);
+            return self
+                .segment_min_distance_nm_wrapped(a.0, a.1, a.2, a.3, max_nm)
+                .min(self.segment_min_distance_nm_wrapped(b.0, b.1, b.2, b.3, max_nm));
+        }
+        self.segment_min_distance_nm_wrapped(lon1, lat1, lon2, lat2, max_nm)
+    }
+
+    fn segment_min_distance_nm_wrapped(
+        &self,
+        lon1: f64,
+        lat1: f64,
+        lon2: f64,
+        lat2: f64,
+        max_nm: f64,
+    ) -> f64 {
+        let coslat = cos_lat_clamped((lat1 + lat2) / 2.0);
+        let dlon = max_nm / (60.0 * coslat);
+        let mut best = self.segment_min_distance_nm_planar(lon1, lat1, lon2, lat2, max_nm);
+        if lon1.max(lon2) + dlon > 180.0 {
+            best = best.min(self.segment_min_distance_nm_planar(
+                lon1 - 360.0,
+                lat1,
+                lon2 - 360.0,
+                lat2,
+                max_nm,
+            ));
+        } else if lon1.min(lon2) - dlon < -180.0 {
+            best = best.min(self.segment_min_distance_nm_planar(
+                lon1 + 360.0,
+                lat1,
+                lon2 + 360.0,
+                lat2,
+                max_nm,
+            ));
+        }
+        best
+    }
+
+    fn segment_min_distance_nm_planar(
+        &self,
+        lon1: f64,
+        lat1: f64,
+        lon2: f64,
+        lat2: f64,
+        max_nm: f64,
+    ) -> f64 {
+        let ref_lat = (lat1 + lat2) / 2.0;
+        let coslat = cos_lat_clamped(ref_lat);
+        let dlat = max_nm / 60.0;
+        let dlon = max_nm / (60.0 * coslat);
+        let envelope = AABB::from_corners(
+            [lon1.min(lon2) - dlon, lat1.min(lat2) - dlat],
+            [lon1.max(lon2) + dlon, lat1.max(lat2) + dlat],
+        );
+
+        let qa = nm_frame(Coord { x: lon1, y: lat1 }, lon1, ref_lat, coslat);
+        let qb = nm_frame(Coord { x: lon2, y: lat2 }, lon1, ref_lat, coslat);
+        let query = Line::new(qa, qb);
+
+        let mut best = max_nm;
+        for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
+            for line in seg.line.lines() {
+                let ca = nm_frame(line.start, lon1, ref_lat, coslat);
+                let cb = nm_frame(line.end, lon1, ref_lat, coslat);
+                if query.intersects(&Line::new(ca, cb)) {
+                    return 0.0;
+                }
+                let d = point_to_segment_dist(qa, ca, cb)
+                    .min(point_to_segment_dist(qb, ca, cb))
+                    .min(point_to_segment_dist(ca, qa, qb))
+                    .min(point_to_segment_dist(cb, qa, qb));
+                if d < best {
+                    best = d;
+                }
+            }
+        }
+        best
+    }
 }
 
 /// A segment endpoint pair as (lon1, lat1, lon2, lat2).
@@ -421,6 +557,20 @@ fn bounding_rect(poly: &Polygon<f64>) -> ([f64; 2], [f64; 2]) {
         max_y = max_y.max(coord.y);
     }
     ([min_x, min_y], [max_x, max_y])
+}
+
+/// cos(lat) clamped away from zero for degree->nm longitude scaling near poles.
+fn cos_lat_clamped(lat: f64) -> f64 {
+    lat.to_radians().cos().max(0.01)
+}
+
+/// Project a lon/lat coordinate into a local equirectangular nm frame
+/// centered on (ref_lon, ref_lat). Exact enough at <= ~5 nm scale.
+fn nm_frame(c: Coord<f64>, ref_lon: f64, ref_lat: f64, coslat: f64) -> Coord<f64> {
+    Coord {
+        x: (c.x - ref_lon) * 60.0 * coslat,
+        y: (c.y - ref_lat) * 60.0,
+    }
 }
 
 /// Distance from point `p` to the closest point on segment `a`-`b` (in coordinate units).
@@ -622,5 +772,81 @@ mod tests {
         let index = CoastlineIndex::new(vec![CoastlineSegment::new(seg)]);
         let dist = index.min_distance_deg(9.5, 0.0, 5.0);
         assert!((dist - 0.5).abs() < 1e-9, "expected ~0.5, got {dist}");
+    }
+}
+
+#[cfg(test)]
+mod distance_tests {
+    use super::*;
+
+    /// Vertical coastline at lon=28.0 from lat 36.0 to 37.0.
+    fn coast() -> CoastlineIndex {
+        let line = LineString::from(vec![(28.0, 36.0), (28.0, 37.0)]);
+        CoastlineIndex::new(vec![CoastlineSegment::new(line)])
+    }
+
+    #[test]
+    fn point_distance_mid_latitude() {
+        // 0.1 deg of longitude at lat 36.5 = 0.1 * 60 * cos(36.5 deg) nm
+        let expected = 0.1 * 60.0 * (36.5f64).to_radians().cos();
+        let d = coast().min_distance_nm(28.1, 36.5, 5.1);
+        assert!((d - expected).abs() < 0.05, "got {d}, expected {expected}");
+    }
+
+    #[test]
+    fn point_distance_high_latitude_cos_correction() {
+        let line = LineString::from(vec![(10.0, 59.5), (10.0, 60.5)]);
+        let idx = CoastlineIndex::new(vec![CoastlineSegment::new(line)]);
+        // 0.1 deg lon at lat 60 = 0.1 * 60 * 0.5 = 3.0 nm
+        let d = idx.min_distance_nm(10.1, 60.0, 5.1);
+        assert!((d - 3.0).abs() < 0.05, "got {d}, expected 3.0");
+    }
+
+    #[test]
+    fn point_beyond_cap_returns_max() {
+        // ~48 nm away, cap 5.1 -> envelope finds nothing
+        let d = coast().min_distance_nm(29.0, 36.5, 5.1);
+        assert_eq!(d, 5.1);
+    }
+
+    #[test]
+    fn empty_index_returns_max() {
+        let idx = CoastlineIndex::new(vec![]);
+        assert_eq!(idx.min_distance_nm(28.0, 36.5, 5.1), 5.1);
+    }
+
+    #[test]
+    fn segment_distance_parallel() {
+        // Query segment at lon 28.05, parallel to the coast
+        let expected = 0.05 * 60.0 * (36.5f64).to_radians().cos();
+        let d = coast().segment_min_distance_nm(28.05, 36.4, 28.05, 36.6, 5.1);
+        assert!((d - expected).abs() < 0.05, "got {d}, expected {expected}");
+    }
+
+    #[test]
+    fn segment_crossing_coast_returns_zero() {
+        let d = coast().segment_min_distance_nm(27.9, 36.5, 28.1, 36.5, 5.1);
+        assert_eq!(d, 0.0);
+    }
+
+    #[test]
+    fn point_distance_across_antimeridian() {
+        // Coastline just west of the seam; query point just east of it.
+        let line = LineString::from(vec![(179.98, -0.5), (179.98, 0.5)]);
+        let idx = CoastlineIndex::new(vec![CoastlineSegment::new(line)]);
+        // 0.03 deg of longitude at the equator = 1.8 nm, across the seam
+        let d = idx.min_distance_nm(-179.99, 0.0, 5.1);
+        assert!((d - 1.8).abs() < 0.05, "got {d}, expected 1.8");
+    }
+
+    #[test]
+    fn segment_distance_across_antimeridian() {
+        // Coastline north of a seam-crossing query segment.
+        let line = LineString::from(vec![(179.98, 0.05), (179.98, 0.2)]);
+        let idx = CoastlineIndex::new(vec![CoastlineSegment::new(line)]);
+        // Horizontal query at the equator crossing the seam: closest approach
+        // is the coastline's south endpoint, 0.05 deg lat = 3.0 nm.
+        let d = idx.segment_min_distance_nm(179.9, 0.0, -179.9, 0.0, 5.1);
+        assert!((d - 3.0).abs() < 0.05, "got {d}, expected 3.0");
     }
 }
