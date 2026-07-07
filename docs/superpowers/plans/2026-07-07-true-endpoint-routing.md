@@ -1,5 +1,20 @@
 # True-Endpoint Routing Implementation Plan
 
+> **BLOCKED — do not execute yet (decision 2026-07-07):** this plan waits for
+> the `feature/shore-buffer` branch (issue #26) to merge into `main`. After the
+> merge, rebase `feature/true-endpoint-routing` onto `main` and REVISE this
+> plan before executing:
+> 1. The code snippets were written against a pre-merge state; re-check every
+>    signature (`smooth` now takes `shore_buffer_nm` and enforces clearance
+>    via per-node `shore_dist`; `compute_route` and `/route` carry a
+>    `shore_buffer` parameter).
+> 2. `smooth_coords` must become buffer-aware: stitched pin coordinates have
+>    no node `shore_dist`, so pin clearance needs a coastline distance query
+>    (`segment_min_distance_nm`), and the running-min logic needs a
+>    per-waypoint distance slice instead of node lookups.
+> 3. The direct-line shortcut MUST be skipped (or clearance-checked) when
+>    `shore_buffer > 0` — see the spec's shore-buffer interaction note.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Routes start and end exactly at the requested coordinates; clear open-water point pairs return a direct 2-point route without a graph search.
