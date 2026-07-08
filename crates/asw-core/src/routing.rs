@@ -292,6 +292,7 @@ pub fn smooth_indices(
         // Exponential forward search: find boundary between clear and blocked
         let mut step = 1usize;
         let mut v_lo = current_idx + 1;
+        let mut v_lo_verified = false;
         let mut v_hi;
         loop {
             let test_idx = (current_idx + step).min(end_idx);
@@ -300,6 +301,7 @@ pub fn smooth_indices(
                 break;
             }
             v_lo = test_idx;
+            v_lo_verified = true;
             if test_idx >= end_idx {
                 v_lo = end_idx;
                 v_hi = end_idx;
@@ -310,6 +312,11 @@ pub fn smooth_indices(
 
         if v_lo == end_idx {
             result.push(end_idx);
+            if !v_lo_verified
+                && coastline.crosses_land(c_lon, c_lat, coords[end_idx][0], coords[end_idx][1])
+            {
+                land_segs.push(result.len() - 2);
+            }
             break;
         }
 
@@ -320,15 +327,16 @@ pub fn smooth_indices(
                 v_hi = mid;
             } else {
                 v_lo = mid;
+                v_lo_verified = true;
             }
         }
 
-        // v_lo == v_hi means the very first probe (current_idx + 1) was
-        // blocked: v_lo was never verified clear and the segment is kept
-        // anyway to make progress (land pin case). Flag it as a land leg
-        // only when it actually crosses land — a pure buffer violation is
-        // still a water segment.
-        let forced = v_lo == v_hi;
+        // v_lo_verified is false only when the very first probe
+        // (current_idx + 1) was blocked: v_lo was never verified clear and
+        // the segment is kept anyway to make progress (land pin case).
+        // Flag it as a land leg only when it actually crosses land — a
+        // pure buffer violation is still a water segment.
+        let forced = !v_lo_verified;
         if v_lo <= current_idx {
             v_lo = current_idx + 1;
         }
@@ -865,6 +873,17 @@ mod tests {
             out.land_segs.is_empty(),
             "buffer-forced water segments must not be flagged as land"
         );
+    }
+
+    #[test]
+    fn smooth_indices_flags_forced_final_segment() {
+        // P0->P1 is clear; P1->P2 crosses the wall and P2 is the
+        // destination — the forced final segment must still be flagged.
+        let coastline = wall_index(0.5, -1.0, 1.0);
+        let coords = [[0.0, 0.0], [0.3, 0.0], [0.8, 0.0]];
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
+        assert_eq!(out.kept, vec![0, 1, 2]);
+        assert_eq!(out.land_segs, vec![1]);
     }
 
     #[test]
