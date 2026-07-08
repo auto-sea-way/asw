@@ -31,6 +31,10 @@ pub struct RouteResponse {
     pub smooth_hops: usize,
     pub geometry: serde_json::Value,
     pub shore_buffer_nm: f64,
+    /// Segment indices of `geometry.coordinates` that cross land
+    /// (pin-on-land stitch legs and coastline-clipping smoothed segments).
+    /// Excluded from `distance_nm`.
+    pub land_legs: Vec<usize>,
 }
 
 #[derive(Serialize)]
@@ -159,6 +163,7 @@ async fn route_handler(
         )
     })?;
 
+    let land_legs = result.land_legs;
     let geometry = serde_json::json!({
         "type": "LineString",
         "coordinates": result.coordinates
@@ -170,6 +175,7 @@ async fn route_handler(
         smooth_hops: result.smooth_hops,
         geometry,
         shore_buffer_nm,
+        land_legs,
     }))
 }
 
@@ -548,6 +554,7 @@ mod tests {
         let coords = json["geometry"]["coordinates"].as_array().unwrap();
         assert_eq!(coords.first().unwrap(), &serde_json::json!([28.0, 36.5]));
         assert_eq!(coords.last().unwrap(), &serde_json::json!([28.1, 36.6]));
+        assert_eq!(json["land_legs"], serde_json::json!([]));
     }
 
     /// Deep-water fix, stitched path: a wall blocks the direct line, so the
@@ -577,6 +584,52 @@ mod tests {
         assert!(
             coords.len() >= 3,
             "expected a stitched route, got {coords:?}"
+        );
+        assert_eq!(json["land_legs"], serde_json::json!([]));
+    }
+
+    /// A from-pin inside a ring island: the first stitched leg crosses land,
+    /// is reported in land_legs, and does not count toward distance_nm.
+    #[tokio::test]
+    async fn route_flags_overland_stitch_leg() {
+        let ring = vec![vec![
+            (28.25, 36.83),
+            (28.27, 36.83),
+            (28.27, 36.85),
+            (28.25, 36.85),
+            (28.25, 36.83),
+        ]];
+        let state = ready_state_with_graph(ring).await;
+        let app = create_router(state);
+        let req = Request::get("/route?from=36.84,28.26&to=37.01,28.51")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["land_legs"], serde_json::json!([0]));
+
+        // Water-only distance: strictly less than the full polyline length.
+        let coords = json["geometry"]["coordinates"].as_array().unwrap();
+        assert!(coords.len() >= 3);
+        let full_length: f64 = coords
+            .windows(2)
+            .map(|w| {
+                let (lon1, lat1) = (w[0][0].as_f64().unwrap(), w[0][1].as_f64().unwrap());
+                let (lon2, lat2) = (w[1][0].as_f64().unwrap(), w[1][1].as_f64().unwrap());
+                asw_core::h3::haversine_nm(lat1, lon1, lat2, lon2)
+            })
+            .sum();
+        let distance_nm = json["distance_nm"].as_f64().unwrap();
+        assert!(distance_nm > 0.0);
+        assert!(
+            distance_nm < full_length,
+            "water-only distance {distance_nm} must be strictly less than the full polyline length {full_length}"
         );
     }
 

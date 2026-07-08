@@ -56,6 +56,7 @@ struct RouteStats {
     timings_us: Vec<u64>,
     is_passage: bool,
     coordinates: Vec<[f64; 2]>,
+    land_legs: Vec<usize>,
     from_lat: f64,
     from_lon: f64,
     to_lat: f64,
@@ -260,14 +261,15 @@ fn run_benchmark(
                 &mut buffers,
                 shore_buffer_nm,
             );
-            let (distance_nm, raw_hops, smooth_hops, coordinates) = match &first {
+            let (distance_nm, raw_hops, smooth_hops, coordinates, land_legs) = match &first {
                 Some(r) => (
                     r.distance_nm,
                     r.raw_hops,
                     r.smooth_hops,
                     r.coordinates.clone(),
+                    r.land_legs.clone(),
                 ),
-                None => (0.0, 0, 0, Vec::new()),
+                None => (0.0, 0, 0, Vec::new(), Vec::new()),
             };
 
             // Measured iterations
@@ -298,6 +300,7 @@ fn run_benchmark(
                 timings_us,
                 is_passage: route.is_passage,
                 coordinates,
+                land_legs,
                 from_lat: route.from_lat,
                 from_lon: route.from_lon,
                 to_lat: route.to_lat,
@@ -605,28 +608,74 @@ fn write_geojson(stats: &[RouteStats]) -> Result<()> {
         let stroke = if s.is_passage { "#0000ff" } else { "#0088ff" };
         let category = if s.is_passage { "passage" } else { "sailing" };
 
-        // Route line
-        let coords: Vec<serde_json::Value> = s
-            .coordinates
-            .iter()
-            .map(|c| serde_json::json!([c[0], c[1]]))
-            .collect();
-
-        features.push(serde_json::json!({
-            "type": "Feature",
-            "properties": {
-                "name": s.name,
-                "distance_nm": format!("{:.1}", s.distance_nm),
-                "category": category,
-                "stroke": stroke,
-                "stroke-width": 3,
-                "stroke-opacity": 0.8
-            },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": coords
+        // Route line: draw only the water spans, so land legs appear as
+        // gaps regardless of renderer (GitHub's geojson preview ignores
+        // simplestyle colors entirely, so a red "land leg" feature is
+        // invisible there — a gap is not).
+        let mut spans: Vec<Vec<serde_json::Value>> = Vec::new();
+        let mut current: Vec<serde_json::Value> = vec![serde_json::json!([
+            s.coordinates[0][0],
+            s.coordinates[0][1]
+        ])];
+        for i in 0..s.coordinates.len() - 1 {
+            if s.land_legs.contains(&i) {
+                if current.len() >= 2 {
+                    spans.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
             }
-        }));
+            let next = &s.coordinates[i + 1];
+            current.push(serde_json::json!([next[0], next[1]]));
+        }
+        if current.len() >= 2 {
+            spans.push(current);
+        }
+
+        let properties = serde_json::json!({
+            "name": s.name,
+            "distance_nm": format!("{:.1}", s.distance_nm),
+            "category": category,
+            "stroke": stroke,
+            "stroke-width": 3,
+            "stroke-opacity": 0.8,
+            "land_legs": s.land_legs
+        });
+
+        match spans.len() {
+            0 => {}
+            1 => features.push(serde_json::json!({
+                "type": "Feature",
+                "properties": properties,
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": spans.into_iter().next().unwrap()
+                }
+            })),
+            n => {
+                // GitHub's Azure Maps geojson preview does not render
+                // MultiLineString geometries at all (empirically confirmed:
+                // the four multi-span canal routes vanished from the
+                // preview). Emit one LineString feature per span instead so
+                // every route stays visible there.
+                for (i, span) in spans.into_iter().enumerate() {
+                    let part = i + 1;
+                    let mut part_properties = properties.clone();
+                    part_properties["name"] =
+                        serde_json::json!(format!("{} (part {}/{})", s.name, part, n));
+                    part_properties["part"] = serde_json::json!(part);
+                    part_properties["parts"] = serde_json::json!(n);
+                    features.push(serde_json::json!({
+                        "type": "Feature",
+                        "properties": part_properties,
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": span
+                        }
+                    }));
+                }
+            }
+        }
 
         // Start point (original input coordinate)
         features.push(serde_json::json!({
