@@ -74,7 +74,10 @@ reality (~85-87 nm).
 
 - Point-in-polygon "pin is on land" detection (would need a `LandIndex` at
   serve time; `crosses_land` against the coastline index covers the cases
-  that matter and fits the existing architecture).
+  that matter and fits the existing architecture). Consequence: a fully
+  inland direct line between two pins on the same landmass, never touching
+  a coastline segment, fires the direct-line shortcut undetected — this is
+  pre-existing v0.6.0 behavior, unchanged by this feature.
 - Clipping geometry at the shoreline (would reverse the true-endpoint
   property shipped in v0.6.0).
 - A separate `land_distance_nm` response field (YAGNI until someone asks).

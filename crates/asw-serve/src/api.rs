@@ -32,7 +32,8 @@ pub struct RouteResponse {
     pub geometry: serde_json::Value,
     pub shore_buffer_nm: f64,
     /// Segment indices of `geometry.coordinates` that cross land
-    /// (pin-on-land stitch legs). Excluded from `distance_nm`.
+    /// (pin-on-land stitch legs and coastline-clipping smoothed segments).
+    /// Excluded from `distance_nm`.
     pub land_legs: Vec<usize>,
 }
 
@@ -616,7 +617,20 @@ mod tests {
         // Water-only distance: strictly less than the full polyline length.
         let coords = json["geometry"]["coordinates"].as_array().unwrap();
         assert!(coords.len() >= 3);
-        assert!(json["distance_nm"].as_f64().unwrap() > 0.0);
+        let full_length: f64 = coords
+            .windows(2)
+            .map(|w| {
+                let (lon1, lat1) = (w[0][0].as_f64().unwrap(), w[0][1].as_f64().unwrap());
+                let (lon2, lat2) = (w[1][0].as_f64().unwrap(), w[1][1].as_f64().unwrap());
+                asw_core::h3::haversine_nm(lat1, lon1, lat2, lon2)
+            })
+            .sum();
+        let distance_nm = json["distance_nm"].as_f64().unwrap();
+        assert!(distance_nm > 0.0);
+        assert!(
+            distance_nm < full_length,
+            "water-only distance {distance_nm} must be strictly less than the full polyline length {full_length}"
+        );
     }
 
     #[tokio::test]

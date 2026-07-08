@@ -1205,6 +1205,63 @@ mod tests {
         );
     }
 
+    /// Degenerate case from the design doc: both pins snap to the same
+    /// node, and both stitch legs cross land, so the whole route is
+    /// non-sailed distance. Geometry is `pin -> node -> pin`, both legs
+    /// flagged, `distance_nm == 0.0`.
+    ///
+    /// A plain island (single convex ring) cannot produce this: two points
+    /// strictly interior to a convex polygon are always mutually visible in
+    /// a straight line, so the pin-to-pin shortcut always fires first and
+    /// no stitch leg is ever built (verified empirically before writing
+    /// this fixture). Instead this uses a U-shaped ("staple") island with
+    /// the node sitting in the open notch and one pin inside each prong:
+    /// the pin-to-pin line crosses both inner walls (blocking the
+    /// shortcut), and each pin-to-node leg crosses one inner wall.
+    #[test]
+    fn compute_route_same_node_both_legs_flagged_zero_distance() {
+        let (g, ids) = chain_graph(&[(0.0, 0.0)]);
+        let n = ids[0];
+        let (nlat, nlon) = g.node_pos(n);
+
+        let a = (nlon - 0.06, nlat - 0.02);
+        let b = (nlon - 0.06, nlat - 0.12);
+        let c = (nlon + 0.06, nlat - 0.12);
+        let d = (nlon + 0.06, nlat - 0.02);
+        let e = (nlon + 0.02, nlat - 0.02);
+        let f = (nlon + 0.02, nlat - 0.08);
+        let g_pt = (nlon - 0.02, nlat - 0.08);
+        let h = (nlon - 0.02, nlat - 0.02);
+        let ring = geo::LineString::from(vec![a, b, c, d, e, f, g_pt, h, a]);
+        let coast = CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(ring)]);
+
+        let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+
+        // One pin inside each prong of the U, straddling the node's notch.
+        let (from_lat, from_lon) = (nlat - 0.06, nlon - 0.04);
+        let (to_lat, to_lon) = (nlat - 0.06, nlon + 0.04);
+
+        let r = compute_route(
+            &g,
+            from_lat,
+            from_lon,
+            to_lat,
+            to_lon,
+            &coast,
+            &knn,
+            &mut buffers,
+            0.0,
+        )
+        .expect("route must exist: both pins snap to the same node");
+
+        assert_eq!(r.coordinates.len(), 3);
+        assert_eq!(r.coordinates[0], [from_lon, from_lat]);
+        assert_eq!(r.coordinates[2], [to_lon, to_lat]);
+        assert_eq!(r.land_legs, vec![0, 1]);
+        assert_eq!(r.distance_nm, 0.0);
+    }
+
     /// Water pins: no land legs, distance covers the whole polyline —
     /// including the stitch legs, which are water segments.
     #[test]
