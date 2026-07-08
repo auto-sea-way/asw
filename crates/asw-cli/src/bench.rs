@@ -652,14 +652,29 @@ fn write_geojson(stats: &[RouteStats]) -> Result<()> {
                     "coordinates": spans.into_iter().next().unwrap()
                 }
             })),
-            _ => features.push(serde_json::json!({
-                "type": "Feature",
-                "properties": properties,
-                "geometry": {
-                    "type": "MultiLineString",
-                    "coordinates": spans
+            n => {
+                // GitHub's Azure Maps geojson preview does not render
+                // MultiLineString geometries at all (empirically confirmed:
+                // the four multi-span canal routes vanished from the
+                // preview). Emit one LineString feature per span instead so
+                // every route stays visible there.
+                for (i, span) in spans.into_iter().enumerate() {
+                    let part = i + 1;
+                    let mut part_properties = properties.clone();
+                    part_properties["name"] =
+                        serde_json::json!(format!("{} (part {}/{})", s.name, part, n));
+                    part_properties["part"] = serde_json::json!(part);
+                    part_properties["parts"] = serde_json::json!(n);
+                    features.push(serde_json::json!({
+                        "type": "Feature",
+                        "properties": part_properties,
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": span
+                        }
+                    }));
                 }
-            })),
+            }
         }
 
         // Start point (original input coordinate)

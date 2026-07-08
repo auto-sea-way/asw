@@ -63,16 +63,28 @@ viewed.
 
 Revised approach: the bench geojson writer draws only the water spans of each
 route. `RouteStats::coordinates` is split at each `land_legs` index into
-runs of consecutive water segments; each run of >= 2 points becomes one line
-in a `MultiLineString` (a plain `LineString` when only one run survives —
-which can happen even with land legs present, if all of them sit at the
-route's edges: Dover Strait, `land_legs: [0, 3]`, is a single middle-span
-`LineString`). A land leg therefore renders as a visible gap in the
-route line on any renderer, styled or not — no reliance on stroke color. The
-route feature's `properties.land_legs` keeps the flagged segment indices
-so the information stays available (GitHub's feature-click popup shows raw
-properties). A route that is land for its entire length (no surviving span)
-emits no line feature, only its start/end markers.
+runs of consecutive water segments; each run of >= 2 points survives as a
+`LineString`. When only one run survives — which can happen even with land
+legs present, if all of them sit at the route's edges: Dover Strait,
+`land_legs: [0, 3]`, is a single middle-span `LineString` — it is emitted as
+today, one feature named after the route. A land leg therefore renders as a
+visible gap between line features on any renderer, styled or not — no
+reliance on stroke color.
+
+When 2+ spans survive, each becomes its own `LineString` feature (one
+Feature per span, in span order) instead of a single `MultiLineString`
+feature holding all spans: verified empirically on 2026-07-08 that GitHub's
+geojson preview (Azure Maps) does not render `MultiLineString` geometries at
+all — all four multi-span canal routes (Suez, Panama, Kiel, Corinth) were
+invisible in the preview, while every single-span route rendered fine. Each
+part's name gets a `" (part i/n)"` suffix (1-based `i`, total span count
+`n`), and its properties add `"part": i` and `"parts": n` alongside the
+usual `distance_nm`/`category`/`stroke`/`land_legs` fields (unchanged from
+the single-feature case). The route feature's (or each part's)
+`properties.land_legs` keeps the flagged segment indices so the information
+stays available (GitHub's feature-click popup shows raw properties). A
+route that is land for its entire length (no surviving span) emits no line
+feature, only its start/end markers.
 
 Distance columns in BENCHMARKS.md/README stay water-only; Kiel (~95 nm with
 overland stitches) is expected to drop to canal-transit reality
