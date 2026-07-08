@@ -7,7 +7,7 @@ use std::collections::BinaryHeap;
 
 /// Result of a route computation.
 pub struct RouteResult {
-    /// Total distance in nm
+    /// Water distance in nm (land legs excluded)
     pub distance_nm: f64,
     /// Raw A* path node count
     pub raw_hops: usize,
@@ -15,6 +15,10 @@ pub struct RouteResult {
     pub smooth_hops: usize,
     /// Smoothed coordinates as (lon, lat) for GeoJSON
     pub coordinates: Vec<[f64; 2]>,
+    /// Segment indices that cross land: `s` means the segment
+    /// `coordinates[s] -> coordinates[s+1]`. These segments contribute
+    /// zero to `distance_nm`.
+    pub land_legs: Vec<usize>,
 }
 
 /// Ensure `node` is valid for the current generation in `buffers`, computing
@@ -415,6 +419,7 @@ pub fn compute_route(
             raw_hops: 2,
             smooth_hops: 2,
             coordinates: vec![[from_lon, from_lat], [to_lon, to_lat]],
+            land_legs: vec![],
         });
     }
 
@@ -455,13 +460,18 @@ pub fn compute_route(
     coords.push([to_lon, to_lat]);
     shore_dist.push(pin_q(to_lon, to_lat));
 
-    let kept = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm).kept;
-    let smoothed: Vec<[f64; 2]> = kept.into_iter().map(|i| coords[i]).collect();
+    let sm = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm);
+    let smoothed: Vec<[f64; 2]> = sm.kept.into_iter().map(|i| coords[i]).collect();
     let smooth_hops = smoothed.len();
+    let land_legs = sm.land_segs;
 
-    // Compute actual distance along smoothed path
+    // Water distance along the smoothed path: flagged land legs (pin on
+    // land, peninsula clip) are not sailed and contribute nothing.
     let mut smooth_dist = 0.0;
-    for w in smoothed.windows(2) {
+    for (i, w) in smoothed.windows(2).enumerate() {
+        if land_legs.contains(&i) {
+            continue;
+        }
         smooth_dist += haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]);
     }
 
@@ -470,6 +480,7 @@ pub fn compute_route(
         raw_hops,
         smooth_hops,
         coordinates: smoothed,
+        land_legs,
     })
 }
 
@@ -1106,5 +1117,117 @@ mod tests {
         assert_eq!(r.coordinates.first().unwrap(), &[0.0, 0.0]);
         assert_eq!(r.coordinates.last().unwrap(), &[2.2, 0.0]);
         assert!(r.distance_nm > 0.0);
+    }
+
+    /// A pin inside a ring island forces a land-crossing first leg. The leg
+    /// must be flagged and excluded from distance_nm.
+    #[test]
+    fn compute_route_flags_and_excludes_land_leg() {
+        use crate::geo_index::CoastlineSegment;
+
+        // 3-node chain like the serve-layer fixture.
+        let chain = [(36.848, 28.268), (36.9, 28.3), (37.0, 28.5)];
+        let mut entries: Vec<(u64, f64, f64)> = chain
+            .iter()
+            .map(|&(lat, lng)| {
+                let cell = h3o::LatLng::new(lat, lng)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Five);
+                (u64::from(cell), lat, lng)
+            })
+            .collect();
+        entries.sort_by_key(|(h3, _, _)| *h3);
+        let mut b = GraphBuilder::new();
+        let mut ids = Vec::new();
+        for &(h3, lat, lng) in &entries {
+            ids.push(b.add_node(h3, lat, lng, 255));
+        }
+        for i in 0..ids.len() - 1 {
+            b.add_edge(ids[i], ids[i + 1], 1.0);
+        }
+        let g = b.build();
+
+        // Ring island around the from-pin (36.84, 28.26).
+        let ring = geo::LineString::from(vec![
+            (28.25, 36.83),
+            (28.27, 36.83),
+            (28.27, 36.85),
+            (28.25, 36.85),
+            (28.25, 36.83),
+        ]);
+        let coast = CoastlineIndex::new(vec![CoastlineSegment::new(ring)]);
+
+        // Nearest node by haversine over all graph nodes.
+        let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> {
+            (0..g.num_nodes)
+                .map(|n| {
+                    let (nlat, nlon) = g.node_pos(n);
+                    (n, haversine_nm(lat, lon, nlat, nlon))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+        };
+
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let r = compute_route(
+            &g,
+            36.84,
+            28.26,
+            37.01,
+            28.51,
+            &coast,
+            &knn,
+            &mut buffers,
+            0.0,
+        )
+        .expect("route must exist despite land pin");
+
+        // First leg (pin -> first water point) crosses the ring.
+        assert_eq!(r.land_legs, vec![0]);
+
+        // distance_nm equals the polyline length minus exactly the flagged leg.
+        let full: f64 = r
+            .coordinates
+            .windows(2)
+            .map(|w| haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]))
+            .sum();
+        let first_leg = haversine_nm(
+            r.coordinates[0][1],
+            r.coordinates[0][0],
+            r.coordinates[1][1],
+            r.coordinates[1][0],
+        );
+        assert!(first_leg > 0.0);
+        assert!(
+            (r.distance_nm - (full - first_leg)).abs() < 1e-9,
+            "distance must exclude the land leg: got {}, want {}",
+            r.distance_nm,
+            full - first_leg
+        );
+    }
+
+    /// Water pins: no land legs, distance covers the whole polyline —
+    /// including the stitch legs, which are water segments.
+    #[test]
+    fn compute_route_water_pins_have_no_land_legs() {
+        let (g, a, d) = diamond_graph();
+        let coast = CoastlineIndex::new(vec![]);
+        let (alat, alon) = g.node_pos(a);
+        let (dlat, dlon) = g.node_pos(d);
+        let knn = move |lat: f64, lon: f64| -> Option<(u32, f64)> {
+            if haversine_nm(lat, lon, alat, alon) < haversine_nm(lat, lon, dlat, dlon) {
+                Some((a, 0.0))
+            } else {
+                Some((d, 0.0))
+            }
+        };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let r = compute_route(&g, alat, alon, dlat, dlon, &coast, &knn, &mut buffers, 0.0).unwrap();
+        assert!(r.land_legs.is_empty());
+        let full: f64 = r
+            .coordinates
+            .windows(2)
+            .map(|w| haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]))
+            .sum();
+        assert!((r.distance_nm - full).abs() < 1e-9);
     }
 }
