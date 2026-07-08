@@ -64,8 +64,10 @@ viewed.
 Revised approach: the bench geojson writer draws only the water spans of each
 route. `RouteStats::coordinates` is split at each `land_legs` index into
 runs of consecutive water segments; each run of >= 2 points becomes one line
-in a `MultiLineString` (a plain `LineString` when there is exactly one run,
-i.e. no land legs). A land leg therefore renders as a visible gap in the
+in a `MultiLineString` (a plain `LineString` when only one run survives —
+which can happen even with land legs present, if all of them sit at the
+route's edges: Dover Strait, `land_legs: [0, 3]`, is a single middle-span
+`LineString`). A land leg therefore renders as a visible gap in the
 route line on any renderer, styled or not — no reliance on stroke color. The
 route feature's `properties.land_legs` keeps the flagged segment indices
 so the information stays available (GitHub's feature-click popup shows raw
