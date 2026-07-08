@@ -75,37 +75,37 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 20 routes, 50 iterations each. Graph v3 format (bitcode + H3 binary search). Graphs built with v2 must be rebuilt — v2 files are rejected at load time.
 
-Since v0.6.0, routes start and end at the exact requested coordinates (not at snapped graph nodes), so routed distances are slightly longer — and more honest — than in earlier releases.
+Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded).
 
 ### Sailing Routes
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
 | English Channel | 22.1nm | 0.3ms | 0.3ms | 33>4 |
-| Aegean Hop | 26.1nm | 0.7ms | 0.8ms | 54>6 |
-| Strait of Gibraltar | 30.6nm | 0.8ms | 0.8ms | 63>5 |
-| Baltic Crossing | 42.0nm | 1.5ms | 1.6ms | 53>5 |
-| Balearic Sea | 128.4nm | 2.2ms | 2.3ms | 114>7 |
-| Florida Strait | 90.1nm | 0.5ms | 0.5ms | 22>4 |
-| Malacca Route | 536.0nm | 39.1ms | 41.7ms | 497>21 |
-| Tasman Sea | 1265.7nm | 54.3ms | 58.8ms | 408>17 |
-| South Atlantic | 3273.6nm | 29.7ms | 30.0ms | 392>8 |
-| North Atlantic | 3041.0nm | 842ms | 901ms | 682>18 |
+| Aegean Hop | 25.3nm | 0.8ms | 0.8ms | 54>6 |
+| Strait of Gibraltar | 29.4nm | 0.8ms | 0.8ms | 63>5 |
+| Baltic Crossing | 42.0nm | 1.5ms | 1.5ms | 53>5 |
+| Balearic Sea | 127.6nm | 2.2ms | 2.2ms | 114>7 |
+| Florida Strait | 89.0nm | 0.5ms | 0.5ms | 22>4 |
+| Malacca Route | 534.3nm | 39.1ms | 39.3ms | 497>21 |
+| Tasman Sea | 1265.1nm | 57.3ms | 59.9ms | 408>17 |
+| South Atlantic | 3272.3nm | 30.8ms | 31.9ms | 392>8 |
+| North Atlantic | 3040.5nm | 869ms | 1.07s | 682>18 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 147.0nm | 12.9ms | 13.0ms | 1155>24 |
-| Panama Canal | 53.6nm | 75.2ms | 76.7ms | 1029>54 |
-| Kiel Canal | 95.0nm | 38.5ms | 39.3ms | 1976>57 |
-| Corinth Canal | 6.6nm | 1.5ms | 1.5ms | 364>8 |
-| Bosphorus | 32.7nm | 1.8ms | 5.9ms | 163>11 |
-| Dardanelles | 46.3nm | 1.3ms | 1.4ms | 116>6 |
-| Malacca Strait | 29.5nm | 1.3ms | 1.4ms | 89>6 |
-| Singapore Strait | 29.3nm | 1.0ms | 1.1ms | 46>5 |
-| Messina Strait | 17.2nm | 0.6ms | 0.6ms | 68>6 |
-| Dover Strait | 24.9nm | 0.4ms | 0.4ms | 17>5 |
+| Suez Canal | 141.2nm | 13.1ms | 13.3ms | 1155>24 |
+| Panama Canal | 53.5nm | 76.0ms | 79.2ms | 1029>54 |
+| Kiel Canal | 84.2nm | 39.0ms | 41.3ms | 1976>57 |
+| Corinth Canal | 6.5nm | 1.5ms | 1.6ms | 364>8 |
+| Bosphorus | 32.7nm | 1.8ms | 1.9ms | 163>11 |
+| Dardanelles | 45.1nm | 1.4ms | 1.5ms | 116>6 |
+| Malacca Strait | 28.9nm | 1.4ms | 1.4ms | 89>6 |
+| Singapore Strait | 27.2nm | 1.0ms | 1.1ms | 46>5 |
+| Messina Strait | 16.1nm | 0.6ms | 0.7ms | 68>6 |
+| Dover Strait | 18.4nm | 0.4ms | 0.5ms | 17>5 |
 
 ## API Endpoints
 
@@ -122,6 +122,8 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 
 - `from`, `to` — `lat,lon` coordinates
 - `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the requested value as `shore_buffer_nm`
+
+**`/route` response:** `distance_nm` counts only water segments. When a requested point sits on land, the geometry still starts/ends exactly there, and the overland connector segments are listed in `land_legs` (segment indices into `geometry.coordinates`) so clients can render them differently — they contribute nothing to `distance_nm`.
 
 ## Packages
 
