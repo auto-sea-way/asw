@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `land_legs` on `/route` responses: segment indices of the returned geometry that cross land (pin-on-land stitch legs and coastline-clipping smoothed segments), so clients can style them differently
-- Bench GeoJSON renders land legs as separate red features
+- Bench GeoJSON draws only the water spans of each route — land legs appear as gaps (GitHub's geojson preview ignores styling, so color could not carry the signal); land-leg indices are kept as feature properties
 
 ### Changed
 

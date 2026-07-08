@@ -608,51 +608,58 @@ fn write_geojson(stats: &[RouteStats]) -> Result<()> {
         let stroke = if s.is_passage { "#0000ff" } else { "#0088ff" };
         let category = if s.is_passage { "passage" } else { "sailing" };
 
-        // Route line
-        let coords: Vec<serde_json::Value> = s
-            .coordinates
-            .iter()
-            .map(|c| serde_json::json!([c[0], c[1]]))
-            .collect();
-
-        features.push(serde_json::json!({
-            "type": "Feature",
-            "properties": {
-                "name": s.name,
-                "distance_nm": format!("{:.1}", s.distance_nm),
-                "category": category,
-                "stroke": stroke,
-                "stroke-width": 3,
-                "stroke-opacity": 0.8
-            },
-            "geometry": {
-                "type": "LineString",
-                "coordinates": coords
+        // Route line: draw only the water spans, so land legs appear as
+        // gaps regardless of renderer (GitHub's geojson preview ignores
+        // simplestyle colors entirely, so a red "land leg" feature is
+        // invisible there — a gap is not).
+        let mut spans: Vec<Vec<serde_json::Value>> = Vec::new();
+        let mut current: Vec<serde_json::Value> = vec![serde_json::json!([
+            s.coordinates[0][0],
+            s.coordinates[0][1]
+        ])];
+        for i in 0..s.coordinates.len() - 1 {
+            if s.land_legs.contains(&i) {
+                if current.len() >= 2 {
+                    spans.push(std::mem::take(&mut current));
+                } else {
+                    current.clear();
+                }
             }
-        }));
+            let next = &s.coordinates[i + 1];
+            current.push(serde_json::json!([next[0], next[1]]));
+        }
+        if current.len() >= 2 {
+            spans.push(current);
+        }
 
-        // Land legs (pin-on-land stitch segments), drawn on top in red so
-        // overland clips are visually distinct from the sea route.
-        for &seg in &s.land_legs {
-            if seg + 1 >= s.coordinates.len() {
-                continue;
-            }
-            let a = s.coordinates[seg];
-            let b = s.coordinates[seg + 1];
-            features.push(serde_json::json!({
+        let properties = serde_json::json!({
+            "name": s.name,
+            "distance_nm": format!("{:.1}", s.distance_nm),
+            "category": category,
+            "stroke": stroke,
+            "stroke-width": 3,
+            "stroke-opacity": 0.8,
+            "land_legs": s.land_legs
+        });
+
+        match spans.len() {
+            0 => {}
+            1 => features.push(serde_json::json!({
                 "type": "Feature",
-                "properties": {
-                    "name": format!("{} (land leg)", s.name),
-                    "category": "land-leg",
-                    "stroke": "#e5484d",
-                    "stroke-width": 3,
-                    "stroke-opacity": 0.9
-                },
+                "properties": properties,
                 "geometry": {
                     "type": "LineString",
-                    "coordinates": [[a[0], a[1]], [b[0], b[1]]]
+                    "coordinates": spans.into_iter().next().unwrap()
                 }
-            }));
+            })),
+            _ => features.push(serde_json::json!({
+                "type": "Feature",
+                "properties": properties,
+                "geometry": {
+                    "type": "MultiLineString",
+                    "coordinates": spans
+                }
+            })),
         }
 
         // Start point (original input coordinate)

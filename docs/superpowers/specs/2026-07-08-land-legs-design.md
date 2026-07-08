@@ -53,12 +53,35 @@ drop (changelog + README API section note this).
 
 ### Benchmarks
 
-The bench geojson writer emits each route's land legs as separate
+Superseded on 2026-07-08 by user decision: the original design (below) emitted
+land legs as separate red `LineString` features. Verified empirically that
+GitHub's geojson preview (Azure Maps) ignores simplestyle colors entirely —
+the `"marker-color": "#00cc00"` start pin and `"marker-color": "#ff0000"` end
+pin already in the bench output render identically there, so a red land-leg
+feature would have been invisible on GitHub, the primary place this file gets
+viewed.
+
+Revised approach: the bench geojson writer draws only the water spans of each
+route. `RouteStats::coordinates` is split at each `land_legs` index into
+runs of consecutive water segments; each run of >= 2 points becomes one line
+in a `MultiLineString` (a plain `LineString` when there is exactly one run,
+i.e. no land legs). A land leg therefore renders as a visible gap in the
+route line on any renderer, styled or not — no reliance on stroke color. The
+route feature's `properties.land_legs` keeps the flagged segment indices
+so the information stays available (GitHub's feature-click popup shows raw
+properties). A route that is land for its entire length (no surviving span)
+emits no line feature, only its start/end markers.
+
+Distance columns in BENCHMARKS.md/README stay water-only; Kiel (~95 nm with
+overland stitches) is expected to drop to canal-transit reality
+(~85-87 nm).
+
+#### Superseded: red land-leg features (original 2026-07-08 design)
+
+The bench geojson writer emitted each route's land legs as separate
 `LineString` features with simplestyle `"stroke": "#e5484d"` (GitHub's
-preview renders stroke colors), while the water route keeps the default
-styling. Distance columns in BENCHMARKS.md/README become water-only; Kiel
-(~95 nm with overland stitches) is expected to drop to canal-transit
-reality (~85-87 nm).
+preview renders stroke colors), while the water route kept the default
+styling.
 
 ## Testing
 
