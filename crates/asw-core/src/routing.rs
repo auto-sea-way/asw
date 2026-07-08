@@ -181,6 +181,16 @@ impl RangeMin {
     }
 }
 
+/// Result of `smooth_indices`: the kept waypoint indices plus which kept
+/// segments are known to cross land (the forced-progress land-pin case).
+/// `land_segs[j] == k` means the segment `kept[k] -> kept[k+1]` crosses
+/// land. Since output coordinate `k` is `coords[kept[k]]`, these values
+/// are also segment indices of the smoothed polyline.
+pub struct SmoothResult {
+    pub kept: Vec<usize>,
+    pub land_segs: Vec<usize>,
+}
+
 /// Greedy line-of-sight smoothing over a node path (see `smooth_indices`,
 /// which this delegates to after decoding node positions and shore
 /// distances).
@@ -199,6 +209,7 @@ pub fn smooth(
         .collect();
     let shore_dist: Vec<u8> = path.iter().map(|&n| graph.shore_dist[n as usize]).collect();
     smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm)
+        .kept
         .into_iter()
         .map(|i| path[i])
         .collect()
@@ -225,9 +236,12 @@ pub fn smooth_indices(
     shore_dist: &[u8],
     coastline: &CoastlineIndex,
     shore_buffer_nm: f64,
-) -> Vec<usize> {
+) -> SmoothResult {
     if coords.len() <= 2 {
-        return (0..coords.len()).collect();
+        return SmoothResult {
+            kept: (0..coords.len()).collect(),
+            land_segs: Vec::new(),
+        };
     }
     let use_buffer = shore_buffer_nm > 0.0;
     debug_assert!(
@@ -244,6 +258,7 @@ pub fn smooth_indices(
     };
 
     let mut result = vec![0];
+    let mut land_segs = Vec::new();
     let mut current_idx = 0;
     let end_idx = coords.len() - 1;
 
@@ -308,16 +323,26 @@ pub fn smooth_indices(
             }
         }
 
-        // v_lo is the farthest visible point. Ensure we make progress even
-        // when the very next hop is blocked (land pin case).
+        // v_lo == v_hi means the very first probe (current_idx + 1) was
+        // blocked: v_lo was never verified clear and the segment is kept
+        // anyway to make progress (land pin case). Flag it as a land leg
+        // only when it actually crosses land — a pure buffer violation is
+        // still a water segment.
+        let forced = v_lo == v_hi;
         if v_lo <= current_idx {
             v_lo = current_idx + 1;
         }
         result.push(v_lo);
+        if forced && coastline.crosses_land(c_lon, c_lat, coords[v_lo][0], coords[v_lo][1]) {
+            land_segs.push(result.len() - 2);
+        }
         current_idx = v_lo;
     }
 
-    result
+    SmoothResult {
+        kept: result,
+        land_segs,
+    }
 }
 
 /// Can the straight line between the requested points be used as the route?
@@ -422,7 +447,7 @@ pub fn compute_route(
     coords.push([to_lon, to_lat]);
     shore_dist.push(pin_q(to_lon, to_lat));
 
-    let kept = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm);
+    let kept = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm).kept;
     let smoothed: Vec<[f64; 2]> = kept.into_iter().map(|i| coords[i]).collect();
     let smooth_hops = smoothed.len();
 
@@ -789,7 +814,8 @@ mod tests {
         let coastline = CoastlineIndex::new(vec![]);
         let coords = [[0.0, 0.0], [0.3, 0.1], [0.6, -0.1], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 4], &coastline, 0.0);
-        assert_eq!(out, vec![0, 3]);
+        assert_eq!(out.kept, vec![0, 3]);
+        assert!(out.land_segs.is_empty());
     }
 
     #[test]
@@ -799,17 +825,17 @@ mod tests {
         let coastline = wall_index(0.5, -1.0, 1.0);
         let coords = [[0.0, 0.0], [0.2, 0.5], [0.5, 1.5], [0.8, 0.5], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 5], &coastline, 0.0);
-        assert_eq!(out, vec![0, 2, 4]);
+        assert_eq!(out.kept, vec![0, 2, 4]);
+        assert!(out.land_segs.is_empty());
     }
 
     #[test]
     fn smooth_indices_short_input_passthrough() {
         let coastline = wall_index(0.5, -1.0, 1.0);
         let coords = [[0.0, 0.0], [1.0, 0.0]];
-        assert_eq!(
-            smooth_indices(&coords, &[255; 2], &coastline, 0.0),
-            vec![0, 1]
-        );
+        let out = smooth_indices(&coords, &[255; 2], &coastline, 0.0);
+        assert_eq!(out.kept, vec![0, 1]);
+        assert!(out.land_segs.is_empty());
     }
 
     #[test]
@@ -820,8 +846,25 @@ mod tests {
         let coastline = island_around_origin();
         let coords = [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
-        assert_eq!(*out.first().unwrap(), 0);
-        assert_eq!(*out.last().unwrap(), 2);
+        assert_eq!(*out.kept.first().unwrap(), 0);
+        assert_eq!(*out.kept.last().unwrap(), 2);
+        // The forced first segment crosses the ring: it must be flagged.
+        assert_eq!(out.land_segs, vec![0]);
+    }
+
+    #[test]
+    fn smooth_indices_buffer_forced_segment_is_not_a_land_leg() {
+        // Wall at lon 28.0; all points sit ~1 nm east of it. With a 2 nm
+        // buffer every hop violates clearance, so smoothing is forced through
+        // each point — but nothing crosses land, so no segment is flagged.
+        let coastline = wall_index(28.0, 36.3, 36.7);
+        let coords = [[28.02, 36.4], [28.02, 36.5], [28.02, 36.6]];
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
+        assert_eq!(out.kept, vec![0, 1, 2]);
+        assert!(
+            out.land_segs.is_empty(),
+            "buffer-forced water segments must not be flagged as land"
+        );
     }
 
     #[test]
@@ -831,9 +874,14 @@ mod tests {
         let coastline = wall_index(28.0, 36.45, 36.55);
         let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
         let loose = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
-        assert_eq!(loose, vec![0, 2]);
+        assert_eq!(loose.kept, vec![0, 2]);
         let strict = smooth_indices(&coords, &[255; 3], &coastline, 3.0);
-        assert_eq!(strict, vec![0, 1, 2], "3 nm buffer must keep the dogleg");
+        assert_eq!(
+            strict.kept,
+            vec![0, 1, 2],
+            "3 nm buffer must keep the dogleg"
+        );
+        assert!(strict.land_segs.is_empty());
     }
 
     #[test]
@@ -843,7 +891,8 @@ mod tests {
         let coastline = wall_index(28.0, 36.45, 36.55);
         let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
         let out = smooth_indices(&coords, &[20, 255, 20], &coastline, 3.0);
-        assert_eq!(out, vec![0, 2]);
+        assert_eq!(out.kept, vec![0, 2]);
+        assert!(out.land_segs.is_empty());
     }
 
     /// Build a chain graph from (lat, lon) waypoints; returns the graph and
