@@ -56,6 +56,7 @@ struct RouteStats {
     timings_us: Vec<u64>,
     is_passage: bool,
     coordinates: Vec<[f64; 2]>,
+    land_legs: Vec<usize>,
     from_lat: f64,
     from_lon: f64,
     to_lat: f64,
@@ -260,14 +261,15 @@ fn run_benchmark(
                 &mut buffers,
                 shore_buffer_nm,
             );
-            let (distance_nm, raw_hops, smooth_hops, coordinates) = match &first {
+            let (distance_nm, raw_hops, smooth_hops, coordinates, land_legs) = match &first {
                 Some(r) => (
                     r.distance_nm,
                     r.raw_hops,
                     r.smooth_hops,
                     r.coordinates.clone(),
+                    r.land_legs.clone(),
                 ),
-                None => (0.0, 0, 0, Vec::new()),
+                None => (0.0, 0, 0, Vec::new(), Vec::new()),
             };
 
             // Measured iterations
@@ -298,6 +300,7 @@ fn run_benchmark(
                 timings_us,
                 is_passage: route.is_passage,
                 coordinates,
+                land_legs,
                 from_lat: route.from_lat,
                 from_lon: route.from_lon,
                 to_lat: route.to_lat,
@@ -627,6 +630,30 @@ fn write_geojson(stats: &[RouteStats]) -> Result<()> {
                 "coordinates": coords
             }
         }));
+
+        // Land legs (pin-on-land stitch segments), drawn on top in red so
+        // overland clips are visually distinct from the sea route.
+        for &seg in &s.land_legs {
+            if seg + 1 >= s.coordinates.len() {
+                continue;
+            }
+            let a = s.coordinates[seg];
+            let b = s.coordinates[seg + 1];
+            features.push(serde_json::json!({
+                "type": "Feature",
+                "properties": {
+                    "name": format!("{} (land leg)", s.name),
+                    "category": "land-leg",
+                    "stroke": "#e5484d",
+                    "stroke-width": 3,
+                    "stroke-opacity": 0.9
+                },
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [[a[0], a[1]], [b[0], b[1]]]
+                }
+            }));
+        }
 
         // Start point (original input coordinate)
         features.push(serde_json::json!({
