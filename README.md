@@ -31,7 +31,7 @@ Ship it as a single binary + graph file. Self-hosted, no third-party API keys, n
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.1-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (~60-90s while the graph loads), then query a route:
@@ -133,23 +133,23 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.6.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.6.0-full` | Full image — graph file included (~740 MB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.6.1` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.6.1-full` | Full image — graph file included (~740 MB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~740 MB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.1-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.6.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.6.1/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.1
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.1
 ```
 
 The full planet graph needs ~4.1 GiB RSS right after load (measured, Linux), growing with query coverage as A* buffer pages are touched — 4.3 GiB measured after a globally diverse route mix, ~4.8 GiB hard ceiling. Plan for ~5 GiB total. A **4 GB instance with a generous swap file** still works but pages under load; an **8 GB instance** is recommended. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
