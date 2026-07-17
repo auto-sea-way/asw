@@ -65,7 +65,7 @@ impl LandIndex {
     pub fn is_water(&self, lon: f64, lat: f64) -> bool {
         let point = Point::new(lon, lat);
         let envelope = AABB::from_corners([lon, lat], [lon, lat]);
-        for lp in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for lp in self.tree.locate_in_envelope_intersecting(envelope) {
             if lp.polygon.contains(&point) {
                 return false;
             }
@@ -95,7 +95,7 @@ impl LandIndex {
     fn intersects_polygon_single(&self, poly: &Polygon<f64>) -> bool {
         let (min, max) = bounding_rect(poly);
         let envelope = AABB::from_corners(min, max);
-        for lp in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for lp in self.tree.locate_in_envelope_intersecting(envelope) {
             if lp.polygon.intersects(poly) {
                 return true;
             }
@@ -119,7 +119,7 @@ impl LandIndex {
     fn contains_polygon_single(&self, poly: &Polygon<f64>) -> bool {
         let (min, max) = bounding_rect(poly);
         let envelope = AABB::from_corners(min, max);
-        for lp in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for lp in self.tree.locate_in_envelope_intersecting(envelope) {
             if lp.polygon.contains(poly) {
                 return true;
             }
@@ -187,7 +187,7 @@ impl LandIndex {
                 }
                 // Find water polygons that intersect this land polygon's bbox
                 let nearby_water: Vec<&Polygon<f64>> = water_tree
-                    .locate_in_envelope_intersecting(&lp.envelope)
+                    .locate_in_envelope_intersecting(lp.envelope)
                     .map(|wp| &wp.polygon)
                     .collect();
                 if nearby_water.is_empty() {
@@ -267,7 +267,7 @@ impl CoastlineIndex {
 
         let line = Line::new(Coord { x: lon1, y: lat1 }, Coord { x: lon2, y: lat2 });
 
-        for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for seg in self.tree.locate_in_envelope_intersecting(envelope) {
             if line.intersects(&seg.line) {
                 return true;
             }
@@ -305,7 +305,7 @@ impl CoastlineIndex {
         let pt = Coord { x: lon, y: lat };
         let mut best = f64::MAX;
 
-        for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for seg in self.tree.locate_in_envelope_intersecting(envelope) {
             for line in seg.line.lines() {
                 let d = point_to_segment_dist(pt, line.start, line.end);
                 if d < best {
@@ -342,7 +342,7 @@ impl CoastlineIndex {
 
         let origin = Coord { x: 0.0, y: 0.0 };
         let mut best = max_nm;
-        for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for seg in self.tree.locate_in_envelope_intersecting(envelope) {
             for line in seg.line.lines() {
                 let a = nm_frame(line.start, lon, lat, coslat);
                 let b = nm_frame(line.end, lon, lat, coslat);
@@ -417,7 +417,7 @@ impl CoastlineIndex {
         let query = Line::new(qa, qb);
 
         let mut best = max_nm;
-        for seg in self.tree.locate_in_envelope_intersecting(&envelope) {
+        for seg in self.tree.locate_in_envelope_intersecting(envelope) {
             for line in seg.line.lines() {
                 let ca = nm_frame(line.start, lon1, ref_lat, coslat);
                 let cb = nm_frame(line.end, lon1, ref_lat, coslat);
