@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `Passage.zone_resolution` — all passages use resolution 5; replaced by the `ZONE_RESOLUTION` const
   - `load_raw_polygons` (no callers) and the load-time bbox filter on `load_land_polygons` (documented footgun, only ever called with `None`)
   - asw-cloud: SSH-key name-conflict retry machinery (key names now include a hash of the key material, so the conflict cannot occur), the string-keyed step-dispatch table (replaced by a linear step sequence), the `~/.ssh` pubkey fallback scan (the `.pub` must sit next to the private key), `SshConfig.user` (always root), and assorted dead constants
-  - Unused dependencies: `sha2` and `serde_json` (asw-cloud), `geojson` and `geo-types` (asw-core), `geojson` and `anyhow` (asw-serve); `tokio` trimmed from `full` to the used features
+  - Unused dependencies: `sha2` and `serde_json` (asw-cloud), `geojson` (asw-core), `geojson` and `anyhow` (asw-serve), `geo-types` (asw-core, asw-build, and the workspace — no crate imports it directly; the types come via `geo`); `tokio` trimmed from `full` to the used features
   - `asw-serve` stub binary (the crate is a library; the binary is `asw`)
 
 ### Changed
