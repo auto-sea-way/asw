@@ -429,9 +429,9 @@ mod tests {
 
     /// End-to-end happy path once the graph is loaded: exercises the full
     /// `state.app()` clone -> `spawn_blocking` -> `nearest_node` ->
-    /// `compute_route` -> `with_astar_buffers` pipeline introduced for
-    /// finding 6, verifying it still produces a correct route (not just
-    /// that the code compiles / doesn't deadlock).
+    /// `compute_route` pipeline (with the A* buffer-pool acquire/release
+    /// around it) introduced for finding 6, verifying it still produces a
+    /// correct route (not just that the code compiles / doesn't deadlock).
     #[tokio::test]
     async fn route_returns_200_with_valid_route_once_ready() {
         let app = create_router(ready_state_with_small_graph().await);

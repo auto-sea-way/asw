@@ -41,7 +41,7 @@ fn bbox_sidecar_path(output_path: &Path) -> PathBuf {
 }
 
 /// Remote path of the source-hash marker written after a successful compile.
-/// `check_cache` only treats `upload_src`/`compile` as cached when this file
+/// `run` only treats `upload_src`/`compile` as cached when this file
 /// exists on the server and matches the local source hash — see
 /// `remote_src_hash_matches`.
 fn remote_hash_path() -> String {
@@ -204,7 +204,7 @@ impl Pipeline {
 
     /// Remote path of the graph file for this run's bbox. Including the
     /// bbox slug in the filename means a build for a different bbox can
-    /// never be mistaken (by `check_cache`) for a previous build's output.
+    /// never be mistaken (by `run`'s cache probes) for a previous build's output.
     fn remote_graph_path(&self) -> String {
         format!("{}/asw-{}.graph", REMOTE_DATA_DIR, bbox_slug(self.bbox))
     }

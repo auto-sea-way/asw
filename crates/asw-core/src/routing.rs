@@ -146,7 +146,7 @@ pub fn astar(
 }
 
 /// Sparse table for O(1) range-minimum queries over a fixed `u8` slice.
-/// Built once (O(n log n)) and queried O(1) per anchor in `smooth()`,
+/// Built once (O(n log n)) and queried O(1) per anchor in `smooth_indices()`,
 /// replacing an O(n) running-min rebuild per anchor (worst case O(n^2)
 /// across the whole smoothing pass for long, twisty raw paths).
 struct RangeMin {
