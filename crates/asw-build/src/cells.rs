@@ -1,7 +1,7 @@
 use anyhow::Result;
 use asw_core::geo_index::{CoastlineIndex, LandIndex};
-use asw_core::h3::{cell_boundary, cell_center, cell_polygon, children};
-use asw_core::passages::Passage;
+use asw_core::h3::{cell_boundary, cell_center, cell_polygon};
+use asw_core::passages::{Passage, ZONE_RESOLUTION};
 use asw_core::{CASCADE, H3_RES_BASE, H3_RES_LEAF};
 use geo::LineString;
 use h3o::geom::{ContainmentMode, TilerBuilder};
@@ -163,10 +163,10 @@ pub fn generate_cells(
                 pb.inc(1);
                 let parent_poly = cell_polygon(parent_cell);
                 if !land.intersects_polygon(&parent_poly) {
-                    return children(parent_cell, next_resolution);
+                    return parent_cell.children(next_resolution).collect();
                 }
-                children(parent_cell, next_resolution)
-                    .into_iter()
+                parent_cell
+                    .children(next_resolution)
                     .filter(|&child| {
                         !land.contains_polygon(&cell_polygon(child))
                             || in_passage_corridor(child, corridors)
@@ -184,8 +184,7 @@ pub fn generate_cells(
 
     // Step 4: Split leaf candidates into normal vs zone candidates
     let zone_lookup = build_zone_lookup(passages, bbox)?;
-    let (zone_candidates, normal_candidates) =
-        split_zone_candidates(current_water, &zone_lookup, passages);
+    let (zone_candidates, normal_candidates) = split_zone_candidates(current_water, &zone_lookup);
 
     if !zone_candidates.is_empty() {
         info!(
@@ -341,7 +340,7 @@ pub fn generate_cells(
                     .par_iter()
                     .flat_map(|&parent_cell| {
                         pb.inc(1);
-                        children(parent_cell, next_resolution)
+                        parent_cell.children(next_resolution).collect::<Vec<_>>()
                     })
                     .collect();
                 pb.finish_and_clear();
@@ -436,51 +435,23 @@ pub fn generate_cells(
     Ok(cell_map)
 }
 
-/// Collect the distinct H3 resolutions used as `zone_resolution` across `passages`.
-///
-/// `build_zone_lookup` inserts each passage's zone cells keyed at that passage's own
-/// `zone_resolution`, so a cell must be tested against every resolution actually in use,
-/// not an arbitrary single one — otherwise a passage with a differing zone_resolution would
-/// never match and its refinement would silently never happen.
-fn distinct_zone_resolutions(passages: &[Passage]) -> Vec<Resolution> {
-    let mut resolutions: Vec<u8> = passages.iter().map(|p| p.zone_resolution).collect();
-    resolutions.sort_unstable();
-    resolutions.dedup();
-    resolutions
-        .into_iter()
-        .map(|r| Resolution::try_from(r).expect("invalid zone resolution"))
-        .collect()
-}
-
 /// Split water-cell candidates into zone candidates (paired with their target
-/// `leaf_resolution`) and normal candidates.
-///
-/// `zone_lookup` (from `build_zone_lookup`) keys each passage's zone cells at that
-/// passage's own `zone_resolution` — not a single resolution shared by all passages — so
-/// every cell is probed against every distinct `zone_resolution` present in `passages`
-/// (via `distinct_zone_resolutions`) rather than only `passages[0].zone_resolution`. All 14
-/// current passages happen to use resolution 5 (see `asw_core::passages::PASSAGES`), but
-/// that is a fact about today's data, not a type-level invariant, so a future passage with a
-/// different zone_resolution must still be recognized correctly instead of silently never
-/// matching.
+/// `leaf_resolution`) and normal candidates, by probing each cell's
+/// `ZONE_RESOLUTION` ancestor against `zone_lookup`.
 fn split_zone_candidates(
     current_water: Vec<CellIndex>,
     zone_lookup: &HashMap<CellIndex, u8>,
-    passages: &[Passage],
 ) -> (Vec<(CellIndex, u8)>, Vec<CellIndex>) {
     if zone_lookup.is_empty() {
         return (Vec::new(), current_water);
     }
-    let zone_resolutions = distinct_zone_resolutions(passages);
+    let zone_res = Resolution::try_from(ZONE_RESOLUTION).expect("invalid zone resolution");
     let mut zone = Vec::new();
     let mut normal = Vec::new();
     for cell in current_water {
-        // Resolutions are probed in ascending order; if corridors at different
-        // zone resolutions ever overlap, the lowest-resolution match wins.
-        let leaf_res = zone_resolutions.iter().find_map(|&zone_res| {
-            let ancestor = cell.parent(zone_res)?;
-            zone_lookup.get(&ancestor).copied()
-        });
+        let leaf_res = cell
+            .parent(zone_res)
+            .and_then(|ancestor| zone_lookup.get(&ancestor).copied());
         match leaf_res {
             Some(leaf_res) => zone.push((cell, leaf_res)),
             None => normal.push(cell),
@@ -489,11 +460,12 @@ fn split_zone_candidates(
     (zone, normal)
 }
 
-/// Build a lookup from zone cells (at zone_resolution) to leaf_resolution.
+/// Build a lookup from zone cells (at `ZONE_RESOLUTION`) to leaf_resolution.
 /// For each passage overlapping the build bbox, generate covering H3 cells
-/// at zone_resolution and map them to the passage's leaf_resolution.
+/// at `ZONE_RESOLUTION` and map them to the passage's leaf_resolution.
 fn build_zone_lookup(passages: &[Passage], bbox: Option<Bbox>) -> Result<HashMap<CellIndex, u8>> {
     let mut lookup = HashMap::new();
+    let zone_res = Resolution::try_from(ZONE_RESOLUTION).expect("invalid zone resolution");
 
     for passage in passages {
         let (p_min_lon, p_min_lat, p_max_lon, p_max_lat) = passage.corridor;
@@ -509,8 +481,6 @@ fn build_zone_lookup(passages: &[Passage], bbox: Option<Bbox>) -> Result<HashMap
             }
         }
 
-        let zone_res =
-            Resolution::try_from(passage.zone_resolution).expect("invalid zone resolution");
         let zone_cells = generate_covering_cells(Some(passage.corridor), zone_res)?;
 
         let mut count = 0;
@@ -525,7 +495,7 @@ fn build_zone_lookup(passages: &[Passage], bbox: Option<Bbox>) -> Result<HashMap
 
         info!(
             "Passage '{}': {} zone cells at res-{}, leaf res-{}",
-            passage.name, count, passage.zone_resolution, passage.leaf_resolution
+            passage.name, count, ZONE_RESOLUTION, passage.leaf_resolution
         );
     }
 
@@ -616,101 +586,43 @@ fn generate_covering_cells(bbox: Option<Bbox>, res: Resolution) -> Result<Vec<Ce
 mod tests {
     use super::*;
 
-    fn test_passage(
-        name: &'static str,
-        corridor: (f64, f64, f64, f64),
-        zone_resolution: u8,
-        leaf_resolution: u8,
-    ) -> Passage {
-        Passage {
-            name,
-            corridor,
-            zone_resolution,
-            leaf_resolution,
+    /// A zone cell's children must be recognized as zone candidates with the
+    /// passage's leaf_resolution; cells outside every corridor stay normal.
+    #[test]
+    fn zone_split_recognizes_zone_children() {
+        let passages = vec![Passage {
+            name: "Test passage",
+            corridor: (0.0, 0.0, 1.0, 1.0),
+            leaf_resolution: 12,
             geofabrik_url: None,
             water_types: &[],
-        }
-    }
-
-    #[test]
-    fn distinct_zone_resolutions_collects_unique_sorted_values() {
-        let passages = vec![
-            test_passage("A", (0.0, 0.0, 1.0, 1.0), 5, 11),
-            test_passage("B", (2.0, 2.0, 3.0, 3.0), 4, 12),
-            test_passage("C", (4.0, 4.0, 5.0, 5.0), 5, 13),
-        ];
-        let resolutions: Vec<u8> = distinct_zone_resolutions(&passages)
-            .into_iter()
-            .map(|r| r as u8)
-            .collect();
-        assert_eq!(resolutions, vec![4, 5]);
-    }
-
-    /// Reproduces finding 11: with two passages that use *different* zone_resolution
-    /// values, probing only `passages[0].zone_resolution` (the old behavior) recognizes
-    /// cells for whichever passage happens to be first and silently drops the other's
-    /// zone cells into `normal_candidates` — that passage's high-resolution refinement
-    /// then never runs, with no error. `split_zone_candidates` must recognize both.
-    #[test]
-    fn zone_split_probes_every_distinct_zone_resolution() {
-        let passages = vec![
-            test_passage("Low-res passage", (0.0, 0.0, 1.0, 1.0), 4, 11),
-            test_passage("High-res passage", (10.0, 10.0, 11.0, 11.0), 6, 13),
-        ];
+        }];
 
         let zone_lookup = build_zone_lookup(&passages, None).expect("build_zone_lookup");
         assert!(!zone_lookup.is_empty());
 
-        let low_res = Resolution::try_from(4u8).unwrap();
-        let high_res = Resolution::try_from(6u8).unwrap();
-
-        let low_ancestor = *zone_lookup
-            .keys()
-            .find(|c| c.resolution() == low_res)
-            .expect("expected a zone cell at res-4 for the low-res passage");
-        let high_ancestor = *zone_lookup
-            .keys()
-            .find(|c| c.resolution() == high_res)
-            .expect("expected a zone cell at res-6 for the high-res passage");
-
-        // Derive a water-cell candidate one resolution finer than each zone cell, so that
-        // `cell.parent(zone_res)` maps exactly back onto the zone_lookup key.
-        let low_child = low_ancestor
-            .children(Resolution::try_from(5u8).unwrap())
+        let ancestor = *zone_lookup.keys().next().unwrap();
+        let child = ancestor
+            .children(Resolution::try_from(ZONE_RESOLUTION + 1).unwrap())
             .next()
             .unwrap();
-        let high_child = high_ancestor
-            .children(Resolution::try_from(7u8).unwrap())
-            .next()
-            .unwrap();
+        let outside = h3o::LatLng::new(45.0, 45.0)
+            .unwrap()
+            .to_cell(Resolution::try_from(ZONE_RESOLUTION + 1).unwrap());
 
-        let current_water = vec![low_child, high_child];
-        let (zone, normal) = split_zone_candidates(current_water, &zone_lookup, &passages);
-
-        assert_eq!(
-            normal.len(),
-            0,
-            "both passages' cells should be recognized as zone candidates, not fall through \
-             to normal_candidates"
-        );
-        assert_eq!(zone.len(), 2);
-        assert!(zone
-            .iter()
-            .any(|&(c, leaf_res)| c == low_child && leaf_res == 11));
-        assert!(zone
-            .iter()
-            .any(|&(c, leaf_res)| c == high_child && leaf_res == 13));
+        let (zone, normal) = split_zone_candidates(vec![child, outside], &zone_lookup);
+        assert_eq!(zone, vec![(child, 12)]);
+        assert_eq!(normal, vec![outside]);
     }
 
     #[test]
     fn zone_split_is_empty_lookup_passthrough() {
-        let passages: Vec<Passage> = Vec::new();
         let zone_lookup: HashMap<CellIndex, u8> = HashMap::new();
         let base_res = Resolution::try_from(H3_RES_BASE).expect("invalid base resolution");
         let current_water = generate_covering_cells(Some((0.0, 0.0, 1.0, 1.0)), base_res)
             .expect("generate_covering_cells");
 
-        let (zone, normal) = split_zone_candidates(current_water.clone(), &zone_lookup, &passages);
+        let (zone, normal) = split_zone_candidates(current_water.clone(), &zone_lookup);
         assert!(zone.is_empty());
         assert_eq!(normal, current_water);
     }

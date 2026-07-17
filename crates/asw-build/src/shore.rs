@@ -30,8 +30,12 @@ mod tests {
         let line = LineString::from(vec![(28.0, 36.0), (28.0, 37.0)]);
         let coastline = CoastlineIndex::new(vec![CoastlineSegment::new(line)]);
 
-        let near = asw_core::h3::lat_lng_to_cell(36.5, 28.05, h3o::Resolution::Nine).unwrap();
-        let far = asw_core::h3::lat_lng_to_cell(36.5, 29.5, h3o::Resolution::Nine).unwrap();
+        let near = h3o::LatLng::new(36.5, 28.05)
+            .unwrap()
+            .to_cell(h3o::Resolution::Nine);
+        let far = h3o::LatLng::new(36.5, 29.5)
+            .unwrap()
+            .to_cell(h3o::Resolution::Nine);
 
         let result = compute_shore_distances(&[(near, 0), (far, 1)], &coastline);
 

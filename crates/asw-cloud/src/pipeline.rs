@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -18,18 +18,12 @@ pub struct Pipeline {
     pub rust_src_dir: PathBuf,
 }
 
-struct Step {
-    number: usize,
-    name: &'static str,
-    description: &'static str,
-}
-
 /// Derive a filesystem-safe slug identifying a bbox, used both for the
 /// remote graph filename and the local download-cache sidecar marker. This
 /// is what makes the step cache input-aware: a run with a different bbox
 /// gets a different remote filename and a different sidecar value, so it
 /// can never be mistaken for "already built"/"already downloaded".
-pub fn bbox_slug(bbox: Option<(f64, f64, f64, f64)>) -> String {
+fn bbox_slug(bbox: Option<(f64, f64, f64, f64)>) -> String {
     match bbox {
         None => "full".to_string(),
         Some((min_lon, min_lat, max_lon, max_lat)) => {
@@ -54,30 +48,35 @@ fn remote_hash_path() -> String {
     format!("{}/src.hash", REMOTE_DATA_DIR)
 }
 
-/// Hex-encoded SHA-256 over the workspace's Rust source: every `.rs` file
-/// under `crates/`, plus the workspace `Cargo.toml` and `Cargo.lock`, hashed
-/// in a fixed (sorted-path) order so the result doesn't depend on filesystem
-/// iteration order and is stable across runs on unchanged content.
+/// Hash over the workspace's Rust source: every `.rs` file under `crates/`,
+/// plus the workspace `Cargo.toml` and `Cargo.lock`, hashed in a fixed
+/// (sorted-path) order so the result doesn't depend on filesystem iteration
+/// order and is stable across runs on unchanged content.
 ///
 /// Used to detect a stale compiled binary on a kept build server: after the
 /// v2->v3 graph format bump, a server whose binary merely still answers
 /// `--version` is not proof it was compiled from the current source — only a
 /// byte-for-byte source hash match is.
-pub fn source_hash(workspace_root: &Path) -> Result<String> {
+///
+/// A cache key, not a security property. ponytail: DefaultHasher is not
+/// guaranteed stable across Rust releases — worst case a toolchain bump
+/// causes one spurious remote rebuild; switch back to a fixed algorithm if
+/// that ever matters.
+fn source_hash(workspace_root: &Path) -> Result<String> {
     let mut paths: Vec<PathBuf> = Vec::new();
     collect_rs_files(&workspace_root.join("crates"), &mut paths)?;
     paths.push(workspace_root.join("Cargo.toml"));
     paths.push(workspace_root.join("Cargo.lock"));
     paths.sort();
 
-    let mut hasher = Sha256::new();
+    let mut hasher = DefaultHasher::new();
     for path in &paths {
         if let Ok(contents) = std::fs::read(path) {
-            hasher.update(path.to_string_lossy().as_bytes());
-            hasher.update(&contents);
+            path.to_string_lossy().as_bytes().hash(&mut hasher);
+            contents.hash(&mut hasher);
         }
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(format!("{:016x}", hasher.finish()))
 }
 
 /// Recursively collect every `.rs` file under `dir` into `out`.
@@ -97,73 +96,102 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-const STEPS: &[Step] = &[
-    Step {
-        number: 0,
-        name: "provision",
-        description: "Create Hetzner server",
-    },
-    Step {
-        number: 1,
-        name: "upload_src",
-        description: "Upload Rust source to server",
-    },
-    Step {
-        number: 2,
-        name: "compile",
-        description: "Install Rust + compile on server",
-    },
-    Step {
-        number: 3,
-        name: "download_shp",
-        description: "Download land polygons on server",
-    },
-    Step {
-        number: 4,
-        name: "build_graph",
-        description: "Run asw build on server",
-    },
-    Step {
-        number: 5,
-        name: "download",
-        description: "Download graph to local machine",
-    },
-    Step {
-        number: 6,
-        name: "teardown",
-        description: "Delete Hetzner server",
-    },
-];
-
 impl Pipeline {
     pub fn run(&mut self) -> Result<()> {
-        let total = STEPS.len();
+        // Steps run in order; each cache probe is evaluated only when its
+        // step is reached (later probes need SSH to the provisioned host).
+        self.run_step(
+            0,
+            "provision",
+            "Create Hetzner server",
+            self.host.is_some(),
+            |p| p.step_provision(),
+        )?;
 
-        for step in STEPS {
-            if step.name == "teardown" && self.keep_server {
-                eprintln!(
-                    "  [{}/{}] {}: skipped (--keep-server)",
-                    step.number, total, step.name
-                );
-                continue;
-            }
+        // One probe gates both upload_src and compile: a stale binary that
+        // still answers --version is not proof it matches the current
+        // source, so the two are only "cached" together, when the remote
+        // hash marker matches the local source hash.
+        let src_cached = self.remote_src_hash_matches().unwrap_or(false);
+        self.run_step(
+            1,
+            "upload_src",
+            "Upload Rust source to server",
+            src_cached,
+            |p| p.step_upload_src(),
+        )?;
+        self.run_step(
+            2,
+            "compile",
+            "Install Rust + compile on server",
+            src_cached,
+            |p| p.step_compile(),
+        )?;
 
-            let cached = self.check_cache(step);
+        let shp_cached = self
+            .remote_dir_exists(&format!("{}/land-polygons-split-4326", REMOTE_DATA_DIR))
+            .unwrap_or(false);
+        self.run_step(
+            3,
+            "download_shp",
+            "Download land polygons on server",
+            shp_cached,
+            |p| p.step_download_shp(),
+        )?;
 
-            if cached {
-                eprintln!("  [{}/{}] {}: cached", step.number, total, step.name);
-                continue;
-            }
+        let graph_cached = self
+            .remote_file_exists(&self.remote_graph_path())
+            .unwrap_or(false);
+        self.run_step(
+            4,
+            "build_graph",
+            "Run asw build on server",
+            graph_cached,
+            |p| p.step_build_graph(),
+        )?;
 
-            eprintln!(
-                "  [{}/{}] {}: running — {}",
-                step.number, total, step.name, step.description
-            );
-            self.execute_step(step)?;
-            eprintln!("  [{}/{}] {}: done", step.number, total, step.name);
+        let download_cached = self.output_path.exists()
+            && self
+                .output_path
+                .metadata()
+                .map(|m| m.len() > 1024)
+                .unwrap_or(false)
+            && self.local_download_cache_matches();
+        self.run_step(
+            5,
+            "download",
+            "Download graph to local machine",
+            download_cached,
+            |p| p.step_download(),
+        )?;
+
+        if self.keep_server {
+            eprintln!("  [6/7] teardown: skipped (--keep-server)");
+        } else {
+            self.run_step(6, "teardown", "Delete Hetzner server", false, |p| {
+                p.step_teardown()
+            })?;
         }
 
         eprintln!("Build complete. Output: {:?}", self.output_path);
+        Ok(())
+    }
+
+    fn run_step(
+        &mut self,
+        number: usize,
+        name: &str,
+        description: &str,
+        cached: bool,
+        action: fn(&mut Self) -> Result<()>,
+    ) -> Result<()> {
+        if cached {
+            eprintln!("  [{}/7] {}: cached", number, name);
+            return Ok(());
+        }
+        eprintln!("  [{}/7] {}: running — {}", number, name, description);
+        action(self)?;
+        eprintln!("  [{}/7] {}: done", number, name);
         Ok(())
     }
 
@@ -172,32 +200,6 @@ impl Pipeline {
             self.host.clone().unwrap_or_default(),
             self.ssh_key_path.clone(),
         )
-    }
-
-    fn check_cache(&self, step: &Step) -> bool {
-        let result = match step.name {
-            "provision" => return self.host.is_some(),
-            // Both gated on the same source-hash check: a stale binary that
-            // still answers --version is not proof it matches the current
-            // source, so upload_src/compile are only "cached" together, when
-            // the remote hash marker matches the local source hash.
-            "upload_src" | "compile" => self.remote_src_hash_matches(),
-            "download_shp" => {
-                self.remote_dir_exists(&format!("{}/land-polygons-split-4326", REMOTE_DATA_DIR))
-            }
-            "build_graph" => self.remote_file_exists(&self.remote_graph_path()),
-            "download" => {
-                return self.output_path.exists()
-                    && self
-                        .output_path
-                        .metadata()
-                        .map(|m| m.len() > 1024)
-                        .unwrap_or(false)
-                    && self.local_download_cache_matches();
-            }
-            _ => return false,
-        };
-        result.unwrap_or(false)
     }
 
     /// Remote path of the graph file for this run's bbox. Including the
@@ -244,19 +246,6 @@ impl Pipeline {
         let cfg = self.ssh_cfg();
         let output = ssh::run_ssh(&cfg, &format!("test -d {} && echo yes || echo no", path))?;
         Ok(output.trim() == "yes")
-    }
-
-    fn execute_step(&mut self, step: &Step) -> Result<()> {
-        match step.name {
-            "provision" => self.step_provision(),
-            "upload_src" => self.step_upload_src(),
-            "compile" => self.step_compile(),
-            "download_shp" => self.step_download_shp(),
-            "build_graph" => self.step_build_graph(),
-            "download" => self.step_download(),
-            "teardown" => self.step_teardown(),
-            _ => unreachable!(),
-        }
     }
 
     // ── Step implementations ────────────────────────────────────────────────
@@ -481,13 +470,6 @@ mod tests {
         let dev = bbox_slug(Some((-5.0, 48.0, 10.0, 62.0)));
         assert_ne!(marmaris, dev);
         assert_ne!(marmaris, "full");
-    }
-
-    #[test]
-    fn bbox_slug_is_deterministic() {
-        let a = bbox_slug(Some((27.5, 36.0, 30.0, 37.0)));
-        let b = bbox_slug(Some((27.5, 36.0, 30.0, 37.0)));
-        assert_eq!(a, b);
     }
 
     #[test]

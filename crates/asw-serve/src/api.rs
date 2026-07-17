@@ -15,39 +15,39 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::state::ServerState;
 
 #[derive(Deserialize)]
-pub struct RouteQuery {
+struct RouteQuery {
     /// "lat,lon"
-    pub from: String,
+    from: String,
     /// "lat,lon"
-    pub to: String,
+    to: String,
     /// Minimum distance from shore in nautical miles (0..=5.0, default 0).
-    pub shore_buffer: Option<f64>,
+    shore_buffer: Option<f64>,
 }
 
 #[derive(Serialize)]
-pub struct RouteResponse {
-    pub distance_nm: f64,
-    pub raw_hops: usize,
-    pub smooth_hops: usize,
-    pub geometry: serde_json::Value,
-    pub shore_buffer_nm: f64,
+struct RouteResponse {
+    distance_nm: f64,
+    raw_hops: usize,
+    smooth_hops: usize,
+    geometry: serde_json::Value,
+    shore_buffer_nm: f64,
     /// Segment indices of `geometry.coordinates` that cross land
     /// (pin-on-land stitch legs and coastline-clipping smoothed segments).
     /// Excluded from `distance_nm`.
-    pub land_legs: Vec<usize>,
+    land_legs: Vec<usize>,
 }
 
 #[derive(Serialize)]
-pub struct ErrorResponse {
-    pub error: String,
+struct ErrorResponse {
+    error: String,
 }
 
 #[derive(Serialize)]
-pub struct InfoResponse {
-    pub nodes: u32,
-    pub edges: u32,
-    pub graph_path: String,
-    pub version: String,
+struct InfoResponse {
+    nodes: u32,
+    edges: u32,
+    graph_path: String,
+    version: String,
 }
 
 fn parse_latlng(s: &str) -> Option<(f64, f64)> {
@@ -131,19 +131,20 @@ async fn route_handler(
     // on the same worker (see finding 6 in the 2026-07-06 project review).
     let result = tokio::task::spawn_blocking(move || {
         let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.nearest_node(lat, lon) };
-        app.with_astar_buffers(|buffers| {
-            compute_route(
-                &app.graph,
-                from_lat,
-                from_lon,
-                to_lat,
-                to_lon,
-                &app.coastline,
-                &knn,
-                buffers,
-                shore_buffer_nm,
-            )
-        })
+        let mut buffers = app.astar_pool.acquire();
+        let result = compute_route(
+            &app.graph,
+            from_lat,
+            from_lon,
+            to_lat,
+            to_lon,
+            &app.coastline,
+            &knn,
+            &mut buffers,
+            shore_buffer_nm,
+        );
+        app.astar_pool.release(buffers);
+        result
     })
     .await
     .map_err(|_| {
@@ -214,7 +215,7 @@ async fn api_key_middleware(
     let provided = req.headers().get("X-Api-Key").and_then(|v| v.to_str().ok());
 
     match provided {
-        Some(key) if key.as_bytes().ct_eq(state.api_key().as_bytes()).into() => {
+        Some(key) if key.as_bytes().ct_eq(state.api_key.as_bytes()).into() => {
             Ok(next.run(req).await)
         }
         _ => {
@@ -316,11 +317,8 @@ mod tests {
     /// Like `ready_state_with_small_graph`, but with an injected coastline
     /// (lon, lat) polyline so tests can block specific lines of sight.
     async fn ready_state_with_graph(coastline: Vec<Vec<(f32, f32)>>) -> Arc<ServerState> {
-        use crate::state::AppState;
-        use asw_core::graph::GraphBuilder;
-
         let coords = [(36.848, 28.268), (36.9, 28.3), (37.0, 28.5)];
-        let mut entries: Vec<(u64, f64, f64)> = coords
+        let entries: Vec<(u64, f64, f64)> = coords
             .iter()
             .map(|&(lat, lng)| {
                 let cell = h3o::LatLng::new(lat, lng)
@@ -329,25 +327,11 @@ mod tests {
                 (u64::from(cell), lat, lng)
             })
             .collect();
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        entries.dedup_by_key(|(h3, _, _)| *h3);
+        let mut graph = crate::state::chain_graph(&entries);
+        graph.coastline_coords = coastline;
 
-        let mut b = GraphBuilder::new();
-        b.coastline_coords = coastline;
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng, 255));
-        }
-        for i in 0..ids.len().saturating_sub(1) {
-            b.add_edge(ids[i], ids[i + 1], 1.0);
-        }
-        let graph = b.build();
-
-        let state = Arc::new(ServerState::new(
-            "test.graph".into(),
-            "secret-key-1234567890".into(),
-        ));
-        mark_ready(&state, AppState::new(graph)).await;
+        let state = test_state();
+        mark_ready(&state, crate::state::AppState::new(graph)).await;
         state
     }
 
@@ -648,33 +632,8 @@ mod tests {
         );
     }
 
-    async fn ready_state() -> Arc<ServerState> {
-        use asw_core::graph::GraphBuilder;
-        let state = test_state();
-        let coords = [(36.0, 28.0), (36.5, 28.5)];
-        let mut entries: Vec<(u64, f64, f64)> = coords
-            .iter()
-            .map(|&(lat, lng)| {
-                let cell = h3o::LatLng::new(lat, lng)
-                    .unwrap()
-                    .to_cell(h3o::Resolution::Five);
-                (u64::from(cell), lat, lng)
-            })
-            .collect();
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        let mut b = GraphBuilder::new();
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng, 255));
-        }
-        b.add_edge(ids[0], ids[1], 30.0);
-        let app = crate::state::AppState::new(b.build());
-        *state.inner.write().await = Some(Arc::new(app));
-        state
-    }
-
     async fn get_route(query: &str) -> (HyperStatus, serde_json::Value) {
-        let app = create_router(ready_state().await);
+        let app = create_router(ready_state_with_small_graph().await);
         let req = Request::get(format!("/route?{query}"))
             .header("X-Api-Key", "secret-key-1234567890")
             .body(Body::empty())

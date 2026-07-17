@@ -10,7 +10,7 @@ use crate::ssh;
 const API_BASE: &str = "https://api.hetzner.cloud/v1";
 
 /// Hetzner Cloud API client.
-pub struct HetznerClient {
+struct HetznerClient {
     token: String,
     http: reqwest::blocking::Client,
 }
@@ -27,32 +27,27 @@ struct ServerResponse {
     server: ServerInfo,
 }
 
-#[derive(Debug, Deserialize)]
-struct ServerCreateResponse {
-    server: ServerInfo,
+#[derive(Debug, Clone, Deserialize)]
+struct ServerInfo {
+    id: u64,
+    name: String,
+    status: String,
+    public_net: PublicNet,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct ServerInfo {
-    pub id: u64,
-    pub name: String,
-    pub status: String,
-    pub public_net: PublicNet,
+struct PublicNet {
+    ipv4: Option<Ipv4Info>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PublicNet {
-    pub ipv4: Option<Ipv4Info>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Ipv4Info {
-    pub ip: String,
+struct Ipv4Info {
+    ip: String,
 }
 
 impl ServerInfo {
     /// Extract IPv4 address, if available.
-    pub fn ipv4(&self) -> Option<&str> {
+    fn ipv4(&self) -> Option<&str> {
         self.public_net.ipv4.as_ref().map(|v| v.ip.as_str())
     }
 }
@@ -101,7 +96,7 @@ struct CreateSshKeyRequest {
 // ── Implementation ──────────────────────────────────────────────────────────
 
 impl HetznerClient {
-    pub fn new(token: String) -> Self {
+    fn new(token: String) -> Self {
         Self {
             token,
             http: reqwest::blocking::Client::builder()
@@ -131,7 +126,7 @@ impl HetznerClient {
     }
 
     /// Find a server by name.
-    pub fn find_server(&self, name: &str) -> Result<Option<ServerInfo>> {
+    fn find_server(&self, name: &str) -> Result<Option<ServerInfo>> {
         let resp: ServersResponse = self
             .get(&format!("/servers?name={}", name))
             .send()
@@ -171,7 +166,7 @@ impl HetznerClient {
                 .context("Failed to create server")?;
 
             if resp.status().is_success() {
-                let created: ServerCreateResponse =
+                let created: ServerResponse =
                     resp.json().context("Failed to parse create response")?;
                 info!(
                     "Server created: {} (id={})",
@@ -199,7 +194,7 @@ impl HetznerClient {
     }
 
     /// Delete a server by ID.
-    pub fn delete_server(&self, id: u64) -> Result<()> {
+    fn delete_server(&self, id: u64) -> Result<()> {
         self.delete(&format!("/servers/{}", id))
             .send()
             .context("Failed to delete server")?
@@ -208,8 +203,9 @@ impl HetznerClient {
         Ok(())
     }
 
-    /// Poll until server status is "running".
-    fn wait_for_running(&self, id: u64, timeout: Duration) -> Result<ServerInfo> {
+    /// Poll until server status is "running" (up to 120 s).
+    fn wait_for_running(&self, id: u64) -> Result<ServerInfo> {
+        let timeout = Duration::from_secs(120);
         let start = Instant::now();
         loop {
             if start.elapsed() > timeout {
@@ -234,10 +230,8 @@ impl HetznerClient {
         Ok(resp.ssh_keys)
     }
 
-    /// Create an SSH key. Reads status + body on non-2xx (rather than
-    /// discarding it via `error_for_status`) so callers can distinguish a
-    /// name-uniqueness conflict from any other failure.
-    fn create_ssh_key(&self, name: &str, pubkey: &str) -> Result<SshKeyInfo, CreateSshKeyError> {
+    /// Create an SSH key.
+    fn create_ssh_key(&self, name: &str, pubkey: &str) -> Result<SshKeyInfo> {
         let body = CreateSshKeyRequest {
             name: name.to_string(),
             public_key: pubkey.to_string(),
@@ -246,109 +240,50 @@ impl HetznerClient {
             .post("/ssh_keys")
             .json(&body)
             .send()
-            .context("Failed to create SSH key")
-            .map_err(CreateSshKeyError::Other)?;
+            .context("Failed to create SSH key")?;
 
-        if resp.status().is_success() {
-            let parsed: SshKeyResponse = resp
-                .json()
-                .context("Failed to parse SSH key response")
-                .map_err(CreateSshKeyError::Other)?;
-            return Ok(parsed.ssh_key);
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().unwrap_or_default();
+            bail!("Failed to create SSH key (HTTP {}): {}", status, text);
         }
-
-        let status = resp.status();
-        let text = resp.text().unwrap_or_default();
-        if is_uniqueness_conflict(&text) {
-            return Err(CreateSshKeyError::NameConflict { status, body: text });
-        }
-        Err(CreateSshKeyError::Other(anyhow::anyhow!(
-            "Failed to create SSH key (HTTP {}): {}",
-            status,
-            text
-        )))
+        let parsed: SshKeyResponse = resp.json().context("Failed to parse SSH key response")?;
+        Ok(parsed.ssh_key)
     }
 
     /// Find or create an SSH key from a public key file.
-    pub fn find_or_create_ssh_key(&self, pubkey_path: &Path) -> Result<u64> {
+    fn find_or_create_ssh_key(&self, pubkey_path: &Path) -> Result<u64> {
         let pubkey = std::fs::read_to_string(pubkey_path)
             .with_context(|| format!("Failed to read SSH public key: {:?}", pubkey_path))?
             .trim()
             .to_string();
 
         // Extract key data (type + base64) for comparison, ignoring comments
-        let pubkey_parts: Vec<&str> = pubkey.split_whitespace().collect();
-        let pubkey_str = pubkey.as_str();
-        let pubkey_fingerprint = pubkey_parts.get(1).unwrap_or(&pubkey_str);
+        let pubkey_fingerprint = pubkey.split_whitespace().nth(1).unwrap_or(&pubkey);
 
         let existing = self.list_ssh_keys()?;
         for key in &existing {
-            let trimmed = key.public_key.trim().to_string();
-            let parts: Vec<&str> = trimmed.split_whitespace().collect();
-            let binding = trimmed.as_str();
-            let fp = parts.get(1).unwrap_or(&binding);
+            let trimmed = key.public_key.trim();
+            let fp = trimmed.split_whitespace().nth(1).unwrap_or(trimmed);
             if fp == pubkey_fingerprint {
                 info!("SSH key already registered: {}", key.name);
                 return Ok(key.id);
             }
         }
 
-        let name = ssh_key_name(pubkey_parts.get(2).copied());
-
-        match self.create_ssh_key(&name, &pubkey) {
-            Ok(key) => {
-                info!("Uploaded SSH key: {}", key.name);
-                Ok(key.id)
-            }
-            Err(CreateSshKeyError::NameConflict { status, body }) => {
-                // The name (not the key material — that was already checked
-                // for a fingerprint match above) collides with a key
-                // registered from elsewhere. Retry with a uniquified name;
-                // never fall back to an arbitrary existing key; its material
-                // was never verified against our local public key.
-                warn!(
-                    "SSH key name '{}' already exists on the Hetzner account (HTTP {}): {} \
-                     — retrying with a unique name",
-                    name, status, body
-                );
-                let unique_name = format!("{}-{}", name, short_hash(&pubkey));
-                let key = self
-                    .create_ssh_key(&unique_name, &pubkey)
-                    .map_err(CreateSshKeyError::into_anyhow)?;
-                info!("Uploaded SSH key: {}", key.name);
-                Ok(key.id)
-            }
-            Err(CreateSshKeyError::Other(e)) => Err(e),
-        }
+        // Name includes a hash of the key material, so a stale key with the
+        // same comment registered from elsewhere can't collide on name.
+        // ponytail: 16-bit hash suffix — a 1-in-65k name collision fails the
+        // run; widen short_hash if that ever happens.
+        let name = format!(
+            "{}-{}",
+            ssh_key_name(pubkey.split_whitespace().nth(2)),
+            short_hash(&pubkey)
+        );
+        let key = self.create_ssh_key(&name, &pubkey)?;
+        info!("Uploaded SSH key: {}", key.name);
+        Ok(key.id)
     }
-}
-
-/// Error from `create_ssh_key`, distinguishing a name-uniqueness conflict
-/// (recoverable by retrying with a different name) from any other failure.
-#[derive(Debug)]
-enum CreateSshKeyError {
-    NameConflict {
-        status: reqwest::StatusCode,
-        body: String,
-    },
-    Other(anyhow::Error),
-}
-
-impl CreateSshKeyError {
-    fn into_anyhow(self) -> anyhow::Error {
-        match self {
-            CreateSshKeyError::NameConflict { status, body } => {
-                anyhow::anyhow!("Failed to create SSH key (HTTP {}): {}", status, body)
-            }
-            CreateSshKeyError::Other(e) => e,
-        }
-    }
-}
-
-/// True if a Hetzner API error body indicates a name-uniqueness conflict
-/// (the `uniqueness_error` error code), as opposed to any other failure.
-fn is_uniqueness_conflict(body: &str) -> bool {
-    body.to_lowercase().contains("uniqueness_error")
 }
 
 /// Derive an SSH key display name from the key comment (e.g. `user@host`),
@@ -389,25 +324,17 @@ pub fn provision(token: &str, ssh_key_path: &Path) -> Result<String> {
         return Ok(ip);
     }
 
-    // Find or create SSH key
+    // The public key must sit next to the private key — an arbitrary other
+    // key from ~/.ssh may not match the private key SSH will actually use.
     let pubkey_path = ssh_key_path.with_extension("pub");
-    let pubkey_file = if pubkey_path.exists() {
-        pubkey_path
-    } else {
-        // Try common public key locations
-        let ssh_dir = ssh_key_path.parent().unwrap_or(Path::new("~/.ssh"));
-        let mut found = None;
-        for name in &["id_ed25519.pub", "id_rsa.pub", "id_ecdsa.pub"] {
-            let p = ssh_dir.join(name);
-            if p.exists() {
-                found = Some(p);
-                break;
-            }
-        }
-        found.context("No SSH public key found")?
-    };
+    anyhow::ensure!(
+        pubkey_path.exists(),
+        "No public key found at {:?} (expected next to {:?})",
+        pubkey_path,
+        ssh_key_path
+    );
 
-    let ssh_key_id = client.find_or_create_ssh_key(&pubkey_file)?;
+    let ssh_key_id = client.find_or_create_ssh_key(&pubkey_path)?;
 
     // Create server
     let server = client.create_server(ssh_key_id)?;
@@ -417,11 +344,11 @@ pub fn provision(token: &str, ssh_key_path: &Path) -> Result<String> {
         .to_string();
 
     // Wait for running
-    client.wait_for_running(server.id, Duration::from_secs(120))?;
+    client.wait_for_running(server.id)?;
     info!("Server is running, waiting for SSH...");
 
     // Wait for SSH
-    ssh::wait_for_ssh(&ip, Duration::from_secs(120))?;
+    ssh::wait_for_ssh(&ip)?;
 
     // Bootstrap
     bootstrap(&ip, ssh_key_path)?;
@@ -477,15 +404,8 @@ echo "Bootstrap complete — ready for asw build"
         BOOTSTRAP_PACKAGES, REMOTE_DATA_DIR
     );
 
-    // Write script to server and execute
-    ssh::run_ssh(
-        &cfg,
-        &format!(
-            "cat > /tmp/asw-bootstrap.sh << 'BOOTSTRAP_EOF'\n{}\nBOOTSTRAP_EOF",
-            script
-        ),
-    )?;
-    ssh::run_ssh_stream(&cfg, "bash /tmp/asw-bootstrap.sh")?;
+    // root's shell on ubuntu-24.04 is bash; run the script directly.
+    ssh::run_ssh_stream(&cfg, &script)?;
 
     Ok(())
 }
@@ -527,51 +447,5 @@ mod tests {
     fn ssh_key_name_falls_back_when_no_comment() {
         assert_eq!(ssh_key_name(None), "asw-key");
         assert_eq!(ssh_key_name(Some("")), "asw-key");
-    }
-
-    // ── Finding 14: uniqueness-conflict detection + retry naming ───────────
-
-    #[test]
-    fn detects_hetzner_uniqueness_error_body() {
-        let body = r#"{"error":{"code":"uniqueness_error","message":"There is already a resource with this name"}}"#;
-        assert!(is_uniqueness_conflict(body));
-    }
-
-    #[test]
-    fn does_not_misclassify_unrelated_error_bodies() {
-        let body = r#"{"error":{"code":"invalid_input","message":"public_key is invalid"}}"#;
-        assert!(!is_uniqueness_conflict(body));
-        assert!(!is_uniqueness_conflict("Internal Server Error"));
-        assert!(!is_uniqueness_conflict(""));
-    }
-
-    #[test]
-    fn uniqueness_conflict_matching_is_case_insensitive() {
-        let body = r#"{"error":{"code":"UNIQUENESS_ERROR","message":"dup"}}"#;
-        assert!(is_uniqueness_conflict(body));
-    }
-
-    #[test]
-    fn short_hash_is_deterministic_and_differs_by_input() {
-        let a = short_hash("ssh-ed25519 AAAAC3...key-a");
-        let b = short_hash("ssh-ed25519 AAAAC3...key-a");
-        let c = short_hash("ssh-ed25519 AAAAC3...key-b");
-        assert_eq!(a, b, "same input must hash the same way");
-        assert_ne!(a, c, "different input should (almost always) differ");
-    }
-
-    #[test]
-    fn retry_name_is_uniquified_and_stable_for_same_key() {
-        // Mirrors the retry construction in find_or_create_ssh_key: base name
-        // plus a short hash of the key material, so a retry after a name
-        // collision never reuses the exact same colliding name, and never
-        // needs to fall back to an arbitrary existing key.
-        let base = ssh_key_name(Some("ivan@laptop"));
-        let pubkey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA ivan@laptop";
-        let retry_name = format!("{}-{}", base, short_hash(pubkey));
-        assert_ne!(retry_name, base);
-        assert!(retry_name.starts_with(&base));
-        // Deterministic for the same key material.
-        assert_eq!(retry_name, format!("{}-{}", base, short_hash(pubkey)));
     }
 }

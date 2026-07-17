@@ -1,7 +1,6 @@
 /// Hetzner server configuration.
 pub const HETZNER_SERVER_TYPE: &str = "ccx53";
 pub const HETZNER_IMAGE: &str = "ubuntu-24.04";
-pub const HETZNER_LOCATION: &str = "nbg1";
 pub const HETZNER_SERVER_NAME: &str = "asw-builder";
 
 /// Location fallback order.
@@ -20,17 +19,12 @@ pub const LAND_POLYGONS_URL: &str =
 pub const BOOTSTRAP_PACKAGES: &str =
     "wget unzip curl build-essential pkg-config libssl-dev osmium-tool";
 
-/// Bounding box presets: (min_lon, min_lat, max_lon, max_lat).
-pub const DEV_BBOX: (f64, f64, f64, f64) = (-5.0, 48.0, 10.0, 62.0);
-pub const DEV_BBOX_SMALL: (f64, f64, f64, f64) = (-1.0, 50.0, 3.0, 52.0);
-pub const DEV_BBOX_MARMARIS: (f64, f64, f64, f64) = (27.5, 36.0, 30.0, 37.0);
-
-/// Resolve a bbox preset name to coordinates.
+/// Resolve a bbox preset name to (min_lon, min_lat, max_lon, max_lat).
 pub fn resolve_bbox(name: &str) -> Option<(f64, f64, f64, f64)> {
     match name {
-        "dev" => Some(DEV_BBOX),
-        "dev-small" => Some(DEV_BBOX_SMALL),
-        "marmaris" => Some(DEV_BBOX_MARMARIS),
+        "dev" => Some((-5.0, 48.0, 10.0, 62.0)),
+        "dev-small" => Some((-1.0, 50.0, 3.0, 52.0)),
+        "marmaris" => Some((27.5, 36.0, 30.0, 37.0)),
         _ => None,
     }
 }

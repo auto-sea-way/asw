@@ -12,7 +12,7 @@ use crate::shapefile::Bbox;
 /// Run the full build pipeline.
 pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()> {
     // Step 1: Load land polygons
-    let mut land = crate::shapefile::load_land_polygons(shp_path, None)?;
+    let mut land = crate::shapefile::load_land_polygons(shp_path)?;
     info!("Land index: {} polygons", land.polygon_count());
 
     // Step 1b: Extract canal water and subtract from land

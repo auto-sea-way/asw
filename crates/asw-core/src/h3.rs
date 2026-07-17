@@ -1,4 +1,4 @@
-use h3o::{CellIndex, LatLng, Resolution};
+use h3o::{CellIndex, LatLng};
 
 /// Get the center coordinates of an H3 cell as (lat, lon) in degrees.
 pub fn cell_center(cell: CellIndex) -> (f64, f64) {
@@ -9,27 +9,6 @@ pub fn cell_center(cell: CellIndex) -> (f64, f64) {
 /// Get all neighbor cells at distance 1 (the 6 immediate neighbors).
 pub fn neighbors(cell: CellIndex) -> Vec<CellIndex> {
     cell.grid_ring::<Vec<_>>(1)
-}
-
-/// Get the parent of a cell at the given resolution.
-pub fn parent(cell: CellIndex, res: Resolution) -> Option<CellIndex> {
-    cell.parent(res)
-}
-
-/// Get all children of a cell at the given resolution.
-pub fn children(cell: CellIndex, res: Resolution) -> Vec<CellIndex> {
-    cell.children(res).collect()
-}
-
-/// Convert (lat, lon) degrees to the nearest H3 cell at given resolution.
-pub fn lat_lng_to_cell(lat: f64, lng: f64, res: Resolution) -> Option<CellIndex> {
-    let ll = LatLng::new(lat, lng).ok()?;
-    Some(ll.to_cell(res))
-}
-
-/// Get the resolution of a cell.
-pub fn resolution(cell: CellIndex) -> u8 {
-    cell.resolution() as u8
 }
 
 /// Get the boundary vertices of an H3 cell as Vec<(lat, lon)> in degrees.
@@ -90,6 +69,7 @@ pub fn haversine_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use h3o::Resolution;
 
     #[test]
     fn haversine_zero_distance() {

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use asw_core::geo_index::{LandIndex, LandPolygon};
-use geo::{Coord, LineString, Polygon};
+use geo::{BoundingRect, Coord, LineString, Polygon};
 use indicatif::{ProgressBar, ProgressStyle};
 use shapefile::PolygonRing;
 use std::io::{Read, Seek};
@@ -26,29 +26,22 @@ fn find_shp_files(dir: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Load polygons from a single shapefile into the provided vec.
-fn load_polygons_from_file(
-    shp_path: &Path,
-    bbox: Option<Bbox>,
-    polygons: &mut Vec<LandPolygon>,
-) -> Result<()> {
+fn load_polygons_from_file(shp_path: &Path, polygons: &mut Vec<LandPolygon>) -> Result<()> {
     let shapes = shapefile::read_shapes_as::<_, shapefile::Polygon>(shp_path)
         .with_context(|| format!("Failed to read shapefile {:?}", shp_path))?;
     for shp_poly in shapes {
         for poly in convert_shapefile_polygon(&shp_poly) {
-            if let Some(bb) = bbox {
-                if !polygon_intersects_bbox(&poly, bb) {
-                    continue;
-                }
-            }
             polygons.push(LandPolygon::new(poly));
         }
     }
     Ok(())
 }
 
-/// Load land polygons from a shapefile or directory of shapefiles, optionally filtered by bbox.
+/// Load land polygons from a shapefile or directory of shapefiles.
 /// Returns a LandIndex (R-tree) for point-in-water queries (inverted: not-in-land = water).
-pub fn load_land_polygons(shp_path: &Path, bbox: Option<Bbox>) -> Result<LandIndex> {
+/// Never bbox-filtered: low-resolution H3 cells extend far beyond any build bbox,
+/// and the R-tree handles spatial queries efficiently.
+pub fn load_land_polygons(shp_path: &Path) -> Result<LandIndex> {
     let mut polygons = Vec::new();
 
     if shp_path.is_dir() {
@@ -65,72 +58,17 @@ pub fn load_land_polygons(shp_path: &Path, bbox: Option<Bbox>) -> Result<LandInd
                 .unwrap(),
         );
         for f in &shp_files {
-            load_polygons_from_file(f, bbox, &mut polygons)?;
+            load_polygons_from_file(f, &mut polygons)?;
             pb.inc(1);
         }
         pb.finish_with_message("done");
     } else {
         info!("Loading land polygons from {:?}", shp_path);
-        let shapes = shapefile::read_shapes_as::<_, shapefile::Polygon>(shp_path)
-            .context("Failed to read shapefile")?;
-        let pb = ProgressBar::new(shapes.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40} {pos}/{len} polygons")
-                .unwrap(),
-        );
-        for shp_poly in shapes {
-            pb.inc(1);
-            for poly in convert_shapefile_polygon(&shp_poly) {
-                if let Some(bb) = bbox {
-                    if !polygon_intersects_bbox(&poly, bb) {
-                        continue;
-                    }
-                }
-                polygons.push(LandPolygon::new(poly));
-            }
-        }
-        pb.finish_with_message("done");
+        load_polygons_from_file(shp_path, &mut polygons)?;
     }
 
     info!("Loaded {} land polygons", polygons.len());
     Ok(LandIndex::new(polygons))
-}
-
-/// Load raw geo::Polygons from a shapefile or directory of shapefiles (for coastline extraction).
-pub fn load_raw_polygons(shp_path: &Path, bbox: Option<Bbox>) -> Result<Vec<Polygon<f64>>> {
-    let mut polygons = Vec::new();
-
-    if shp_path.is_dir() {
-        let shp_files = find_shp_files(shp_path)?;
-        for f in &shp_files {
-            load_raw_from_file(f, bbox, &mut polygons)?;
-        }
-    } else {
-        load_raw_from_file(shp_path, bbox, &mut polygons)?;
-    }
-
-    Ok(polygons)
-}
-
-fn load_raw_from_file(
-    shp_path: &Path,
-    bbox: Option<Bbox>,
-    polygons: &mut Vec<Polygon<f64>>,
-) -> Result<()> {
-    let shapes = shapefile::read_shapes_as::<_, shapefile::Polygon>(shp_path)
-        .with_context(|| format!("Failed to read shapefile {:?}", shp_path))?;
-    for shp_poly in shapes {
-        for poly in convert_shapefile_polygon(&shp_poly) {
-            if let Some(bb) = bbox {
-                if !polygon_intersects_bbox(&poly, bb) {
-                    continue;
-                }
-            }
-            polygons.push(poly);
-        }
-    }
-    Ok(())
 }
 
 /// Convert a shapefile polygon into geo::Polygons.
@@ -172,17 +110,10 @@ fn convert_shapefile_polygon(shp_poly: &shapefile::Polygon) -> Vec<Polygon<f64>>
 
 pub fn polygon_intersects_bbox(poly: &Polygon<f64>, bbox: Bbox) -> bool {
     let (min_lon, min_lat, max_lon, max_lat) = bbox;
-    let mut p_min_x = f64::MAX;
-    let mut p_min_y = f64::MAX;
-    let mut p_max_x = f64::MIN;
-    let mut p_max_y = f64::MIN;
-    for coord in poly.exterior().coords() {
-        p_min_x = p_min_x.min(coord.x);
-        p_min_y = p_min_y.min(coord.y);
-        p_max_x = p_max_x.max(coord.x);
-        p_max_y = p_max_y.max(coord.y);
-    }
-    !(p_max_x < min_lon || p_min_x > max_lon || p_max_y < min_lat || p_min_y > max_lat)
+    let Some(r) = poly.bounding_rect() else {
+        return false;
+    };
+    !(r.max().x < min_lon || r.min().x > max_lon || r.max().y < min_lat || r.min().y > max_lat)
 }
 
 /// Download and extract the land polygons shapefile.

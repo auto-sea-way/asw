@@ -470,7 +470,7 @@ fn coastline_feature_string(seg: &[(f32, f32)]) -> String {
 }
 
 /// Write a GeoJSON FeatureCollection to the given path from pre-built feature strings.
-fn write_feature_collection(path: &Path, features: &[String]) -> Result<()> {
+fn write_feature_collection<S: AsRef<str>>(path: &Path, features: &[S]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -483,7 +483,7 @@ fn write_feature_collection(path: &Path, features: &[String]) -> Result<()> {
         if i > 0 {
             write!(out, ",")?;
         }
-        write!(out, "{}", feat)?;
+        write!(out, "{}", feat.as_ref())?;
     }
     write!(out, "]}}")?;
     out.flush()?;
@@ -510,11 +510,8 @@ fn export_geojson(
         std::fs::create_dir_all(parent)?;
     }
 
-    // Collect features by layer: hex-res-0 through hex-res-15, coastline
-    // Index 0..=15 for hex resolutions, 16 for coastline
-    const LAYER_COASTLINE: usize = 16;
-    const NUM_LAYERS: usize = 17;
-    let mut layers: Vec<Vec<String>> = vec![Vec::new(); NUM_LAYERS];
+    let mut hex_features: Vec<String> = Vec::new();
+    let mut coastline_features: Vec<String> = Vec::new();
 
     // Hex polygons
     let mut hex_count: u64 = 0;
@@ -542,7 +539,7 @@ fn export_geojson(
         };
 
         let feat = hex_feature_string(&boundary, res, color);
-        layers[res as usize].push(feat);
+        hex_features.push(feat);
 
         hex_count += 1;
         if hex_count.is_multiple_of(1_000_000) {
@@ -570,7 +567,7 @@ fn export_geojson(
             }
 
             let feat = coastline_feature_string(seg);
-            layers[LAYER_COASTLINE].push(feat);
+            coastline_features.push(feat);
         }
     }
 
@@ -582,11 +579,7 @@ fn export_geojson(
         .to_string();
     let parent = output.parent().unwrap_or(Path::new("."));
 
-    // Write layer files: hexagons (all resolutions combined), passages, coastline
-    let mut hex_features: Vec<String> = Vec::new();
-    for layer in layers.iter_mut().take(16) {
-        hex_features.append(layer);
-    }
+    // Write layer files: hexagons, coastline
     if !hex_features.is_empty() {
         let hex_path = parent.join(format!("{}-hexagons.geojson", stem));
         write_feature_collection(&hex_path, &hex_features)?;
@@ -599,14 +592,14 @@ fn export_geojson(
         );
     }
 
-    if !layers[LAYER_COASTLINE].is_empty() {
+    if !coastline_features.is_empty() {
         let coastline_path = parent.join(format!("{}-coastline.geojson", stem));
-        write_feature_collection(&coastline_path, &layers[LAYER_COASTLINE])?;
+        write_feature_collection(&coastline_path, &coastline_features)?;
         let size = std::fs::metadata(&coastline_path)?.len();
         info!(
             "  Layer {:?}: {} features, {:.1} MB",
             coastline_path,
-            layers[LAYER_COASTLINE].len(),
+            coastline_features.len(),
             size as f64 / 1_000_000.0
         );
     }
@@ -614,23 +607,9 @@ fn export_geojson(
     // Write combined file (all features in one FeatureCollection)
     let all_features: Vec<&String> = hex_features
         .iter()
-        .chain(layers[LAYER_COASTLINE].iter())
+        .chain(coastline_features.iter())
         .collect();
-
-    {
-        let mut out = std::io::BufWriter::new(
-            std::fs::File::create(output).context("Failed to create combined GeoJSON file")?,
-        );
-        write!(out, r#"{{"type":"FeatureCollection","features":["#)?;
-        for (i, feat) in all_features.iter().enumerate() {
-            if i > 0 {
-                write!(out, ",")?;
-            }
-            write!(out, "{}", feat)?;
-        }
-        write!(out, "]}}")?;
-        out.flush()?;
-    }
+    write_feature_collection(output, &all_features)?;
 
     let total_features = all_features.len();
     let file_size = std::fs::metadata(output)?.len();

@@ -113,11 +113,6 @@ impl AstarPool {
         }
     }
 
-    /// The pool's configured capacity (buffer sets retained at steady state).
-    pub fn capacity(&self) -> usize {
-        self.capacity
-    }
-
     /// Acquire a buffer set. If the pool is empty, allocates a new one.
     pub fn acquire(&self) -> AstarBuffers {
         let mut pool = self.buffers.lock().expect("pool lock poisoned");
@@ -260,7 +255,6 @@ mod tests {
     #[test]
     fn pool_release_beyond_capacity_drops_buffer() {
         let pool = AstarPool::new(50, 2);
-        assert_eq!(pool.capacity(), 2);
 
         // Drain the pool, then acquire a third buffer set — since the pool is
         // empty, `acquire()` allocates a fresh one beyond the configured
