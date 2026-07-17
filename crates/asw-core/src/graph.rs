@@ -276,18 +276,6 @@ impl RoutingGraph {
         (ll.lat(), ll.lng())
     }
 
-    /// Connected components via union-find. Returns sorted component sizes (largest first).
-    pub fn connected_components(&self) -> Vec<usize> {
-        let labels = self.component_labels();
-        let mut comp_sizes = std::collections::HashMap::new();
-        for &root in &labels {
-            *comp_sizes.entry(root).or_insert(0usize) += 1;
-        }
-        let mut sizes: Vec<usize> = comp_sizes.values().copied().collect();
-        sizes.sort_unstable_by(|a, b| b.cmp(a));
-        sizes
-    }
-
     /// Drop coastline coordinate data to free memory after it has been
     /// used to build the CoastlineIndex.
     pub fn drop_coastline_coords(&mut self) {
@@ -482,62 +470,6 @@ mod tests {
             assert!((-90.0..=90.0).contains(&lat), "lat out of range: {}", lat);
             assert!((-180.0..=180.0).contains(&lng), "lng out of range: {}", lng);
         }
-    }
-
-    #[test]
-    fn graph_connected_components_single() {
-        let g = square_graph();
-        let components = g.connected_components();
-        assert_eq!(components.len(), 1);
-        assert_eq!(components[0], 4);
-    }
-
-    #[test]
-    fn graph_connected_components_isolated() {
-        let c0 = h3o::LatLng::new(0.0, 0.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(0.0, 1.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let c2 = h3o::LatLng::new(1.0, 0.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let c3 = h3o::LatLng::new(1.0, 1.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-
-        let mut cells: Vec<(u64, f64, f64)> = vec![
-            (u64::from(c0), 0.0, 0.0),
-            (u64::from(c1), 0.0, 1.0),
-            (u64::from(c2), 1.0, 0.0),
-            (u64::from(c3), 1.0, 1.0),
-        ];
-        cells.sort_by_key(|(h3, _, _)| *h3);
-
-        let mut b = GraphBuilder::new();
-        for (h3, lat, lng) in &cells {
-            b.add_node(*h3, *lat, *lng, 255);
-        }
-
-        let idx_of = |target_h3: u64| -> u32 {
-            cells
-                .iter()
-                .position(|(h3, _, _)| *h3 == target_h3)
-                .unwrap() as u32
-        };
-
-        let n0 = idx_of(u64::from(c0));
-        let n1 = idx_of(u64::from(c1));
-        let n2 = idx_of(u64::from(c2));
-        let n3 = idx_of(u64::from(c3));
-
-        b.add_edge(n0, n1, 1.0);
-        b.add_edge(n2, n3, 1.0);
-        let g = b.build();
-        let mut components = g.connected_components();
-        components.sort();
-        assert_eq!(components, vec![2, 2]);
     }
 
     #[test]

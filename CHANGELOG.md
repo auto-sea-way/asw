@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- Dead code found by a repo-wide audit (~850 lines, no behavior change — verified against `main` with a planet-graph benchmark: identical distances and hop counts on all 20 routes):
+  - `asw_core::routing::smooth` (superseded by `smooth_indices`), `RoutingGraph::connected_components`, `AstarPool::capacity`, the `graph_compare` example, and thin `h3` wrappers (`parent`, `children`, `resolution`, `lat_lng_to_cell`)
+  - `Passage.zone_resolution` — all passages use resolution 5; replaced by the `ZONE_RESOLUTION` const
+  - `load_raw_polygons` (no callers) and the load-time bbox filter on `load_land_polygons` (documented footgun, only ever called with `None`)
+  - asw-cloud: SSH-key name-conflict retry machinery (key names now include a hash of the key material, so the conflict cannot occur), the string-keyed step-dispatch table (replaced by a linear step sequence), the `~/.ssh` pubkey fallback scan (the `.pub` must sit next to the private key), `SshConfig.user` (always root), and assorted dead constants
+  - Unused dependencies: `sha2` and `serde_json` (asw-cloud), `geojson` (asw-core), `geojson` and `anyhow` (asw-serve), `geo-types` (asw-core, asw-build, and the workspace — no crate imports it directly; the types come via `geo`); `tokio` trimmed from `full` to the used features
+  - `asw-serve` stub binary (the crate is a library; the binary is `asw`)
+
+### Changed
+
+- Bench timestamps use the `time` crate instead of hand-rolled calendar math; bench timings are sorted once per route instead of on every stat call
+- Hand-rolled bounding-box code replaced with geo's `BoundingRect` (load/build time only; the hot-path point-to-segment distance stays hand-rolled — geo's `hypot`-based version measured +9-30% p50 on short-route benches)
+
 ## [0.6.1] - 2026-07-08
 
 ### Added

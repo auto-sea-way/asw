@@ -8,7 +8,6 @@ license = "MIT OR Apache-2.0"
 asw-core = { path = "../asw-core" }
 h3o.workspace = true
 geo.workspace = true
-geo-types.workspace = true
 geojson.workspace = true
 rstar.workspace = true
 rayon.workspace = true

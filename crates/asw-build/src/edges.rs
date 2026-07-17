@@ -1,6 +1,6 @@
 use anyhow::Result;
 use asw_core::geo_index::LandIndex;
-use asw_core::h3::{cell_center, haversine_nm, neighbors, parent, resolution};
+use asw_core::h3::{cell_center, haversine_nm, neighbors};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
 use h3o::{CellIndex, Resolution};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -28,12 +28,12 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
         .par_iter()
         .flat_map(|&(cell, src_id)| {
             pb.inc(1);
-            let cell_res = resolution(cell);
+            let cell_res = cell.resolution();
             let (src_lat, src_lon) = cell_center(cell);
             let mut edges = Vec::new();
 
             for neighbor in neighbors(cell) {
-                if resolution(neighbor) == cell_res {
+                if neighbor.resolution() == cell_res {
                     if let Some(&dst_id) = cells.get(&neighbor) {
                         if src_id < dst_id {
                             let (dst_lat, dst_lon) = cell_center(neighbor);
@@ -53,7 +53,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     // Derive max resolution from actual cells (may exceed H3_RES_LEAF due to corridor cells)
     let max_res = cell_list
         .iter()
-        .map(|(c, _)| resolution(*c))
+        .map(|(c, _)| u8::from(c.resolution()))
         .max()
         .unwrap_or(H3_RES_LEAF);
     let cross_res_pairs: Vec<(u8, u8)> = (H3_RES_BASE..max_res)
@@ -66,10 +66,11 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     for (fine_res, coarse_res) in &cross_res_pairs {
         let coarse_resolution =
             Resolution::try_from(*coarse_res).expect("invalid coarse resolution");
+        let fine_resolution = Resolution::try_from(*fine_res).expect("invalid fine resolution");
 
         let fine_cells: Vec<(CellIndex, u32)> = cell_list
             .iter()
-            .filter(|(c, _)| resolution(*c) == *fine_res)
+            .filter(|(c, _)| c.resolution() == fine_resolution)
             .copied()
             .collect();
 
@@ -98,12 +99,16 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
                 let mut edges = Vec::new();
                 let (src_lat, src_lon) = cell_center(cell);
 
-                if let Some(parent_cell) = parent(cell, coarse_resolution) {
-                    // Connect to parent's neighbors if they exist at coarse resolution
-                    for parent_neighbor in neighbors(parent_cell) {
-                        if let Some(&dst_id) = cells.get(&parent_neighbor) {
-                            if resolution(parent_neighbor) == *coarse_res {
-                                let (dst_lat, dst_lon) = cell_center(parent_neighbor);
+                if let Some(parent_cell) = cell.parent(coarse_resolution) {
+                    // Connect to the parent itself and its neighbors, where
+                    // they exist in our set at coarse resolution.
+                    for target in neighbors(parent_cell)
+                        .into_iter()
+                        .chain(std::iter::once(parent_cell))
+                    {
+                        if let Some(&dst_id) = cells.get(&target) {
+                            if target.resolution() == coarse_resolution {
+                                let (dst_lat, dst_lon) = cell_center(target);
                                 let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
                                 let (a, b) = if src_id < dst_id {
                                     (src_id, dst_id)
@@ -112,20 +117,6 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
                                 };
                                 edges.push((a, b, cost));
                             }
-                        }
-                    }
-
-                    // Connect to the parent itself if it exists in our set
-                    if let Some(&dst_id) = cells.get(&parent_cell) {
-                        if resolution(parent_cell) == *coarse_res {
-                            let (dst_lat, dst_lon) = cell_center(parent_cell);
-                            let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
-                            let (a, b) = if src_id < dst_id {
-                                (src_id, dst_id)
-                            } else {
-                                (dst_id, src_id)
-                            };
-                            edges.push((a, b, cost));
                         }
                     }
                 }

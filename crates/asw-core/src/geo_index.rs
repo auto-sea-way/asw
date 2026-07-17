@@ -1,5 +1,7 @@
 use geo::algorithm::bool_ops::BooleanOps;
-use geo::{Contains, Coord, Intersects, Line, LineString, MultiPolygon, Point, Polygon};
+use geo::{
+    BoundingRect, Contains, Coord, Intersects, Line, LineString, MultiPolygon, Point, Polygon,
+};
 use rayon::prelude::*;
 use rstar::{Envelope, RTree, RTreeObject, AABB};
 use tracing::info;
@@ -287,7 +289,7 @@ impl CoastlineIndex {
     /// query with `lon` shifted by +-360 into the same frame as the segments on
     /// the far side of the seam — shifting the query point (rather than the
     /// stored segments) keeps the point and the matched segment in one
-    /// consistent longitude frame, so `point_to_segment_dist`'s planar (non-wrap)
+    /// consistent longitude frame, so the planar (non-wrap) point-to-segment
     /// math measures the true short-way-around distance.
     pub fn min_distance_deg(&self, lon: f64, lat: f64, radius_deg: f64) -> f64 {
         with_wrap_retry(lon, lon, radius_deg, |shift| {
@@ -508,18 +510,10 @@ fn shift_polygon(poly: &Polygon<f64>, dx: f64) -> Polygon<f64> {
     Polygon::new(LineString::new(shifted), vec![])
 }
 
+/// Rect→AABB-corners adapter over geo's `BoundingRect`.
 fn bounding_rect(poly: &Polygon<f64>) -> ([f64; 2], [f64; 2]) {
-    let mut min_x = f64::MAX;
-    let mut min_y = f64::MAX;
-    let mut max_x = f64::MIN;
-    let mut max_y = f64::MIN;
-    for coord in poly.exterior().coords() {
-        min_x = min_x.min(coord.x);
-        min_y = min_y.min(coord.y);
-        max_x = max_x.max(coord.x);
-        max_y = max_y.max(coord.y);
-    }
-    ([min_x, min_y], [max_x, max_y])
+    let r = poly.bounding_rect().expect("non-empty polygon");
+    ([r.min().x, r.min().y], [r.max().x, r.max().y])
 }
 
 /// cos(lat) clamped away from zero for degree->nm longitude scaling near poles.
@@ -566,6 +560,11 @@ fn nm_frame(c: Coord<f64>, ref_lon: f64, ref_lat: f64, coslat: f64) -> Coord<f64
 }
 
 /// Distance from point `p` to the closest point on segment `a`-`b` (in coordinate units).
+///
+/// Hand-rolled on purpose: geo's `Euclidean.distance(coord, &line)` computes
+/// lengths via `hypot` (overflow-safe but several times slower than plain
+/// `sqrt`), and this runs in the innermost loop of every coastline distance
+/// query — swapping it in measured +9-30% p50 on short-route benches.
 fn point_to_segment_dist(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
@@ -585,18 +584,10 @@ fn point_to_segment_dist(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
     (ex * ex + ey * ey).sqrt()
 }
 
+/// Rect→AABB-corners adapter over geo's `BoundingRect`.
 fn line_bounding_rect(ls: &LineString<f64>) -> ([f64; 2], [f64; 2]) {
-    let mut min_x = f64::MAX;
-    let mut min_y = f64::MAX;
-    let mut max_x = f64::MIN;
-    let mut max_y = f64::MIN;
-    for coord in ls.coords() {
-        min_x = min_x.min(coord.x);
-        min_y = min_y.min(coord.y);
-        max_x = max_x.max(coord.x);
-        max_y = max_y.max(coord.y);
-    }
-    ([min_x, min_y], [max_x, max_y])
+    let r = ls.bounding_rect().expect("non-empty line");
+    ([r.min().x, r.min().y], [r.max().x, r.max().y])
 }
 
 #[cfg(test)]

@@ -64,27 +64,22 @@ struct RouteStats {
 }
 
 impl RouteStats {
-    fn sorted_timings(&self) -> Vec<u64> {
-        let mut t = self.timings_us.clone();
-        t.sort_unstable();
-        t
-    }
-
+    // `timings_us` is sorted once in `run_benchmark`.
     fn min_us(&self) -> u64 {
-        *self.timings_us.iter().min().unwrap_or(&0)
+        self.timings_us.first().copied().unwrap_or(0)
     }
 
     fn max_us(&self) -> u64 {
-        *self.timings_us.iter().max().unwrap_or(&0)
+        self.timings_us.last().copied().unwrap_or(0)
     }
 
     fn percentile(&self, p: f64) -> u64 {
-        let sorted = self.sorted_timings();
-        if sorted.is_empty() {
+        if self.timings_us.is_empty() {
             return 0;
         }
-        let idx = ((sorted.len() as f64 * p / 100.0) as usize).min(sorted.len() - 1);
-        sorted[idx]
+        let idx =
+            ((self.timings_us.len() as f64 * p / 100.0) as usize).min(self.timings_us.len() - 1);
+        self.timings_us[idx]
     }
 
     fn p50_us(&self) -> u64 {
@@ -291,6 +286,7 @@ fn run_benchmark(
                 );
                 timings_us.push(start.elapsed().as_micros() as u64);
             }
+            timings_us.sort_unstable();
 
             RouteStats {
                 name: route.name.clone(),
@@ -356,7 +352,7 @@ fn build_result(
             file: graph_path.to_string(),
         },
         commit: git_commit(),
-        timestamp: chrono_now(),
+        timestamp: now_iso8601(),
         iterations,
         shore_buffer_nm,
         routes: stats
@@ -375,68 +371,13 @@ fn build_result(
     }
 }
 
-/// ISO 8601 timestamp without pulling in chrono.
-fn chrono_now() -> String {
-    // Use system time
-    let now = std::time::SystemTime::now();
-    let duration = now
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-
-    // Simple UTC conversion
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let minutes = (time_secs % 3600) / 60;
-    let seconds = time_secs % 60;
-
-    // Days since epoch to Y-M-D (simplified)
-    let mut y = 1970i64;
-    let mut remaining_days = days as i64;
-
-    loop {
-        let days_in_year = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-            366
-        } else {
-            365
-        };
-        if remaining_days < days_in_year {
-            break;
-        }
-        remaining_days -= days_in_year;
-        y += 1;
-    }
-
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let month_days = [
-        31,
-        if leap { 29 } else { 28 },
-        31,
-        30,
-        31,
-        30,
-        31,
-        31,
-        30,
-        31,
-        30,
-        31,
-    ];
-    let mut m = 0;
-    for (i, &md) in month_days.iter().enumerate() {
-        if remaining_days < md as i64 {
-            m = i + 1;
-            break;
-        }
-        remaining_days -= md as i64;
-    }
-    let d = remaining_days + 1;
-
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        y, m, d, hours, minutes, seconds
-    )
+/// ISO 8601 timestamp (UTC), e.g. "2026-07-17T12:34:56Z".
+fn now_iso8601() -> String {
+    time::OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .expect("0 is a valid nanosecond")
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("RFC 3339 formatting of a UTC timestamp cannot fail")
 }
 
 /// Print comparison table between current and baseline results.
@@ -521,12 +462,37 @@ fn print_comparison(current: &BenchResult, baseline: &BenchResult) -> bool {
     has_regression && !buffer_mismatch
 }
 
+/// Append a markdown results table for `rows` under `title` (no-op when empty).
+fn push_table(md: &mut String, title: &str, rows: &[&RouteStats]) {
+    if rows.is_empty() {
+        return;
+    }
+    md.push_str(&format!("## {}\n\n", title));
+    md.push_str("| Route | Distance | Min | P50 | P95 | Max | Hops |\n");
+    md.push_str("|-------|----------|-----|-----|-----|-----|------|\n");
+    for s in rows {
+        md.push_str(&format!(
+            "| {} | {:.1}nm | {} | {} | {} | {} | {}>{} |\n",
+            s.name,
+            s.distance_nm,
+            format_time(s.min_us()),
+            format_time(s.p50_us()),
+            format_time(s.p95_us()),
+            format_time(s.max_us()),
+            s.raw_hops,
+            s.smooth_hops,
+        ));
+    }
+    md.push('\n');
+}
+
 /// Write markdown benchmark results to `benchmarks/BENCHMARKS.md`.
 fn write_markdown(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize) -> Result<()> {
     std::fs::create_dir_all("benchmarks")?;
 
     let commit = git_commit();
-    let date = &chrono_now()[..10]; // YYYY-MM-DD
+    let timestamp = now_iso8601();
+    let date = &timestamp[..10]; // YYYY-MM-DD
 
     let sailing: Vec<&RouteStats> = stats.iter().filter(|s| !s.is_passage).collect();
     let passages: Vec<&RouteStats> = stats.iter().filter(|s| s.is_passage).collect();
@@ -543,47 +509,8 @@ fn write_markdown(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize)
         commit, date, iterations
     ));
 
-    // Sailing routes section
-    if !sailing.is_empty() {
-        md.push_str("## Sailing Routes\n\n");
-        md.push_str("| Route | Distance | Min | P50 | P95 | Max | Hops |\n");
-        md.push_str("|-------|----------|-----|-----|-----|-----|------|\n");
-        for s in &sailing {
-            md.push_str(&format!(
-                "| {} | {:.1}nm | {} | {} | {} | {} | {}>{} |\n",
-                s.name,
-                s.distance_nm,
-                format_time(s.min_us()),
-                format_time(s.p50_us()),
-                format_time(s.p95_us()),
-                format_time(s.max_us()),
-                s.raw_hops,
-                s.smooth_hops,
-            ));
-        }
-        md.push('\n');
-    }
-
-    // Passage transits section
-    if !passages.is_empty() {
-        md.push_str("## Passage Transits\n\n");
-        md.push_str("| Route | Distance | Min | P50 | P95 | Max | Hops |\n");
-        md.push_str("|-------|----------|-----|-----|-----|-----|------|\n");
-        for s in &passages {
-            md.push_str(&format!(
-                "| {} | {:.1}nm | {} | {} | {} | {} | {}>{} |\n",
-                s.name,
-                s.distance_nm,
-                format_time(s.min_us()),
-                format_time(s.p50_us()),
-                format_time(s.p95_us()),
-                format_time(s.max_us()),
-                s.raw_hops,
-                s.smooth_hops,
-            ));
-        }
-        md.push('\n');
-    }
+    push_table(&mut md, "Sailing Routes", &sailing);
+    push_table(&mut md, "Passage Transits", &passages);
 
     md.push_str("*Generated by `asw bench`*\n");
 

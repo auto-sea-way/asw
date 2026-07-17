@@ -146,7 +146,7 @@ pub fn astar(
 }
 
 /// Sparse table for O(1) range-minimum queries over a fixed `u8` slice.
-/// Built once (O(n log n)) and queried O(1) per anchor in `smooth()`,
+/// Built once (O(n log n)) and queried O(1) per anchor in `smooth_indices()`,
 /// replacing an O(n) running-min rebuild per anchor (worst case O(n^2)
 /// across the whole smoothing pass for long, twisty raw paths).
 struct RangeMin {
@@ -193,30 +193,6 @@ impl RangeMin {
 pub struct SmoothResult {
     pub kept: Vec<usize>,
     pub land_segs: Vec<usize>,
-}
-
-/// Greedy line-of-sight smoothing over a node path (see `smooth_indices`,
-/// which this delegates to after decoding node positions and shore
-/// distances).
-pub fn smooth(
-    graph: &RoutingGraph,
-    path: &[u32],
-    coastline: &CoastlineIndex,
-    shore_buffer_nm: f64,
-) -> Vec<u32> {
-    let coords: Vec<[f64; 2]> = path
-        .iter()
-        .map(|&n| {
-            let (lat, lon) = graph.node_pos(n);
-            [lon, lat]
-        })
-        .collect();
-    let shore_dist: Vec<u8> = path.iter().map(|&n| graph.shore_dist[n as usize]).collect();
-    smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm)
-        .kept
-        .into_iter()
-        .map(|i| path[i])
-        .collect()
 }
 
 /// Greedy line-of-sight smoothing over raw `[lon, lat]` coordinates.
@@ -744,69 +720,6 @@ mod tests {
         let with = astar(&g, node_a, node_d, &mut b2, ShorePenalty::from_nm(0.2)).unwrap();
         assert_eq!(plain.0, with.0);
         assert!((plain.1 - with.1).abs() < 1e-6);
-    }
-
-    /// Coastline at lon 28.0 (lat 36.45..36.55) and a 3-node dogleg around it.
-    /// Direct P0->P2 passes ~2.4 nm off the coast; the dogleg via P1 ~7 nm.
-    fn dogleg() -> (RoutingGraph, CoastlineIndex, Vec<u32>) {
-        dogleg_with_shore(&[255, 255, 255])
-    }
-
-    fn dogleg_with_shore(shore_q: &[u8; 3]) -> (RoutingGraph, CoastlineIndex, Vec<u32>) {
-        use geo::LineString;
-        let coastline = CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(
-            LineString::from(vec![(28.0, 36.45), (28.0, 36.55)]),
-        )]);
-
-        let coords = [(36.3, 28.05), (36.5, 28.15), (36.7, 28.05)];
-        let mut cells: Vec<(u64, f64, f64, u8, usize)> = coords
-            .iter()
-            .enumerate()
-            .map(|(i, &(lat, lng))| {
-                let cell = h3o::LatLng::new(lat, lng)
-                    .unwrap()
-                    .to_cell(h3o::Resolution::Nine);
-                (u64::from(cell), lat, lng, shore_q[i], i)
-            })
-            .collect();
-        cells.sort_by_key(|(h3, _, _, _, _)| *h3);
-
-        let mut b = GraphBuilder::new();
-        let mut id_by_orig = [0u32; 3];
-        for (h3, lat, lng, q, orig) in &cells {
-            id_by_orig[*orig] = b.add_node(*h3, *lat, *lng, *q);
-        }
-        b.add_edge(id_by_orig[0], id_by_orig[1], 1.0);
-        b.add_edge(id_by_orig[1], id_by_orig[2], 1.0);
-        let path = id_by_orig.to_vec();
-        (b.build(), coastline, path)
-    }
-
-    #[test]
-    fn smooth_without_buffer_cuts_the_corner() {
-        let (g, coast, path) = dogleg();
-        let smoothed = smooth(&g, &path, &coast, 0.0);
-        assert_eq!(smoothed, vec![path[0], path[2]]);
-    }
-
-    #[test]
-    fn smooth_respects_buffer() {
-        let (g, coast, path) = dogleg();
-        // Direct line is ~2.41 nm off the coast: allowed at 2.0, blocked at 3.0.
-        let loose = smooth(&g, &path, &coast, 2.0);
-        assert_eq!(loose, vec![path[0], path[2]]);
-        let strict = smooth(&g, &path, &coast, 3.0);
-        assert_eq!(strict, path, "3 nm buffer must keep the dogleg waypoint");
-    }
-
-    #[test]
-    fn smooth_relaxes_near_endpoints() {
-        // Path nodes themselves are close to shore (q=20 = 0.4 nm): the
-        // threshold becomes min(3.0, 0.4) = 0.4 nm, so the direct line
-        // (~2.4 nm off) is allowed even under a 3 nm buffer.
-        let (g, coast, path) = dogleg_with_shore(&[20, 255, 20]);
-        let smoothed = smooth(&g, &path, &coast, 3.0);
-        assert_eq!(smoothed, vec![path[0], path[2]]);
     }
 
     /// Vertical coastline "wall" at `lon`, spanning `lat_min..lat_max`.

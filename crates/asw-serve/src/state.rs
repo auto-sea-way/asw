@@ -13,7 +13,7 @@ use std::sync::Arc;
 pub struct ServerState {
     pub inner: tokio::sync::RwLock<Option<Arc<AppState>>>,
     pub graph_path: String,
-    api_key: String,
+    pub(crate) api_key: String,
     /// Bounds the number of `/route` requests concurrently running A* search
     /// to the A* buffer pool's capacity (`asw_core::astar_pool::DEFAULT_POOL_SIZE`).
     ///
@@ -42,10 +42,6 @@ impl ServerState {
         }
     }
 
-    pub(crate) fn api_key(&self) -> &str {
-        &self.api_key
-    }
-
     pub fn set_ready(&self, app: AppState) {
         // Use blocking_lock since this is called from spawn_blocking
         *self.inner.blocking_write() = Some(Arc::new(app));
@@ -57,18 +53,6 @@ impl ServerState {
     /// computation never blocks `/health`/`/ready` or other requests.
     pub async fn app(&self) -> Option<Arc<AppState>> {
         self.inner.read().await.clone()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn server_state_stores_api_key() {
-        let state = ServerState::new("test.graph".into(), "test-key-1234".into());
-        assert_eq!(state.api_key(), "test-key-1234");
-        assert_eq!(state.graph_path, "test.graph");
     }
 }
 
@@ -84,7 +68,7 @@ pub struct AppState {
     /// access above that capacity is prevented upstream by
     /// `ServerState::route_permits`, a semaphore sized to match, so requests
     /// beyond the pool's capacity queue instead of forcing it to grow.
-    astar_pool: asw_core::astar_pool::AstarPool,
+    pub(crate) astar_pool: asw_core::astar_pool::AstarPool,
 }
 
 impl AppState {
@@ -323,26 +307,29 @@ impl AppState {
         best
     }
 
-    /// Acquire a buffer set from the pool, run `f`, then release the buffer.
-    ///
-    /// Synchronous (not `async`): the body never awaits (`AstarPool` is
-    /// backed by a plain `std::sync::Mutex`), and callers now invoke this
-    /// from inside `tokio::task::spawn_blocking`, which runs a plain
-    /// synchronous closure with no async executor context available.
-    pub fn with_astar_buffers<F, T>(&self, f: F) -> T
-    where
-        F: FnOnce(&mut asw_core::astar_pool::AstarBuffers) -> T,
-    {
-        let mut buf = self.astar_pool.acquire();
-        let result = f(&mut buf);
-        self.astar_pool.release(buf);
-        result
-    }
-
     /// Binary search for an H3 cell index in the sorted `node_h3` array.
     fn h3_lookup(&self, h3: u64) -> Option<u32> {
         self.graph.node_h3.binary_search(&h3).ok().map(|i| i as u32)
     }
+}
+
+/// Test helper: build a graph from (h3, lat, lng) entries — sorted and
+/// deduplicated by H3 index, every node shore_dist=255, all nodes chained
+/// with unit edges into a single component.
+#[cfg(test)]
+pub(crate) fn chain_graph(entries: &[(u64, f64, f64)]) -> RoutingGraph {
+    let mut entries = entries.to_vec();
+    entries.sort_by_key(|(h3, _, _)| *h3);
+    entries.dedup_by_key(|(h3, _, _)| *h3);
+    let mut b = asw_core::graph::GraphBuilder::new();
+    let mut ids = Vec::new();
+    for &(h3, lat, lng) in &entries {
+        ids.push(b.add_node(h3, lat, lng, 255));
+    }
+    for i in 0..ids.len().saturating_sub(1) {
+        b.add_edge(ids[i], ids[i + 1], 1.0);
+    }
+    b.build()
 }
 
 #[cfg(test)]
@@ -352,7 +339,7 @@ mod app_state_tests {
 
     /// Build a small test graph with nodes sorted by H3 index.
     fn test_graph(cells: &[(f64, f64)]) -> RoutingGraph {
-        let mut entries: Vec<(u64, f64, f64)> = cells
+        let entries: Vec<(u64, f64, f64)> = cells
             .iter()
             .map(|&(lat, lng)| {
                 let cell = h3o::LatLng::new(lat, lng)
@@ -361,20 +348,7 @@ mod app_state_tests {
                 (u64::from(cell), lat, lng)
             })
             .collect();
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        // Deduplicate by H3 index (nearby coords may map to same cell)
-        entries.dedup_by_key(|(h3, _, _)| *h3);
-
-        let mut b = GraphBuilder::new();
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng, 255));
-        }
-        // Connect all nodes in a chain so they share one component
-        for i in 0..ids.len().saturating_sub(1) {
-            b.add_edge(ids[i], ids[i + 1], 1.0);
-        }
-        b.build()
+        chain_graph(&entries)
     }
 
     #[test]
@@ -477,8 +451,6 @@ mod app_state_tests {
     /// Build a graph with nodes at two different resolutions.
     /// A res-9 node near the query and a res-5 node farther away.
     fn graph_multi_resolution() -> RoutingGraph {
-        let mut b = GraphBuilder::new();
-
         // Res-5 node far from query point (1 degree away)
         let far_pos = (37.0, 29.0);
         let far_cell = h3o::LatLng::new(far_pos.0, far_pos.1)
@@ -491,22 +463,10 @@ mod app_state_tests {
             .unwrap()
             .to_cell(h3o::Resolution::Nine);
 
-        let mut entries = vec![
+        chain_graph(&[
             (u64::from(far_cell), far_pos.0, far_pos.1),
             (u64::from(near_cell), near_pos.0, near_pos.1),
-        ];
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        entries.dedup_by_key(|(h3, _, _)| *h3);
-
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng, 255));
-        }
-        // Connect all so they're in the same component
-        for i in 0..ids.len().saturating_sub(1) {
-            b.add_edge(ids[i], ids[i + 1], 1.0);
-        }
-        b.build()
+        ])
     }
 
     #[test]
@@ -587,24 +547,10 @@ mod app_state_tests {
         let a_ll = h3o::LatLng::from(a);
         let b_ll = h3o::LatLng::from(b);
 
-        let mut entries: Vec<(u64, f64, f64)> = vec![
+        let state = AppState::new(chain_graph(&[
             (u64::from(a), a_ll.lat(), a_ll.lng()),
             (u64::from(b), b_ll.lat(), b_ll.lng()),
-        ];
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        entries.dedup_by_key(|(h3, _, _)| *h3);
-        assert_eq!(entries.len(), 2, "ring-1 neighbors must be distinct cells");
-
-        let mut builder = GraphBuilder::new();
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(builder.add_node(h3, lat, lng, 255));
-        }
-        for i in 0..ids.len().saturating_sub(1) {
-            builder.add_edge(ids[i], ids[i + 1], 1.0);
-        }
-        let graph = builder.build();
-        let state = AppState::new(graph);
+        ]));
 
         let result = state.nearest_node(origin_pos.0, origin_pos.1);
         assert!(result.is_some(), "should find a ring-1 candidate");
@@ -641,24 +587,10 @@ mod app_state_tests {
         let near_ll = h3o::LatLng::from(near);
         let far_ll = h3o::LatLng::from(far);
 
-        let mut entries: Vec<(u64, f64, f64)> = vec![
+        let state = AppState::new(chain_graph(&[
             (u64::from(near), near_ll.lat(), near_ll.lng()),
             (u64::from(far), far_ll.lat(), far_ll.lng()),
-        ];
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        entries.dedup_by_key(|(h3, _, _)| *h3);
-        assert_eq!(entries.len(), 2, "ring-2 and ring-5 cells must be distinct");
-
-        let mut builder = GraphBuilder::new();
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(builder.add_node(h3, lat, lng, 255));
-        }
-        for i in 0..ids.len().saturating_sub(1) {
-            builder.add_edge(ids[i], ids[i + 1], 1.0);
-        }
-        let graph = builder.build();
-        let state = AppState::new(graph);
+        ]));
 
         let result = state.nearest_node(origin_pos.0, origin_pos.1);
         assert!(result.is_some(), "should find the ring-2 candidate");
@@ -705,24 +637,10 @@ mod app_state_tests {
         let boundary_ll = h3o::LatLng::from(boundary);
         let beyond_ll = h3o::LatLng::from(beyond);
 
-        let mut entries: Vec<(u64, f64, f64)> = vec![
+        let state = AppState::new(chain_graph(&[
             (u64::from(boundary), boundary_ll.lat(), boundary_ll.lng()),
             (u64::from(beyond), beyond_ll.lat(), beyond_ll.lng()),
-        ];
-        entries.sort_by_key(|(h3, _, _)| *h3);
-        entries.dedup_by_key(|(h3, _, _)| *h3);
-        assert_eq!(entries.len(), 2, "ring-8 and ring-9 cells must be distinct");
-
-        let mut builder = GraphBuilder::new();
-        let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(builder.add_node(h3, lat, lng, 255));
-        }
-        for i in 0..ids.len().saturating_sub(1) {
-            builder.add_edge(ids[i], ids[i + 1], 1.0);
-        }
-        let graph = builder.build();
-        let state = AppState::new(graph);
+        ]));
 
         let result = state.nearest_node(origin_pos.0, origin_pos.1);
         assert!(
