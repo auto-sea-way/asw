@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING:** graph format v3 → v4. The file is now flat and memory-mapped: the server opens the planet in seconds instead of 60-90 s, and resident memory drops from ~4.1 GiB to the working set. Edge weights are no longer stored (recomputed from cell centres, so distances move in the second decimal); the coastline lives in the file as microdegree runs with a 0.1° grid index instead of an R-tree built at load. v3 files are rejected; the planet graph must be rebuilt.
+- **BREAKING:** graph format v3 → v4. The file is now flat and memory-mapped: the server opens the planet in seconds instead of 60-90 s, and resident memory drops from ~4.1 GiB to the working set. Edge weights are no longer stored (recomputed from cell centres, so distances move in the second decimal); the coastline lives in the file as delta-coded microdegree runs with a 0.1° grid index instead of an R-tree built at load. Planet file: 1.44 GB. v3 files are rejected; the planet graph must be rebuilt.
 - `nearest_node` moved from asw-serve into asw-core; `LandIndex` moved from asw-core into asw-build. asw-core no longer depends on `bitcode`, `zstd`, `serde`, `rstar` or `rayon`.
 - `/info` reports `graph_version`, the version string stored in the graph header.
 - Documentation: the shoreline leaf resolution is res-10 (it has been since the res-9 → res-10 refinement tier), not res-9.

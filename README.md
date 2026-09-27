@@ -50,7 +50,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
-6. **Serialize** graph to a flat memory-mapped binary file (format v4: sorted H3 ids, varint edge targets, per-node shore distance, coastline runs with a 0.1° grid index; no stored weights, no compression)
+6. **Serialize** graph to a flat memory-mapped binary file (format v4: sorted H3 ids, varint edge targets, per-node shore distance, delta-coded coastline runs with a 0.1° grid index; no stored weights, no compression)
 
 ## Comparison with Alternatives
 
@@ -130,7 +130,7 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 | Image | Tag | Description |
 |-------|-----|-------------|
 | `ghcr.io/auto-sea-way/asw` | `latest`, `0.7.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.7.0-full` | Full image — graph file included (~1.8 GB) |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.7.0-full` | Full image — graph file included (~1.5 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
@@ -148,7 +148,7 @@ docker run -e ASW_API_KEY=your-secret \
   -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.7.0
 ```
 
-The planet graph is memory-mapped. Measured on Linux with the 1.74 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.67 GB RSS after open, 1.71 GB after transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
+The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
@@ -171,11 +171,11 @@ Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in about 4.5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 39,430,314 |
-| Edges | 299,638,424 |
-| Graph file size | 1,743 MB (v4, uncompressed, memory-mapped) |
+| Nodes | 39,430,248 |
+| Edges | 299,637,784 |
+| Graph file size | 1,437 MB (v4, uncompressed, memory-mapped) |
 | Connectivity | 100% (single connected component after build-time pruning) |
-| Server memory (RSS) | 1.67 GB after open, 1.71 GB after a transoceanic route mix |
+| Server memory (RSS) | 1.38 GB after open, 1.43 GB after a transoceanic route mix |
 | Server memory (total) | plan for ~2.5 GB |
 | Minimum instance | 4 GB RAM, no swap needed |
 

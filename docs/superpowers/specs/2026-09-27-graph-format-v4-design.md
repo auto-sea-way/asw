@@ -82,10 +82,10 @@ bounding box overlaps. Runs never cross the antimeridian (guaranteed by the spli
 dataset, as today); query segments that do are split at the seam before lookup, exactly
 as `crosses_land` does now.
 
-Planet estimate (39.4 M nodes, 299.5 M edge records): ids 315 MB, offsets 158 MB,
-targets ~420 MB (1.4 B/edge measured on Marmaris), shore 39 MB, coastline unknown
-(~150-300 MB), grid offsets 26 MB. About 1.1-1.2 GB on disk, roughly 500-600 MB as a
-zstd download.
+Planet, measured (39.4 M nodes, 299.6 M edge records, 1.08 M coastline runs, ~81 M
+coastline points): 1,437 MB on disk with delta-coded coastline (1,743 MB before the
+deltas). Roughly: ids 315 MB, offsets 158 MB, targets ~500 MB, shore 39 MB, coastline
+~350 MB, grid ~35 MB.
 
 ## 4. asw-core
 
