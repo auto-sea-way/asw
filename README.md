@@ -34,7 +34,7 @@ Ship it as a single binary + graph file. Self-hosted, no third-party API keys, n
 docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.1-full
 ```
 
-Wait for the `/ready` endpoint to return 200 (~60-90s while the graph loads), then query a route:
+Wait for the `/ready` endpoint to return 200 (a few seconds while the graph file is mapped and read in), then query a route:
 
 ```bash
 curl -H 'X-Api-Key: changeme' \
@@ -50,11 +50,11 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-9 shoreline, up to res-13 in passage corridors)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-13 in passage corridors)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
-6. **Serialize** graph to compact binary format (bitcode + zstd-19, sorted H3 indices for O(log n) spatial lookup)
+6. **Serialize** graph to a flat memory-mapped binary file (format v4: sorted H3 ids, varint edge targets, per-node shore distance, coastline runs with a 0.1° grid index; no stored weights, no compression)
 
 ## Comparison with Alternatives
 
@@ -73,7 +73,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 ## Routing Benchmarks
 
-20 routes, 50 iterations each. Graph v3 format (bitcode + H3 binary search). Graphs built with v2 must be rebuilt — v2 files are rejected at load time.
+20 routes, 50 iterations each. Graph v4 format (memory-mapped). Graphs built with v3 or earlier must be rebuilt — older files are rejected at load time.
 
 Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded).
 
@@ -152,7 +152,7 @@ docker run -e ASW_API_KEY=your-secret \
   -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.6.1
 ```
 
-The full planet graph needs ~4.1 GiB RSS right after load (measured, Linux), growing with query coverage as A* buffer pages are touched — 4.3 GiB measured after a globally diverse route mix, ~4.8 GiB hard ceiling. Plan for ~5 GiB total. A **4 GB instance with a generous swap file** still works but pages under load; an **8 GB instance** is recommended. Graph loading takes ~60-90s; wait for `/ready` to return 200 before sending route queries.
+The planet graph is memory-mapped: resident memory is the file (page cache, about the file size) plus the A* buffer pages a query touches. Numbers for the v4 planet file are to be measured. Wait for `/ready` to return 200 before sending route queries.
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
@@ -177,10 +177,10 @@ Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in ~5 hours:
 |--------|-------|
 | Nodes | 39,412,823 |
 | Edges | 299,517,836 |
-| Graph file size | 717 MB |
+| Graph file size | to be measured (v4, uncompressed) |
 | Connectivity | 100% (single connected component after build-time pruning) |
-| Server memory (RSS) | ~4.1 GiB after load, 4.3 GiB measured under global traffic (~4.8 GiB ceiling) |
-| Server memory (total) | plan for ~5 GiB (needs swap below 8 GB) |
+| Server memory (RSS) | to be measured (file cache + touched A* pages) |
+| Server memory (total) | to be measured |
 | Minimum instance | 4 GB RAM + swap (pages under load), recommended 8 GB |
 
 ```bash

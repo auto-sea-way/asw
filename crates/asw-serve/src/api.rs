@@ -54,6 +54,8 @@ struct InfoResponse {
     edges: u32,
     graph_path: String,
     version: String,
+    /// Version string stored in the graph file header.
+    graph_version: String,
 }
 
 fn parse_latlng(s: &str) -> Option<(f64, f64)> {
@@ -190,6 +192,7 @@ async fn info_handler(
         edges: app.graph.num_edges(),
         graph_path: state.graph_path.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
+        graph_version: app.graph.version().to_string(),
     }))
 }
 
@@ -351,6 +354,25 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         assert_eq!(resp.status(), HyperStatus::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn info_reports_graph_version() {
+        let app = create_router(ready_state_with_small_graph().await);
+        let req = Request::get("/info")
+            .header("X-Api-Key", "secret-key-1234567890")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), HyperStatus::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            json["graph_version"].is_string(),
+            "graph_version missing: {json}"
+        );
     }
 
     #[tokio::test]
