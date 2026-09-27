@@ -1,31 +1,27 @@
 # auto-sea-way
 
-Open source maritime auto-routing. Generates a global water-surface routing graph from OpenStreetMap land polygon data using H3 hexagonal grid indexing. Pure Rust.
+Open source sea routing between any two coordinates on the planet. auto-sea-way builds a global routing graph of the water surface from OpenStreetMap coastlines, indexes it with H3 hexagons, and serves routes over a small HTTP API. Written in Rust.
 
 ![San Francisco to Mykolaiv — maritime route computed through Panama Canal, Atlantic, Mediterranean, and Black Sea](docs/route-sf-mykolaiv.png)
 
-*San Francisco to Mykolaiv (9,768 nm) — computed route through the Panama Canal, across the Atlantic, through the Mediterranean and into the Black Sea. More benchmark routes in [bench-routes.geojson](benchmarks/bench-routes.geojson).*
+*San Francisco to Mykolaiv (9,768 nm): the computed route goes through the Panama Canal, across the Atlantic, through the Mediterranean and into the Black Sea. More benchmark routes in [bench-routes.geojson](benchmarks/bench-routes.geojson).*
 
 ## Why auto-sea-way?
 
-If you're building a maritime application — fleet tracking, voyage planning, logistics
-optimization — you need a way to compute realistic sea routes between coordinates.
-The alternatives are:
+A maritime application such as fleet tracking, voyage planning or logistics needs realistic sea routes between coordinates: around headlands, through straits and canals, into harbours.
 
-- **Commercial SaaS APIs** — subscription pricing, closed-source,
-  no self-hosting option, vendor lock-in
-- **Open-source libraries** ([eurostat/searoute](https://github.com/eurostat/searoute),
+The existing options are limited in different ways:
+
+- Commercial routing APIs are closed, priced per request, and cannot be hosted by you.
+- The open source libraries ([eurostat/searoute](https://github.com/eurostat/searoute),
   [searoute-py](https://github.com/genthalili/searoute-py),
-  [scgraph](https://github.com/connor-makowski/scgraph)) —
-  route on pre-curated shipping lane networks (~4K edges), no coastline detail,
-  can't distinguish a harbor entrance from open ocean
+  [scgraph](https://github.com/connor-makowski/scgraph)) route along a hand-drawn network
+  of about 4,000 shipping lanes. They have no coastline detail, so they cannot tell a
+  harbour entrance from open ocean.
 
-auto-sea-way takes a different approach: it **generates** a high-resolution routing graph
-algorithmically from OpenStreetMap land polygons using H3 hexagonal indexing. The result is
-~40M navigable cells with adaptive resolution — coarse in open ocean (fast), fine near
-coastlines and through narrow passages like Suez and Panama (accurate).
+auto-sea-way generates its graph instead of drawing it. About 40 million navigable cells are derived from OpenStreetMap land polygons, coarse in the open ocean and fine along coastlines and inside narrow passages such as Suez and Panama. Routes start and end at the exact coordinates you ask for, and a route that has to touch land (a pin on a quay, a headland clipped by smoothing) reports which segments do.
 
-Ship it as a single binary + graph file. Self-hosted, no third-party API keys, no rate limits.
+You run it yourself: one binary and one graph file. Routing happens on your own server, so requests cost nothing and the coordinates stay with you.
 
 ## Quick Start
 
