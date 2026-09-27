@@ -130,7 +130,7 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 | Image | Tag | Description |
 |-------|-----|-------------|
 | `ghcr.io/auto-sea-way/asw` | `latest`, `0.7.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.7.0-full` | Full image — graph file included (~740 MB) |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.7.0-full` | Full image — graph file included (~1.8 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
@@ -148,7 +148,7 @@ docker run -e ASW_API_KEY=your-secret \
   -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.7.0
 ```
 
-The planet graph is memory-mapped: resident memory is the file (page cache, about the file size) plus the A* buffer pages a query touches. Numbers for the v4 planet file are to be measured. Wait for `/ready` to return 200 before sending route queries.
+The planet graph is memory-mapped. Measured on Linux with the 1.74 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.67 GB RSS after open, 1.71 GB after transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
@@ -167,17 +167,17 @@ Each release also includes the pre-built `asw.graph` file and `SHA256SUMS` for v
 
 ## Full Planet Build
 
-Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in ~5 hours:
+Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in about 4.5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 39,412,823 |
-| Edges | 299,517,836 |
-| Graph file size | to be measured (v4, uncompressed) |
+| Nodes | 39,430,314 |
+| Edges | 299,638,424 |
+| Graph file size | 1,743 MB (v4, uncompressed, memory-mapped) |
 | Connectivity | 100% (single connected component after build-time pruning) |
-| Server memory (RSS) | to be measured (file cache + touched A* pages) |
-| Server memory (total) | to be measured |
-| Minimum instance | 4 GB RAM + swap (pages under load), recommended 8 GB |
+| Server memory (RSS) | 1.67 GB after open, 1.71 GB after a transoceanic route mix |
+| Server memory (total) | plan for ~2.5 GB |
+| Minimum instance | 4 GB RAM, no swap needed |
 
 ```bash
 asw cloud build --output export/asw.graph

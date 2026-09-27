@@ -60,5 +60,5 @@ Rust workspace with 5 crates:
 - `export/` directory for all output files (graphs, GeoJSON) — gitignored
 - Docker: statically-linked musl binaries on distroless/static-debian12, graph auto-download via `ASW_GRAPH_URL`
 - Readiness probe: server starts TCP listener immediately, `/ready` returns 503 until graph loaded
-- Server memory: the graph is memory-mapped, so RSS is the file in page cache plus the A* buffer pages touched by queries (buffers are zero-filled and lazily allocated). Planet numbers for v4 are to be measured
+- Server memory: the graph is memory-mapped, so RSS is the file in page cache plus the A* buffer pages touched by queries (buffers are zero-filled and lazily allocated). Planet v4 measured on Linux: 1.74 GB file, `/ready` in 0.2 s from page cache, 1.67 GB RSS after open, 1.71 GB after transoceanic routes; a 4 GB instance is enough
 - CI/CD: GitHub Actions for CI, Docker push to ghcr.io, and binary releases on version tags

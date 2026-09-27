@@ -92,10 +92,10 @@ spec:
             periodSeconds: 10
           resources:
             requests:
-              memory: "5Gi"
+              memory: "2.5Gi"
               cpu: "500m"
             limits:
-              memory: "6Gi"
+              memory: "3Gi"
 ```
 
 ### Deployment (slim image with PVC)
