@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use asw_core::geo_index::CoastlineIndex;
 use asw_core::graph::GraphBuilder;
 use asw_core::passages::PASSAGES;
 use h3o::CellIndex;
@@ -32,26 +31,23 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     // Step 2: Extract coastline from post-subtraction land (includes canal waterway boundaries)
     info!("Extracting coastline segments...");
     let land_polygons = land.polygons();
-    let (coastline_segments, mut coastline_coords) =
-        crate::coastline::extract_coastline(&land_polygons);
-    let coastline_index = CoastlineIndex::new(coastline_segments);
-    info!("Coastline: {} segments", coastline_index.segment_count());
+    let mut coastline_runs = crate::coastline::extract_coastline(&land_polygons);
+    let full_sections = asw_core::coast::CoastlineSections::from_runs(&coastline_runs);
+    let coastline_index = full_sections.index();
+    info!("Coastline: {} runs", coastline_index.run_count());
 
     // Clip stored coastline coords to bbox (for GeoJSON export)
     if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
-        let before = coastline_coords.len();
-        coastline_coords.retain(|seg| {
+        let before = coastline_runs.len();
+        coastline_runs.retain(|seg| {
             seg.iter().any(|&(lon, lat)| {
-                (lon as f64) >= min_lon
-                    && (lon as f64) <= max_lon
-                    && (lat as f64) >= min_lat
-                    && (lat as f64) <= max_lat
+                lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
             })
         });
         info!(
             "Clipped coastline to bbox: {} → {} segments",
             before,
-            coastline_coords.len()
+            coastline_runs.len()
         );
     }
 
@@ -87,7 +83,7 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     }
 
     // Store coastline
-    builder.coastline_coords = coastline_coords;
+    builder.coastline_runs = coastline_runs;
 
     // Step 7: Build and validate
     let graph = builder.build();

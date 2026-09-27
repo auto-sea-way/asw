@@ -1,5 +1,5 @@
 pub mod astar_pool;
-pub mod geo_index;
+pub mod coast;
 pub mod graph;
 pub mod h3;
 pub mod passages;

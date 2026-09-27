@@ -313,8 +313,8 @@ fn main() -> Result<()> {
 
                     let app_state = asw_serve::state::AppState::new(routing_graph);
                     info!(
-                        "Coastline: {} segments, Node tree ready",
-                        app_state.coastline.segment_count()
+                        "Coastline: {} runs, Node tree ready",
+                        app_state.coast.index().run_count()
                     );
 
                     let _ = bg_state.app.set(std::sync::Arc::new(app_state));
@@ -437,11 +437,8 @@ fn hex_feature_string(boundary: &[(f64, f64)], res: u8, color: &str) -> String {
 }
 
 /// GeoJSON feature for a coastline segment, serialized to a string.
-fn coastline_feature_string(seg: &[(f32, f32)]) -> String {
-    let coords: Vec<[f64; 2]> = seg
-        .iter()
-        .map(|&(lon, lat)| [lon as f64, lat as f64])
-        .collect();
+fn coastline_feature_string(seg: &[(f64, f64)]) -> String {
+    let coords: Vec<[f64; 2]> = seg.iter().map(|&(lon, lat)| [lon, lat]).collect();
     serde_json::json!({
         "type": "Feature",
         "geometry": {"type": "LineString", "coordinates": coords},
@@ -529,18 +526,15 @@ fn export_geojson(
     }
 
     // Coastline segments
-    if include_coastline && !graph.coastline_coords.is_empty() {
-        for seg in &graph.coastline_coords {
+    if include_coastline && !graph.coastline_runs.is_empty() {
+        for seg in &graph.coastline_runs {
             if seg.len() < 2 {
                 continue;
             }
 
             if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
                 let in_bbox = seg.iter().any(|&(lon, lat)| {
-                    (lon as f64) >= min_lon
-                        && (lon as f64) <= max_lon
-                        && (lat as f64) >= min_lat
-                        && (lat as f64) <= max_lat
+                    lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
                 });
                 if !in_bbox {
                     continue;

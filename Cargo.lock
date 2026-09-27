@@ -189,8 +189,6 @@ dependencies = [
  "bitcode",
  "geo",
  "h3o",
- "rayon",
- "rstar 0.13.0",
  "serde",
  "tracing",
  "zstd",

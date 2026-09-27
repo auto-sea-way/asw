@@ -1,4 +1,3 @@
-use asw_core::geo_index::CoastlineIndex;
 use asw_core::graph::RoutingGraph;
 use std::sync::Arc;
 
@@ -42,7 +41,8 @@ impl ServerState {
 /// Shared application state for the HTTP server.
 pub struct AppState {
     pub graph: RoutingGraph,
-    pub coastline: CoastlineIndex,
+    /// Transitional (until the graph file carries the sections itself).
+    pub coast: asw_core::coast::CoastlineSections,
     /// Pre-allocated A* search buffer pool. Sized to
     /// `asw_core::astar_pool::DEFAULT_POOL_SIZE` buffer sets; concurrent
     /// access above that capacity is prevented upstream by
@@ -59,8 +59,8 @@ impl AppState {
     /// next one begins.
     pub fn new(mut graph: RoutingGraph) -> Self {
         // Build coastline R-tree, then free the raw coords from the graph.
-        let coastline = CoastlineIndex::from_serialized(&graph.coastline_coords);
-        graph.drop_coastline_coords();
+        let coast = asw_core::coast::CoastlineSections::from_runs(&graph.coastline_runs);
+        graph.drop_coastline_runs();
 
         let astar_pool = asw_core::astar_pool::AstarPool::new(
             graph.num_nodes as usize,
@@ -69,7 +69,7 @@ impl AppState {
 
         Self {
             graph,
-            coastline,
+            coast,
             astar_pool,
         }
     }

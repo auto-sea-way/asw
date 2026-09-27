@@ -1,4 +1,4 @@
-use crate::geo_index::CoastlineIndex;
+use crate::coast::CoastlineIndex;
 use crate::graph::RoutingGraph;
 use crate::h3::haversine_nm;
 use std::cmp::Reverse;
@@ -168,7 +168,7 @@ pub struct SmoothResult {
 pub fn smooth_indices(
     coords: &[[f64; 2]],
     shore_dist: &[u8],
-    coastline: &CoastlineIndex,
+    coastline: &CoastlineIndex<'_>,
     shore_buffer_nm: f64,
 ) -> SmoothResult {
     if coords.len() <= 2 {
@@ -293,7 +293,7 @@ pub fn smooth_indices(
 /// an endpoint (its point clearance and the segment clearance are then the
 /// same geometric quantity computed via different code paths).
 fn direct_line_ok(
-    coastline: &CoastlineIndex,
+    coastline: &CoastlineIndex<'_>,
     from_lat: f64,
     from_lon: f64,
     to_lat: f64,
@@ -323,7 +323,7 @@ pub fn compute_route(
     from_lon: f64,
     to_lat: f64,
     to_lon: f64,
-    coastline: &CoastlineIndex,
+    coastline: &CoastlineIndex<'_>,
     node_knn: &dyn Fn(f64, f64) -> Option<(u32, f64)>,
     buffers: &mut crate::astar_pool::AstarBuffers,
     shore_buffer_nm: f64,
@@ -646,27 +646,26 @@ mod tests {
     }
 
     /// Vertical coastline "wall" at `lon`, spanning `lat_min..lat_max`.
-    fn wall_index(lon: f64, lat_min: f64, lat_max: f64) -> CoastlineIndex {
-        let line = geo::LineString::from(vec![(lon, lat_min), (lon, lat_max)]);
-        CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(line)])
+    fn wall(lon: f64, lat_min: f64, lat_max: f64) -> crate::coast::CoastlineSections {
+        crate::coast::CoastlineSections::from_runs(&[vec![(lon, lat_min), (lon, lat_max)]])
     }
 
     /// Closed square ring around (0, 0), side 0.2 degrees — a tiny "island"
     /// used to simulate a pin on land.
-    fn island_around_origin() -> CoastlineIndex {
-        let ring = geo::LineString::from(vec![
+    fn island_around_origin() -> crate::coast::CoastlineSections {
+        crate::coast::CoastlineSections::from_runs(&[vec![
             (-0.1, -0.1),
             (0.1, -0.1),
             (0.1, 0.1),
             (-0.1, 0.1),
             (-0.1, -0.1),
-        ]);
-        CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(ring)])
+        ]])
     }
 
     #[test]
     fn smooth_indices_collapses_clear_path() {
-        let coastline = CoastlineIndex::new(vec![]);
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.3, 0.1], [0.6, -0.1], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 4], &coastline, 0.0);
         assert_eq!(out.kept, vec![0, 3]);
@@ -677,7 +676,8 @@ mod tests {
     fn smooth_indices_keeps_necessary_corner() {
         // Wall at lon 0.5 (lat -1..1); the path detours over its top at lat 1.5.
         // Only the corner above the wall must survive smoothing.
-        let coastline = wall_index(0.5, -1.0, 1.0);
+        let sections = wall(0.5, -1.0, 1.0);
+        let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.2, 0.5], [0.5, 1.5], [0.8, 0.5], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 5], &coastline, 0.0);
         assert_eq!(out.kept, vec![0, 2, 4]);
@@ -686,7 +686,8 @@ mod tests {
 
     #[test]
     fn smooth_indices_short_input_passthrough() {
-        let coastline = wall_index(0.5, -1.0, 1.0);
+        let sections = wall(0.5, -1.0, 1.0);
+        let coastline = sections.index();
         let coords = [[0.0, 0.0], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 2], &coastline, 0.0);
         assert_eq!(out.kept, vec![0, 1]);
@@ -698,7 +699,8 @@ mod tests {
         // First point sits inside a ring "island": it can see nothing, so the
         // smoother must keep the (land-clipping) segment to the next point and
         // continue — this is the approved land-pin behavior.
-        let coastline = island_around_origin();
+        let sections = island_around_origin();
+        let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]];
         let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
         assert_eq!(*out.kept.first().unwrap(), 0);
@@ -712,7 +714,8 @@ mod tests {
         // Wall at lon 28.0; all points sit ~1 nm east of it. With a 2 nm
         // buffer every hop violates clearance, so smoothing is forced through
         // each point — but nothing crosses land, so no segment is flagged.
-        let coastline = wall_index(28.0, 36.3, 36.7);
+        let sections = wall(28.0, 36.3, 36.7);
+        let coastline = sections.index();
         let coords = [[28.02, 36.4], [28.02, 36.5], [28.02, 36.6]];
         let out = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
         assert_eq!(out.kept, vec![0, 1, 2]);
@@ -726,7 +729,8 @@ mod tests {
     fn smooth_indices_flags_forced_final_segment() {
         // P0->P1 is clear; P1->P2 crosses the wall and P2 is the
         // destination — the forced final segment must still be flagged.
-        let coastline = wall_index(0.5, -1.0, 1.0);
+        let sections = wall(0.5, -1.0, 1.0);
+        let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.3, 0.0], [0.8, 0.0]];
         let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
         assert_eq!(out.kept, vec![0, 1, 2]);
@@ -737,7 +741,8 @@ mod tests {
     fn smooth_indices_respects_buffer() {
         // Same geometry as the node-based dogleg tests: coastline at lon 28.0
         // (lat 36.45..36.55), direct P0->P2 line ~2.41 nm off the coast.
-        let coastline = wall_index(28.0, 36.45, 36.55);
+        let sections = wall(28.0, 36.45, 36.55);
+        let coastline = sections.index();
         let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
         let loose = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
         assert_eq!(loose.kept, vec![0, 2]);
@@ -754,7 +759,8 @@ mod tests {
     fn smooth_indices_relaxes_for_near_shore_endpoints() {
         // Endpoints themselves are close to shore (q=20 = 0.4 nm): threshold
         // becomes min(3.0, 0.4) = 0.4 nm, so the ~2.4 nm direct line passes.
-        let coastline = wall_index(28.0, 36.45, 36.55);
+        let sections = wall(28.0, 36.45, 36.55);
+        let coastline = sections.index();
         let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
         let out = smooth_indices(&coords, &[20, 255, 20], &coastline, 3.0);
         assert_eq!(out.kept, vec![0, 2]);
@@ -791,7 +797,8 @@ mod tests {
 
     #[test]
     fn shortcut_returns_direct_route_when_line_is_clear() {
-        let coastline = CoastlineIndex::new(vec![]);
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coastline = sections.index();
         let g = GraphBuilder::default().build();
         // knn returning None proves the shortcut runs BEFORE snapping.
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
@@ -805,7 +812,8 @@ mod tests {
 
     #[test]
     fn shortcut_handles_identical_points() {
-        let coastline = CoastlineIndex::new(vec![]);
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coastline = sections.index();
         let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
@@ -818,7 +826,8 @@ mod tests {
     fn shortcut_respects_shore_buffer() {
         // Dogleg geometry: wall at lon 28.0 (lat 36.45..36.55); the direct
         // pin-to-pin line at lon 28.05 passes ~2.41 nm off the coast.
-        let coastline = wall_index(28.0, 36.45, 36.55);
+        let sections = wall(28.0, 36.45, 36.55);
+        let coastline = sections.index();
         let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
@@ -858,7 +867,8 @@ mod tests {
         // From-pin is only ~0.39 nm off the wall, so the threshold degrades
         // to min(3.0, pin clearance) and the direct line (whose closest
         // approach IS the from-pin) passes despite the 3 nm buffer.
-        let coastline = wall_index(28.0, 36.45, 36.55);
+        let sections = wall(28.0, 36.45, 36.55);
+        let coastline = sections.index();
         let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
@@ -883,7 +893,8 @@ mod tests {
     fn stitched_route_starts_and_ends_at_pins() {
         // Wall at lon 0.5 (lat -1..1). Chain S(0,0) -> M(1.5,0.5) -> G(0,1)
         // goes over the top of the wall. Pins are offset from S and G.
-        let coastline = wall_index(0.5, -1.0, 1.0);
+        let sections = wall(0.5, -1.0, 1.0);
+        let coastline = sections.index();
         let (g, ids) = chain_graph(&[(0.0, 0.0), (1.5, 0.5), (0.0, 1.0)]);
         let (s, goal) = (ids[0], ids[2]);
         let knn = move |_lat: f64, lon: f64| -> Option<(u32, f64)> {
@@ -915,7 +926,8 @@ mod tests {
         // pin-to-pin line is blocked. Expect [from, N, to] with the exact
         // two-leg distance — this is the "0.00 NM inside one deep-ocean
         // hexagon" regression test.
-        let coastline = wall_index(0.5, -1.0, 1.0);
+        let sections = wall(0.5, -1.0, 1.0);
+        let coastline = sections.index();
         let (g, ids) = chain_graph(&[(1.5, 0.5)]);
         let n = ids[0];
         let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
@@ -941,7 +953,8 @@ mod tests {
         // From-pin sits inside a ring island at (0,0); to-pin is on open
         // water. Approved behavior: no error, route starts at the pin and
         // the first segment clips the island.
-        let coastline = island_around_origin();
+        let sections = island_around_origin();
+        let coastline = sections.index();
         let (g, ids) = chain_graph(&[(0.0, 0.5), (0.0, 2.0)]);
         let (s, goal) = (ids[0], ids[1]);
         let knn = move |_lat: f64, lon: f64| -> Option<(u32, f64)> {
@@ -959,8 +972,6 @@ mod tests {
     /// must be flagged and excluded from distance_nm.
     #[test]
     fn compute_route_flags_and_excludes_land_leg() {
-        use crate::geo_index::CoastlineSegment;
-
         // 3-node chain like the serve-layer fixture.
         let chain = [(36.848, 28.268), (36.9, 28.3), (37.0, 28.5)];
         let mut entries: Vec<(u64, f64, f64)> = chain
@@ -984,14 +995,14 @@ mod tests {
         let g = b.build();
 
         // Ring island around the from-pin (36.84, 28.26).
-        let ring = geo::LineString::from(vec![
+        let sections = crate::coast::CoastlineSections::from_runs(&[vec![
             (28.25, 36.83),
             (28.27, 36.83),
             (28.27, 36.85),
             (28.25, 36.85),
             (28.25, 36.83),
-        ]);
-        let coast = CoastlineIndex::new(vec![CoastlineSegment::new(ring)]);
+        ]]);
+        let coast = sections.index();
 
         // Nearest node by haversine over all graph nodes.
         let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> {
@@ -1068,8 +1079,9 @@ mod tests {
         let f = (nlon + 0.02, nlat - 0.08);
         let g_pt = (nlon - 0.02, nlat - 0.08);
         let h = (nlon - 0.02, nlat - 0.02);
-        let ring = geo::LineString::from(vec![a, b, c, d, e, f, g_pt, h, a]);
-        let coast = CoastlineIndex::new(vec![crate::geo_index::CoastlineSegment::new(ring)]);
+        let sections =
+            crate::coast::CoastlineSections::from_runs(&[vec![a, b, c, d, e, f, g_pt, h, a]]);
+        let coast = sections.index();
 
         let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
@@ -1103,7 +1115,8 @@ mod tests {
     #[test]
     fn compute_route_water_pins_have_no_land_legs() {
         let (g, a, d) = diamond_graph();
-        let coast = CoastlineIndex::new(vec![]);
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coast = sections.index();
         let (alat, alon) = g.node_pos(a);
         let (dlat, dlon) = g.node_pos(d);
         let knn = move |lat: f64, lon: f64| -> Option<(u32, f64)> {

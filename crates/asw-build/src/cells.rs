@@ -1,6 +1,6 @@
 use crate::land_index::LandIndex;
 use anyhow::Result;
-use asw_core::geo_index::CoastlineIndex;
+use asw_core::coast::CoastlineIndex;
 use asw_core::h3::{cell_boundary, cell_center, cell_polygon};
 use asw_core::passages::{Passage, ZONE_RESOLUTION};
 use asw_core::{CASCADE, H3_RES_BASE, H3_RES_LEAF};
@@ -39,7 +39,7 @@ fn in_passage_corridor(cell: CellIndex, corridors: &[(f64, f64, f64, f64)]) -> b
 /// Returns a map of `CellIndex` to sequential `node_id` (starting from 0).
 pub fn generate_cells(
     land: &LandIndex,
-    coastline: &CoastlineIndex,
+    coastline: &CoastlineIndex<'_>,
     bbox: Option<Bbox>,
     passages: &[Passage],
 ) -> Result<HashMap<CellIndex, u32>> {
@@ -458,7 +458,7 @@ fn cell_radius_deg(cell: CellIndex) -> f64 {
 }
 
 /// Minimum distance (degrees) from any point of a cell (center + 6 vertices) to the coastline.
-fn cell_min_coast_dist(cell: CellIndex, coastline: &CoastlineIndex, threshold_deg: f64) -> f64 {
+fn cell_min_coast_dist(cell: CellIndex, coastline: &CoastlineIndex<'_>, threshold_deg: f64) -> f64 {
     let search_radius = threshold_deg + cell_radius_deg(cell);
     let (lat, lon) = cell_center(cell);
     let center_dist = coastline.min_distance_deg(lon, lat, search_radius);

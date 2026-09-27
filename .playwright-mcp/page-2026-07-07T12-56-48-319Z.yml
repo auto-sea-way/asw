@@ -1,0 +1,88 @@
+- generic [ref=e2]:
+  - heading "Example routes — marmaris-v3.graph" [level=1] [ref=e3]:
+    - text: Example routes —
+    - code [ref=e4]: marmaris-v3.graph
+  - paragraph [ref=e5]: "True-endpoint routing (PR #35): every polyline starts and ends exactly at the requested coordinates. Open-water pairs return a direct great-circle leg without a graph search."
+  - generic [ref=e6]:
+    - button "Open water (direct) 19.7 nm" [ref=e7] [cursor=pointer]:
+      - text: Open water (direct)
+      - generic [ref=e9]: 19.7 nm
+    - button "Same-cell pair (direct) 0.8 nm" [ref=e10] [cursor=pointer]:
+      - text: Same-cell pair (direct)
+      - generic [ref=e12]: 0.8 nm
+    - button "Marmaris → Bozburun 36.9 nm" [ref=e13] [cursor=pointer]:
+      - text: Marmaris → Bozburun
+      - generic [ref=e15]: 36.9 nm
+    - button "Marmaris → Bozburun (1 nm buffer) 44.9 nm" [ref=e16] [cursor=pointer]:
+      - text: Marmaris → Bozburun (1 nm buffer)
+      - generic [ref=e18]: 44.9 nm
+    - button "Marmaris → Rhodes 23.7 nm" [ref=e19] [cursor=pointer]:
+      - text: Marmaris → Rhodes
+      - generic [ref=e21]: 23.7 nm
+    - button "Marmaris → Datça 43.8 nm" [ref=e22] [cursor=pointer]:
+      - text: Marmaris → Datça
+      - generic [ref=e24]: 43.8 nm
+  - img [ref=e26]:
+    - generic [ref=e27]: 27.50°E
+    - generic [ref=e28]: 27.75°E
+    - generic [ref=e29]: 28.00°E
+    - generic [ref=e30]: 28.25°E
+    - generic [ref=e31]: 28.50°E
+    - generic [ref=e32]: 36.50°N
+    - generic [ref=e33]: 36.75°N
+    - generic [ref=e34]: 37.00°N
+    - generic [ref=e171]: 19.7 nm
+    - generic [ref=e177]: 0.8 nm
+    - generic [ref=e183]: 36.9 nm
+    - generic [ref=e189]: 44.9 nm
+    - generic [ref=e195]: 23.7 nm
+    - generic [ref=e201]: 43.8 nm
+  - table [ref=e203]:
+    - rowgroup [ref=e204]:
+      - row "Route Distance Waypoints Path type From → To (lat, lon)" [ref=e205]:
+        - columnheader "Route" [ref=e206]
+        - columnheader "Distance" [ref=e207]
+        - columnheader "Waypoints" [ref=e208]
+        - columnheader "Path type" [ref=e209]
+        - columnheader "From → To (lat, lon)" [ref=e210]
+    - rowgroup [ref=e211]:
+      - row "Open water (direct) 19.7 nm 2 direct shortcut 36.550, 28.050 → 36.620, 28.450" [ref=e212]:
+        - cell "Open water (direct)" [ref=e213]
+        - cell "19.7 nm" [ref=e214]
+        - cell "2" [ref=e215]
+        - cell "direct shortcut" [ref=e216]
+        - cell "36.550, 28.050 → 36.620, 28.450" [ref=e217]
+      - row "Same-cell pair (direct) 0.8 nm 2 direct shortcut 36.555, 28.200 → 36.565, 28.210" [ref=e218]:
+        - cell "Same-cell pair (direct)" [ref=e219]
+        - cell "0.8 nm" [ref=e220]
+        - cell "2" [ref=e221]
+        - cell "direct shortcut" [ref=e222]
+        - cell "36.555, 28.200 → 36.565, 28.210" [ref=e223]
+      - row "Marmaris → Bozburun 36.9 nm 13 A* + stitching 36.830, 28.280 → 36.680, 28.030" [ref=e224]:
+        - cell "Marmaris → Bozburun" [ref=e225]
+        - cell "36.9 nm" [ref=e226]
+        - cell "13" [ref=e227]
+        - cell "A* + stitching" [ref=e228]
+        - cell "36.830, 28.280 → 36.680, 28.030" [ref=e229]
+      - row "Marmaris → Bozburun (1 nm buffer) 44.9 nm 15 A* + stitching 36.830, 28.280 → 36.680, 28.030" [ref=e230]:
+        - cell "Marmaris → Bozburun (1 nm buffer)" [ref=e231]
+        - cell "44.9 nm" [ref=e232]
+        - cell "15" [ref=e233]
+        - cell "A* + stitching" [ref=e234]
+        - cell "36.830, 28.280 → 36.680, 28.030" [ref=e235]
+      - row "Marmaris → Rhodes 23.7 nm 5 A* + stitching 36.830, 28.280 → 36.450, 28.240" [ref=e236]:
+        - cell "Marmaris → Rhodes" [ref=e237]
+        - cell "23.7 nm" [ref=e238]
+        - cell "5" [ref=e239]
+        - cell "A* + stitching" [ref=e240]
+        - cell "36.830, 28.280 → 36.450, 28.240" [ref=e241]
+      - row "Marmaris → Datça 43.8 nm 10 A* + stitching 36.830, 28.280 → 36.730, 27.700" [ref=e242]:
+        - cell "Marmaris → Datça" [ref=e243]
+        - cell "43.8 nm" [ref=e244]
+        - cell "10" [ref=e245]
+        - cell "A* + stitching" [ref=e246]
+        - cell "36.830, 28.280 → 36.730, 27.700" [ref=e247]
+  - paragraph [ref=e248]:
+    - text: Gray strokes are the OSM coastline stored in the graph. Dashed = same trip computed with
+    - code [ref=e249]: shore_buffer=1.0
+    - text: . Hover a route to inspect it; click a legend entry to isolate.

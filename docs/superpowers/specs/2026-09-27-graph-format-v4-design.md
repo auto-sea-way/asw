@@ -58,7 +58,7 @@ offset  size  field
 76      4     num_edges  u32   (directed edge records, as today)
 80      4     num_coast_runs u32
 84      4     reserved (0)
-88      8*2*8 section table: 8 entries of (offset u64, length_bytes u64)
+88      9*2*8 section table: 9 entries of (offset u64, length_bytes u64); header ends at 232
 ```
 
 Sections, in table order:
@@ -70,9 +70,10 @@ Sections, in table order:
 | 2 | `edge_targets` | varint stream | | per node: target ids as ascending varint deltas, same encoding as v3 minus the u16 weight |
 | 3 | `shore_dist` | u8 | num_nodes | unchanged from v3 |
 | 4 | `coast_runs` | u32 | num_coast_runs + 1 | point index where each run starts; last = total points |
-| 5 | `coast_points` | (i32 lon, i32 lat) | total points | microdegrees |
-| 6 | `grid_offsets` | u32 | 3600 × 1800 + 1 | index into `grid_ids` per 0.1° cell, row-major by lat band then lon |
-| 7 | `grid_ids` | u32 | | run ids whose bounding box touches the cell |
+| 5 | `coast_bbox` | i32 × 4 | num_coast_runs | min_lon, min_lat, max_lon, max_lat per run, microdegrees; the grid lists runs by cell, the bbox prunes inside a cell |
+| 6 | `coast_points` | (i32 lon, i32 lat) | total points | microdegrees |
+| 7 | `grid_offsets` | u32 | 3600 × 1800 + 1 | index into `grid_ids` per 0.1° cell, row-major by lat band then lon |
+| 8 | `grid_ids` | u32 | | run ids whose bounding box touches the cell |
 
 Grid cell for (lon, lat): `col = floor((lon + 180) / 0.1)` clamped to 0..3599,
 `row = floor((lat + 90) / 0.1)` clamped to 0..1799. A run is listed in every cell its
@@ -111,8 +112,8 @@ enum Bytes { Mmap(memmap2::Mmap), Owned(Vec<u8>) }
 - Typed section access is one small unsafe helper that asserts alignment and length and
   returns `&[T]` for `u8`, `u32`, `u64`, `i32`.
 
-**`geo_index.rs`.** `CoastlineIndex<'a>` becomes a grid-backed view over four slices
-(`coast_runs`, `coast_points`, `grid_offsets`, `grid_ids`). `RoutingGraph::coastline()`
+**`coast.rs`.** `CoastlineIndex<'a>` becomes a grid-backed view over five slices
+(`coast_runs`, `coast_bbox`, `coast_points`, `grid_offsets`, `grid_ids`). `RoutingGraph::coastline()`
 returns it borrowed from the mapped file; the build constructs it from the slices it has
 just produced. `AppState` therefore holds only the graph and the A* pool. Same public queries as today: `crosses_land`, `min_distance_deg`,
 `min_distance_nm`, `segment_min_distance_nm`, with the antimeridian handling carried
@@ -133,8 +134,9 @@ hands out lazy zero pages and resident memory grows with the search, not the gra
 never read. `AstarPool` allocates its buffer sets on first `acquire`, not at
 construction.
 
-**Dependencies.** asw-core drops `bitcode`, `zstd`, `serde`, `rstar`, and gains
-`memmap2`. `rayon` is not used in asw-core today; nothing to gate.
+**Dependencies.** asw-core drops `bitcode`, `zstd`, `serde`, `rstar`, `rayon`, and gains
+`memmap2`. `rayon` was only used by `LandIndex::subtract_water`, which moves to asw-build
+with the rest of `LandIndex`.
 
 ## 5. asw-build, asw-serve, asw-cli
 

@@ -130,7 +130,7 @@ async fn route_handler(
             from_lon,
             to_lat,
             to_lon,
-            &app.coastline,
+            &app.coast.index(),
             &knn,
             &mut buffers,
             shore_buffer_nm,
@@ -290,7 +290,7 @@ mod tests {
 
     /// Like `ready_state_with_small_graph`, but with an injected coastline
     /// (lon, lat) polyline so tests can block specific lines of sight.
-    async fn ready_state_with_graph(coastline: Vec<Vec<(f32, f32)>>) -> Arc<ServerState> {
+    async fn ready_state_with_graph(coastline: Vec<Vec<(f64, f64)>>) -> Arc<ServerState> {
         let coords = [(36.848, 28.268), (36.9, 28.3), (37.0, 28.5)];
         let h3s: Vec<u64> = coords
             .iter()
@@ -303,7 +303,7 @@ mod tests {
             })
             .collect();
         let mut graph = crate::state::chain_graph(&h3s);
-        graph.coastline_coords = coastline;
+        graph.coastline_runs = coastline;
 
         let state = test_state();
         mark_ready(&state, crate::state::AppState::new(graph));
@@ -479,7 +479,7 @@ mod tests {
         // Wall crossing the from->to line (lon 28.4, lat 36.0..37.5), so the
         // direct-line shortcut cannot answer; with no nodes to snap to, the
         // route must still surface as 404.
-        b.coastline_coords = vec![vec![(28.4, 36.0), (28.4, 37.5)]];
+        b.coastline_runs = vec![vec![(28.4, 36.0), (28.4, 37.5)]];
         mark_ready(&state, AppState::new(b.build()));
 
         let app = create_router(state);

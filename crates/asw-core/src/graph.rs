@@ -36,7 +36,7 @@ pub struct RoutingGraph {
     /// Unit: SHORE_DIST_UNIT_NM (0.02 nm). 255 = saturated (>= 5.1 nm).
     /// Rounded down at build time. Length = num_nodes.
     pub shore_dist: Vec<u8>,
-    pub coastline_coords: Vec<Vec<(f32, f32)>>,
+    pub coastline_runs: Vec<Vec<(f64, f64)>>,
     pub num_nodes: u32,
     pub num_edges: u32,
 }
@@ -74,7 +74,7 @@ pub struct GraphBuilder {
     nodes: Vec<(u64, u8)>,
     /// (src, dst, weight_nm)
     edges: Vec<(u32, u32, f32)>,
-    pub coastline_coords: Vec<Vec<(f32, f32)>>,
+    pub coastline_runs: Vec<Vec<(f64, f64)>>,
 }
 
 impl GraphBuilder {
@@ -151,7 +151,7 @@ impl GraphBuilder {
             offsets,
             edge_data,
             shore_dist,
-            coastline_coords: self.coastline_coords,
+            coastline_runs: self.coastline_runs,
             num_nodes,
             num_edges,
         }
@@ -262,8 +262,8 @@ impl RoutingGraph {
 
     /// Drop coastline coordinate data to free memory after it has been
     /// used to build the CoastlineIndex.
-    pub fn drop_coastline_coords(&mut self) {
-        self.coastline_coords = Vec::new();
+    pub fn drop_coastline_runs(&mut self) {
+        self.coastline_runs = Vec::new();
     }
 
     /// Keep only the largest connected component, remapping node IDs.
@@ -313,7 +313,7 @@ impl RoutingGraph {
                 }
             }
         }
-        new_builder.coastline_coords = self.coastline_coords;
+        new_builder.coastline_runs = self.coastline_runs;
         let pruned = new_builder.build();
         tracing::info!(
             "Pruned graph: {} nodes, {} edges",
@@ -510,7 +510,7 @@ mod tests {
             offsets: vec![0, end],
             edge_data,
             shore_dist: vec![255],
-            coastline_coords: vec![],
+            coastline_runs: vec![],
             num_nodes: 1,
             num_edges: 3,
         };
@@ -532,7 +532,7 @@ mod tests {
             offsets: vec![0, 0],
             edge_data: vec![],
             shore_dist: vec![255],
-            coastline_coords: vec![],
+            coastline_runs: vec![],
             num_nodes: 1,
             num_edges: 0,
         };
