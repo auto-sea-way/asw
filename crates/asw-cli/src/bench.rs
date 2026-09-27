@@ -135,7 +135,7 @@ fn git_commit() -> String {
 /// Indices into `ROUTES` that are routable on the loaded graph.
 fn resolve_routes(app: &AppState, shore_buffer_nm: f64) -> Vec<usize> {
     let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
-    let mut buffers = asw_core::astar_pool::AstarBuffers::new(app.graph.num_nodes as usize);
+    let mut buffers = asw_core::astar_pool::AstarBuffers::new(app.graph.num_nodes() as usize);
     let mut routes = Vec::new();
     for (i, &(name, from_lat, from_lon, to_lat, to_lon)) in ROUTES.iter().enumerate() {
         buffers.reset();
@@ -145,7 +145,7 @@ fn resolve_routes(app: &AppState, shore_buffer_nm: f64) -> Vec<usize> {
             from_lon,
             to_lat,
             to_lon,
-            &app.coast.index(),
+            &app.graph.coastline(),
             &knn,
             &mut buffers,
             shore_buffer_nm,
@@ -171,7 +171,7 @@ fn run_benchmark(
     let warmup = 3;
     let graph = &app.graph;
     let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
-    let mut buffers = asw_core::astar_pool::AstarBuffers::new(graph.num_nodes as usize);
+    let mut buffers = asw_core::astar_pool::AstarBuffers::new(graph.num_nodes() as usize);
 
     routes
         .iter()
@@ -185,7 +185,7 @@ fn run_benchmark(
                     from_lon,
                     to_lat,
                     to_lon,
-                    &app.coast.index(),
+                    &app.graph.coastline(),
                     &knn,
                     buffers,
                     shore_buffer_nm,
@@ -236,8 +236,8 @@ fn print_table(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize) {
         "\nasw bench - {} routes x {} iterations ({} nodes, {} edges)\n",
         stats.len(),
         iterations,
-        graph.num_nodes,
-        graph.num_edges,
+        graph.num_nodes(),
+        graph.num_edges(),
     );
     println!(
         "{:<20} {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
@@ -391,8 +391,8 @@ fn write_markdown(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize)
     md.push_str("# Routing Benchmarks\n\n");
     md.push_str(&format!(
         "**Graph**: {} nodes / {} edges\n",
-        format_number(graph.num_nodes),
-        format_number(graph.num_edges),
+        format_number(graph.num_nodes()),
+        format_number(graph.num_edges()),
     ));
     md.push_str(&format!(
         "**Commit**: `{}` | **Date**: {} | **Iterations**: {}\n\n",
@@ -548,12 +548,11 @@ pub fn run(
     shore_buffer_nm: f64,
 ) -> Result<()> {
     info!("Loading graph from {:?}...", graph_path);
-    let file = std::fs::File::open(graph_path).context("Failed to open graph file")?;
-    let reader = std::io::BufReader::new(file);
-    let graph = RoutingGraph::load(reader).context("Failed to load graph")?;
+    let graph = RoutingGraph::open(graph_path, true).context("Failed to open graph")?;
     info!(
         "Graph loaded: {} nodes, {} edges",
-        graph.num_nodes, graph.num_edges
+        graph.num_nodes(),
+        graph.num_edges()
     );
 
     info!("Building app state...");
@@ -589,8 +588,8 @@ pub fn run(
     info!("Running {} iterations per route...", iterations);
     let result = BenchResult {
         graph: GraphMeta {
-            nodes: app.graph.num_nodes,
-            edges: app.graph.num_edges,
+            nodes: app.graph.num_nodes(),
+            edges: app.graph.num_edges(),
             file: graph_path.display().to_string(),
         },
         commit: git_commit(),

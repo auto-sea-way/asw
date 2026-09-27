@@ -22,6 +22,7 @@ indicatif = "0.18"
 geojson = "1.0"
 anyhow = "1"
 zstd = "0.13"
+memmap2 = "0.9"
 
 [profile.release]
 opt-level = 3

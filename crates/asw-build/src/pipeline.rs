@@ -60,7 +60,11 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     info!("Built {} edges", edges.len());
 
     // Step 6: Build graph
-    let mut builder = GraphBuilder::default();
+    let mut builder = GraphBuilder::with_version(format!(
+        "{} {}",
+        env!("CARGO_PKG_VERSION"),
+        time::OffsetDateTime::now_utc().date()
+    ));
 
     // Sort cells by H3 index for spatial ordering (better compression)
     let mut sorted_cells: Vec<(CellIndex, u32)> = cells.iter().map(|(&c, &id)| (c, id)).collect();
@@ -85,19 +89,18 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     // Store coastline
     builder.coastline_runs = coastline_runs;
 
-    // Step 7: Prune to the largest connected component, then build
+    // Step 7: Prune to the largest connected component, then write the v4 image
     let builder = builder.prune_to_main_component();
-    let graph = builder.build();
-    info!(
-        "Final graph: {} nodes, {} edges",
-        graph.num_nodes, graph.num_edges
-    );
-
-    // Serialize
     info!("Saving graph to {:?}...", output_path);
-    let file = std::fs::File::create(output_path).context("Failed to create output file")?;
-    let writer = std::io::BufWriter::new(file);
-    graph.save(writer)?;
+    std::fs::write(output_path, builder.build_bytes()).context("Failed to write graph")?;
+    let graph = asw_core::graph::RoutingGraph::open(output_path, false)
+        .context("Written graph does not open")?;
+    info!(
+        "Final graph: {} nodes, {} edges, version {}",
+        graph.num_nodes(),
+        graph.num_edges(),
+        graph.version()
+    );
 
     let file_size = std::fs::metadata(output_path)?.len();
     info!("Graph saved: {} MB", file_size / 1_000_000);

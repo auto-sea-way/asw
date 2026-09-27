@@ -300,21 +300,20 @@ fn main() -> Result<()> {
                 let bg_state = state.clone();
                 let loader = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                     info!("Loading graph from {:?}...", graph_file);
-                    let file =
-                        std::fs::File::open(&graph_file).context("Failed to open graph file")?;
-                    let reader = std::io::BufReader::new(file);
-                    let routing_graph = asw_core::graph::RoutingGraph::load(reader)
-                        .context("Failed to load graph")?;
+                    let routing_graph = asw_core::graph::RoutingGraph::open(&graph_file, true)
+                        .context("Failed to open graph")?;
 
                     info!(
-                        "Graph loaded: {} nodes, {} edges",
-                        routing_graph.num_nodes, routing_graph.num_edges
+                        "Graph opened: {} nodes, {} edges, version {}",
+                        routing_graph.num_nodes(),
+                        routing_graph.num_edges(),
+                        routing_graph.version()
                     );
 
                     let app_state = asw_serve::state::AppState::new(routing_graph);
                     info!(
-                        "Coastline: {} runs, Node tree ready",
-                        app_state.coast.index().run_count()
+                        "Coastline: {} runs",
+                        app_state.graph.coastline().run_count()
                     );
 
                     let _ = bg_state.app.set(std::sync::Arc::new(app_state));
@@ -475,13 +474,13 @@ fn export_geojson(
     bbox: Option<(f64, f64, f64, f64)>,
 ) -> Result<()> {
     info!("Loading graph from {:?}...", graph_path);
-    let file = std::fs::File::open(graph_path).context("Failed to open graph file")?;
-    let reader = std::io::BufReader::new(file);
-    let graph = asw_core::graph::RoutingGraph::load(reader).context("Failed to load graph")?;
+    let graph =
+        asw_core::graph::RoutingGraph::open(graph_path, false).context("Failed to open graph")?;
 
     info!(
         "Graph: {} nodes, {} edges",
-        graph.num_nodes, graph.num_edges
+        graph.num_nodes(),
+        graph.num_edges()
     );
 
     if let Some(parent) = output.parent() {
@@ -493,8 +492,8 @@ fn export_geojson(
 
     // Hex polygons
     let mut hex_count: u64 = 0;
-    for i in 0..graph.num_nodes as usize {
-        let h3 = graph.node_h3[i];
+    for i in 0..graph.num_nodes() as usize {
+        let h3 = graph.node_h3(i as u32);
         let cell = h3o::CellIndex::try_from(h3).expect("valid H3");
         let res = cell.resolution() as u8;
 
@@ -526,11 +525,10 @@ fn export_geojson(
     }
 
     // Coastline segments
-    if include_coastline && !graph.coastline_runs.is_empty() {
-        for seg in &graph.coastline_runs {
-            if seg.len() < 2 {
-                continue;
-            }
+    if include_coastline {
+        let coast = graph.coastline();
+        for run in 0..coast.run_count() {
+            let seg: Vec<(f64, f64)> = coast.run_points(run).collect();
 
             if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
                 let in_bbox = seg.iter().any(|&(lon, lat)| {
@@ -541,7 +539,7 @@ fn export_geojson(
                 }
             }
 
-            let feat = coastline_feature_string(seg);
+            let feat = coastline_feature_string(&seg);
             coastline_features.push(feat);
         }
     }

@@ -122,7 +122,7 @@ pub fn astar(
                 continue;
             }
             let weight = match shore {
-                Some(q) => weight * shore_factor(graph.shore_dist[neighbor as usize], q),
+                Some(q) => weight * shore_factor(graph.shore_dist(neighbor), q),
                 None => weight,
             };
             let tentative_g = current_g + weight;
@@ -381,7 +381,7 @@ pub fn compute_route(
     for &n in &raw_path {
         let (lat, lon) = graph.node_pos(n);
         coords.push([lon, lat]);
-        shore_dist.push(graph.shore_dist[n as usize]);
+        shore_dist.push(graph.shore_dist(n));
     }
     coords.push([to_lon, to_lat]);
     shore_dist.push(pin_q(to_lon, to_lat));
@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn astar_shortest_path() {
         let (g, node_a, node_d) = diamond_graph();
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let result = astar(&g, node_a, node_d, &mut buffers, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn astar_same_node() {
         let (g, node_a, _) = diamond_graph();
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let result = astar(&g, node_a, node_a, &mut buffers, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
@@ -499,7 +499,7 @@ mod tests {
     fn astar_reused_buffers_match_fresh_buffers_after_reset() {
         let (g, node_a, node_d) = diamond_graph();
 
-        let mut reused = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut reused = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // First search touches (and closes) every node in the tiny diamond graph.
         let first =
@@ -514,7 +514,7 @@ mod tests {
             astar(&g, node_a, node_d, &mut reused, None).expect("second search finds a path");
 
         // Baseline: identical query on completely fresh buffers.
-        let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let baseline =
             astar(&g, node_a, node_d, &mut fresh, None).expect("baseline search finds a path");
 
@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn astar_stale_state_does_not_leak_across_generations() {
         let (g, node_a, node_d) = diamond_graph();
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // First: forward search closes/stamps every node on the A->D path.
         let _ = astar(&g, node_a, node_d, &mut buffers, None).expect("path exists");
@@ -550,7 +550,7 @@ mod tests {
 
         // Second: reverse search (D -> A) on the same, now-stale buffers.
         let reused_result = astar(&g, node_d, node_a, &mut buffers, None).expect("path exists");
-        let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let fresh_result = astar(&g, node_d, node_a, &mut fresh, None).expect("path exists");
 
         assert_eq!(reused_result.0, fresh_result.0);
@@ -572,7 +572,7 @@ mod tests {
             b.add_node(*h3, 255);
         }
         let g = b.build();
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let result = astar(&g, 0, 1, &mut buffers, None);
         assert!(result.is_none());
     }
@@ -630,7 +630,7 @@ mod tests {
     #[test]
     fn penalty_diverts_route_offshore() {
         let (g, s, a, b_node, goal) = corridor_graph();
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // Without penalty: short near-shore corridor via A.
         let (path, cost) = astar(&g, s, goal, &mut buffers, None).unwrap();
@@ -648,8 +648,8 @@ mod tests {
     #[test]
     fn penalty_with_all_nodes_offshore_is_identity() {
         let (g, node_a, node_d) = diamond_graph(); // all nodes shore_dist=255
-        let mut b1 = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
-        let mut b2 = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut b1 = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
+        let mut b2 = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let plain = astar(&g, node_a, node_d, &mut b1, None).unwrap();
         let with = astar(&g, node_a, node_d, &mut b2, shore_buffer_q(0.2)).unwrap();
         assert_eq!(plain.0, with.0);
@@ -911,7 +911,7 @@ mod tests {
         let knn = move |_lat: f64, lon: f64| -> Option<(u32, f64)> {
             Some(if lon < 0.5 { (s, 0.0) } else { (goal, 0.0) })
         };
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let r =
             compute_route(&g, 0.0, -0.1, 0.0, 1.1, &coastline, &knn, &mut buffers, 0.0).unwrap();
 
@@ -942,7 +942,7 @@ mod tests {
         let (g, ids) = chain_graph(&[(1.5, 0.5)]);
         let n = ids[0];
         let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let r = compute_route(&g, 0.0, 0.4, 0.0, 0.6, &coastline, &knn, &mut buffers, 0.0).unwrap();
 
         // node_pos decodes the H3 cell center, not the coordinates passed to
@@ -971,7 +971,7 @@ mod tests {
         let knn = move |_lat: f64, lon: f64| -> Option<(u32, f64)> {
             Some(if lon < 1.0 { (s, 0.0) } else { (goal, 0.0) })
         };
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let r = compute_route(&g, 0.0, 0.0, 0.0, 2.2, &coastline, &knn, &mut buffers, 0.0)
             .expect("land pin must still produce a route");
         assert_eq!(r.coordinates.first().unwrap(), &[0.0, 0.0]);
@@ -995,6 +995,8 @@ mod tests {
             })
             .collect();
         entries.sort_by_key(|(h3, _, _)| *h3);
+        // Two of the three points share a res-5 cell; the builder needs unique ids.
+        entries.dedup_by_key(|(h3, _, _)| *h3);
         let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
         for &(h3, _, _) in &entries {
@@ -1017,7 +1019,7 @@ mod tests {
 
         // Nearest node by haversine over all graph nodes.
         let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> {
-            (0..g.num_nodes)
+            (0..g.num_nodes())
                 .map(|n| {
                     let (nlat, nlon) = g.node_pos(n);
                     (n, haversine_nm(lat, lon, nlat, nlon))
@@ -1025,7 +1027,7 @@ mod tests {
                 .min_by(|a, b| a.1.total_cmp(&b.1))
         };
 
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let r = compute_route(
             &g,
             36.84,
@@ -1095,7 +1097,7 @@ mod tests {
         let coast = sections.index();
 
         let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // One pin inside each prong of the U, straddling the node's notch.
         let (from_lat, from_lon) = (nlat - 0.06, nlon - 0.04);
@@ -1137,7 +1139,7 @@ mod tests {
                 Some((d, 0.0))
             }
         };
-        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let r = compute_route(&g, alat, alon, dlat, dlon, &coast, &knn, &mut buffers, 0.0).unwrap();
         assert!(r.land_legs.is_empty());
         let full: f64 = r

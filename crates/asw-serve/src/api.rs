@@ -130,7 +130,7 @@ async fn route_handler(
             from_lon,
             to_lat,
             to_lon,
-            &app.coast.index(),
+            &app.graph.coastline(),
             &knn,
             &mut buffers,
             shore_buffer_nm,
@@ -186,8 +186,8 @@ async fn info_handler(
     let app = state.app.get().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     Ok(Json(InfoResponse {
-        nodes: app.graph.num_nodes,
-        edges: app.graph.num_edges,
+        nodes: app.graph.num_nodes(),
+        edges: app.graph.num_edges(),
         graph_path: state.graph_path.clone(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     }))
@@ -302,8 +302,16 @@ mod tests {
                 )
             })
             .collect();
-        let mut graph = crate::state::chain_graph(&h3s);
-        graph.coastline_runs = coastline;
+        let mut h3s = h3s;
+        h3s.sort_unstable();
+        h3s.dedup();
+        let mut b = asw_core::graph::GraphBuilder::default();
+        let ids: Vec<u32> = h3s.iter().map(|&h| b.add_node(h, 255)).collect();
+        for w in ids.windows(2) {
+            b.add_edge(w[0], w[1]);
+        }
+        b.coastline_runs = coastline;
+        let graph = b.build();
 
         let state = test_state();
         mark_ready(&state, crate::state::AppState::new(graph));

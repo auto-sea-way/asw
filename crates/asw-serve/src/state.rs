@@ -41,8 +41,6 @@ impl ServerState {
 /// Shared application state for the HTTP server.
 pub struct AppState {
     pub graph: RoutingGraph,
-    /// Transitional (until the graph file carries the sections itself).
-    pub coast: asw_core::coast::CoastlineSections,
     /// Pre-allocated A* search buffer pool. Sized to
     /// `asw_core::astar_pool::DEFAULT_POOL_SIZE` buffer sets; concurrent
     /// access above that capacity is prevented upstream by
@@ -52,26 +50,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Build AppState from a RoutingGraph.
-    ///
-    /// Initialization is sequenced to minimize peak memory: each heavy
-    /// allocation is completed (and its temporaries dropped) before the
-    /// next one begins.
-    pub fn new(mut graph: RoutingGraph) -> Self {
-        // Build coastline R-tree, then free the raw coords from the graph.
-        let coast = asw_core::coast::CoastlineSections::from_runs(&graph.coastline_runs);
-        graph.drop_coastline_runs();
-
+    /// Build AppState from an opened RoutingGraph. The coastline index is a
+    /// view over the mapped file, so nothing is built here.
+    pub fn new(graph: RoutingGraph) -> Self {
         let astar_pool = asw_core::astar_pool::AstarPool::new(
-            graph.num_nodes as usize,
+            graph.num_nodes() as usize,
             asw_core::astar_pool::DEFAULT_POOL_SIZE,
         );
-
-        Self {
-            graph,
-            coast,
-            astar_pool,
-        }
+        Self { graph, astar_pool }
     }
 
     /// Approximate H3 edge length in nautical miles, indexed by resolution (3..=13).
@@ -272,7 +258,7 @@ impl AppState {
 
     /// Binary search for an H3 cell index in the sorted `node_h3` array.
     fn h3_lookup(&self, h3: u64) -> Option<u32> {
-        self.graph.node_h3.binary_search(&h3).ok().map(|i| i as u32)
+        self.graph.h3_lookup(h3)
     }
 }
 

@@ -7,8 +7,6 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 h3o.workspace = true
 geo.workspace = true
-serde.workspace = true
-bitcode.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-zstd.workspace = true
+memmap2.workspace = true
