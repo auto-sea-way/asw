@@ -214,14 +214,27 @@ impl<'a> CoastlineIndex<'a> {
     /// two. Parity from a known-water P tells whether T is on water.
     pub fn crossing_count(&self, lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> usize {
         if (lon1 - lon2).abs() > 180.0 {
+            // The seam point is t = 1 on the first half (excluded) and t = 0
+            // on the second; exclude it there too, so a coastline edge lying
+            // exactly on lon ±180 (the split dataset's cut edges) is counted
+            // by neither half and parity survives the split.
             let (a, b) = split_at_antimeridian(lon1, lat1, lon2, lat2);
-            return self.crossing_count_planar(a.0, a.1, a.2, a.3)
-                + self.crossing_count_planar(b.0, b.1, b.2, b.3);
+            return self.crossing_count_planar(a.0, a.1, a.2, a.3, true)
+                + self.crossing_count_planar(b.0, b.1, b.2, b.3, false);
         }
-        self.crossing_count_planar(lon1, lat1, lon2, lat2)
+        self.crossing_count_planar(lon1, lat1, lon2, lat2, true)
     }
 
-    fn crossing_count_planar(&self, px: f64, py: f64, tx: f64, ty: f64) -> usize {
+    /// Crossings of P->T with parameter `t` in `[0, 1)`, or `(0, 1)` when
+    /// `include_start` is false.
+    fn crossing_count_planar(
+        &self,
+        px: f64,
+        py: f64,
+        tx: f64,
+        ty: f64,
+        include_start: bool,
+    ) -> usize {
         let (dx, dy) = (tx - px, ty - py);
         // Strictly left of P->T; a point on the line counts as right.
         let left = |x: f64, y: f64| dx * (y - py) - dy * (x - px) > 0.0;
@@ -238,7 +251,8 @@ impl<'a> CoastlineIndex<'a> {
                     continue;
                 }
                 let t = ((a.x - px) * ey - (a.y - py) * ex) / denom;
-                if (0.0..1.0).contains(&t) {
+                let lo_ok = if include_start { t >= 0.0 } else { t > 0.0 };
+                if lo_ok && t < 1.0 {
                     n += 1;
                 }
             }
@@ -623,6 +637,40 @@ mod tests {
         // y = 0.1 touches the north vertex without entering.
         let s = diamond();
         assert_eq!(s.index().crossing_count(-1.0, 0.1, 1.0, 0.1) % 2, 0);
+    }
+
+    /// An island cut by the split dataset at lon ±180: an east ring ending
+    /// on 180 and a west ring starting on -180, both with a cut edge lying
+    /// exactly on the seam. The seam must belong to neither half of a split
+    /// query, or the two cut edges are counted once instead of zero/twice.
+    #[test]
+    fn crossing_count_through_seam_cut_island_keeps_parity() {
+        let s = CoastlineSections::from_runs(&[
+            vec![
+                (179.5, -0.5),
+                (180.0, -0.5),
+                (180.0, 0.5),
+                (179.5, 0.5),
+                (179.5, -0.5),
+            ],
+            vec![
+                (-180.0, -0.5),
+                (-179.5, -0.5),
+                (-179.5, 0.5),
+                (-180.0, 0.5),
+                (-180.0, -0.5),
+            ],
+        ]);
+        let idx = s.index();
+        // Water to water straight through the island: enter east ring, leave
+        // it at the seam edge, enter west ring at the seam edge, leave it.
+        // Each ring contributes 2 crossings when the seam edges are counted
+        // consistently: 4 in total, even.
+        assert_eq!(idx.crossing_count(179.0, 0.0, -179.0, 0.0) % 2, 0);
+        // Water to a point inside the west half of the island: odd.
+        assert_eq!(idx.crossing_count(179.0, 0.0, -179.75, 0.0) % 2, 1);
+        // Water to a point inside the east half: odd.
+        assert_eq!(idx.crossing_count(-179.0, 0.0, 179.75, 0.0) % 2, 1);
     }
 
     #[test]
