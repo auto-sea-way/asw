@@ -314,6 +314,20 @@ fn direct_line_ok(
             >= threshold - 1e-9
 }
 
+/// Is the point on navigable water? Snap to the nearest water node (its
+/// centre is known water) and count coastline crossings on the way to the
+/// point: even means water. No node within the snapping ladder means land.
+pub fn is_water(graph: &RoutingGraph, lat: f64, lon: f64) -> bool {
+    let Some((node, _)) = graph.nearest_node(lat, lon) else {
+        return false;
+    };
+    let (nlat, nlon) = graph.node_pos(node);
+    graph
+        .coastline()
+        .crossing_count(nlon, nlat, lon, lat)
+        .is_multiple_of(2)
+}
+
 /// Compute a full route: direct-line shortcut → snap → A* → stitch true
 /// endpoints → smooth → build result.
 #[allow(clippy::too_many_arguments)]
@@ -1148,5 +1162,55 @@ mod tests {
             .map(|w| haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]))
             .sum();
         assert!((r.distance_nm - full).abs() < 1e-9);
+    }
+
+    /// One res-5 water node at (36.5, 28.3); a thin mole ring between it and
+    /// a berth at (36.5, 28.0). Parity: two crossings, still water.
+    fn mole_graph() -> RoutingGraph {
+        let cell = h3o::LatLng::new(36.5, 28.3)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let mut b = GraphBuilder::default();
+        b.add_node(u64::from(cell), 255);
+        b.coastline_runs = vec![vec![
+            (28.10, 36.40),
+            (28.11, 36.40),
+            (28.11, 36.60),
+            (28.10, 36.60),
+            (28.10, 36.40),
+        ]];
+        b.build()
+    }
+
+    #[test]
+    fn is_water_marina_behind_mole_is_water() {
+        let g = mole_graph();
+        assert!(is_water(&g, 36.5, 28.0));
+        assert!(is_water(&g, 36.5, 28.3));
+    }
+
+    #[test]
+    fn is_water_inside_island_is_land() {
+        let cell = h3o::LatLng::new(36.5, 28.3)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let mut b = GraphBuilder::default();
+        b.add_node(u64::from(cell), 255);
+        b.coastline_runs = vec![vec![
+            (27.9, 36.4),
+            (28.1, 36.4),
+            (28.1, 36.6),
+            (27.9, 36.6),
+            (27.9, 36.4),
+        ]];
+        let g = b.build();
+        assert!(!is_water(&g, 36.5, 28.0), "inside the island ring");
+        assert!(is_water(&g, 36.5, 28.3), "open water next to the node");
+    }
+
+    #[test]
+    fn is_water_without_any_node_is_land() {
+        let g = GraphBuilder::default().build();
+        assert!(!is_water(&g, 36.5, 28.0));
     }
 }

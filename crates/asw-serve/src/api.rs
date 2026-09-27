@@ -122,7 +122,7 @@ async fn route_handler(
     // not occupy a tokio worker thread, or it starves other tasks scheduled
     // on the same worker (see finding 6 in the 2026-07-06 project review).
     let result = tokio::task::spawn_blocking(move || {
-        let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.nearest_node(lat, lon) };
+        let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> { app.graph.nearest_node(lat, lon) };
         let mut buffers = app.astar_pool.acquire();
         let result = compute_route(
             &app.graph,

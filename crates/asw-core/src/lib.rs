@@ -4,6 +4,7 @@ pub mod graph;
 pub mod h3;
 pub mod passages;
 pub mod routing;
+pub mod snap;
 pub mod varint;
 
 /// H3 resolution for the coarsest ocean tier
