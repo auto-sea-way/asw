@@ -78,22 +78,16 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     }
 
     // Add edges with remapped IDs
-    for &(src, dst, cost) in &edges {
-        builder.add_edge(id_remap[src as usize], id_remap[dst as usize], cost);
+    for &(src, dst) in &edges {
+        builder.add_edge(id_remap[src as usize], id_remap[dst as usize]);
     }
 
     // Store coastline
     builder.coastline_runs = coastline_runs;
 
-    // Step 7: Build and validate
+    // Step 7: Prune to the largest connected component, then build
+    let builder = builder.prune_to_main_component();
     let graph = builder.build();
-    info!(
-        "Graph: {} nodes, {} edges",
-        graph.num_nodes, graph.num_edges
-    );
-
-    // Prune: keep only the largest connected component
-    let graph = graph.prune_to_main_component();
     info!(
         "Final graph: {} nodes, {} edges",
         graph.num_nodes, graph.num_edges

@@ -21,7 +21,8 @@ pub fn quantize_shore_dist(nm: f64) -> u8 {
 ///
 /// Compressed Sparse Row graph for maritime routing.
 /// Nodes are H3 cell indices stored in sorted ascending order.
-/// Edge data is interleaved delta-varint targets + u16 weights.
+/// Edge data is varint target deltas; weights are recomputed at query time
+/// as centre-to-centre haversine, so nothing per edge is stored but the id.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct RoutingGraph {
     /// H3 cell index for each node, sorted ascending. Array index = node ID.
@@ -29,8 +30,7 @@ pub struct RoutingGraph {
     /// Byte offsets into `edge_data`. Length = num_nodes + 1.
     /// Invariant: `offsets[num_nodes] == edge_data.len()`
     pub offsets: Vec<u32>,
-    /// Interleaved per-node: [varint target_delta][u16 weight_le] per edge.
-    /// Targets sorted ascending, stored as deltas.
+    /// Per-node varint target deltas. Targets sorted ascending.
     pub edge_data: Vec<u8>,
     /// Quantized straight-line distance from node center to nearest coastline.
     /// Unit: SHORE_DIST_UNIT_NM (0.02 nm). 255 = saturated (>= 5.1 nm).
@@ -41,11 +41,15 @@ pub struct RoutingGraph {
     pub num_edges: u32,
 }
 
-/// Iterator over a node's neighbors, decoding interleaved varint+u16 edge data.
+/// Iterator over a node's neighbors, decoding varint target deltas and
+/// computing each edge's length from the two cell centres.
 pub struct NeighborIter<'a> {
+    graph: &'a RoutingGraph,
     data: &'a [u8],
     pos: usize,
     prev_target: u32,
+    src_lat: f64,
+    src_lon: f64,
 }
 
 impl<'a> Iterator for NeighborIter<'a> {
@@ -59,11 +63,10 @@ impl<'a> Iterator for NeighborIter<'a> {
         self.pos = new_pos;
         let target = self.prev_target + delta;
         self.prev_target = target;
-
-        let weight_raw = u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]);
-        self.pos += 2;
-        let weight_nm = weight_raw as f32 / 100.0;
-
+        // ponytail: one cell-centre decode per relaxation; cache positions in
+        // the A* buffers if the bench says this dominates.
+        let (lat, lon) = self.graph.node_pos(target);
+        let weight_nm = crate::h3::haversine_nm(self.src_lat, self.src_lon, lat, lon) as f32;
         Some((target, weight_nm))
     }
 }
@@ -72,8 +75,8 @@ impl<'a> Iterator for NeighborIter<'a> {
 pub struct GraphBuilder {
     /// (h3_index, shore_dist_q) per node.
     nodes: Vec<(u64, u8)>,
-    /// (src, dst, weight_nm)
-    edges: Vec<(u32, u32, f32)>,
+    /// (src, dst)
+    edges: Vec<(u32, u32)>,
     pub coastline_runs: Vec<Vec<(f64, f64)>>,
 }
 
@@ -85,63 +88,81 @@ impl GraphBuilder {
         id
     }
 
-    /// Add a bidirectional edge.
-    pub fn add_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
-        self.edges.push((src, dst, weight_nm));
-        self.edges.push((dst, src, weight_nm));
+    /// Add a bidirectional edge. Weights are not stored: the router computes
+    /// centre-to-centre haversine at query time.
+    pub fn add_edge(&mut self, src: u32, dst: u32) {
+        self.edges.push((src, dst));
+        self.edges.push((dst, src));
     }
 
     /// Add a one-way edge.
-    pub fn add_directed_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
-        self.edges.push((src, dst, weight_nm));
+    pub fn add_directed_edge(&mut self, src: u32, dst: u32) {
+        self.edges.push((src, dst));
+    }
+
+    /// Keep only the largest connected component, renumbering node ids and
+    /// preserving H3 order. Returns self unchanged when already connected.
+    pub fn prune_to_main_component(mut self) -> Self {
+        let n = self.nodes.len();
+        let labels = component_labels(n, &self.edges);
+        let mut comp_sizes: std::collections::HashMap<u32, usize> =
+            std::collections::HashMap::new();
+        for &root in &labels {
+            *comp_sizes.entry(root).or_insert(0) += 1;
+        }
+        let Some((&main_root, &main_count)) = comp_sizes.iter().max_by_key(|(_, c)| **c) else {
+            return self;
+        };
+        if main_count == n {
+            return self;
+        }
+        tracing::info!(
+            "Pruning {} nodes in {} small components (keeping {} in main component)",
+            n - main_count,
+            comp_sizes.len() - 1,
+            main_count,
+        );
+        let mut old_to_new: Vec<Option<u32>> = vec![None; n];
+        let mut kept = Vec::with_capacity(main_count);
+        for (old, node) in self.nodes.iter().enumerate() {
+            if labels[old] == main_root {
+                old_to_new[old] = Some(kept.len() as u32);
+                kept.push(*node);
+            }
+        }
+        self.edges = self
+            .edges
+            .iter()
+            .filter_map(|&(s, d)| Some((old_to_new[s as usize]?, old_to_new[d as usize]?)))
+            .collect();
+        self.nodes = kept;
+        self
     }
 
     /// Build the CSR graph.
     pub fn build(self) -> RoutingGraph {
         let num_nodes = self.nodes.len() as u32;
-        let num_edges = self.edges.len() as u32;
 
         let node_h3: Vec<u64> = self.nodes.iter().map(|(h3, _)| *h3).collect();
         let shore_dist: Vec<u8> = self.nodes.iter().map(|(_, q)| *q).collect();
 
-        // Group edges by source, sort targets ascending per source
-        let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes as usize];
-        for &(src, dst, w) in &self.edges {
-            adj[src as usize].push((dst, w));
+        // Group edges by source, sort and dedup targets per source
+        let mut adj: Vec<Vec<u32>> = vec![Vec::new(); num_nodes as usize];
+        for &(src, dst) in &self.edges {
+            adj[src as usize].push(dst);
         }
-        for list in &mut adj {
-            list.sort_by_key(|&(target, _)| target);
-        }
-
-        // Encode edge_data: interleaved varint deltas + u16 LE weights
+        let mut num_edges = 0u32;
         let mut edge_data = Vec::new();
         let mut offsets = Vec::with_capacity(num_nodes as usize + 1);
-
-        for list in &adj {
+        for list in &mut adj {
+            list.sort_unstable();
+            list.dedup();
             offsets.push(edge_data.len() as u32);
             let mut prev_target = 0u32;
-            for &(target, weight_nm) in list {
-                let delta = target - prev_target;
-                crate::varint::encode(delta, &mut edge_data);
-                // Overflow is data corruption, not a quantization rounding artifact:
-                // silently truncating (saturating-cast) a >655.35nm edge down to
-                // 655.35nm would produce a wrong, undetectable distance. Hard-error
-                // in all builds (not just debug) so it can never ship silently.
-                assert!(
-                    weight_nm <= 655.35,
-                    "edge weight {weight_nm} nm exceeds u16 centi-nm range (max 655.35 nm) — \
-                     cannot encode without data corruption"
-                );
-                // Round to centi-nm, but never let a positive-length edge quantize
-                // to 0: adjacent res-13 H3 cells (passage corridors — Panama, Kiel,
-                // Corinth, Welland) are ~0.0033nm apart, which rounds to 0 and makes
-                // A* treat canal transit as a free edge. Clamp to 1 (0.01nm) instead.
-                let mut weight_u16 = (weight_nm * 100.0).round() as u16;
-                if weight_nm > 0.0 {
-                    weight_u16 = weight_u16.max(1);
-                }
-                edge_data.extend_from_slice(&weight_u16.to_le_bytes());
+            for &target in list.iter() {
+                crate::varint::encode(target - prev_target, &mut edge_data);
                 prev_target = target;
+                num_edges += 1;
             }
         }
         offsets.push(edge_data.len() as u32);
@@ -247,10 +268,14 @@ impl RoutingGraph {
     pub fn neighbors(&self, node: u32) -> NeighborIter<'_> {
         let start = self.offsets[node as usize] as usize;
         let end = self.offsets[node as usize + 1] as usize;
+        let (src_lat, src_lon) = self.node_pos(node);
         NeighborIter {
+            graph: self,
             data: &self.edge_data[start..end],
             pos: 0,
             prev_target: 0,
+            src_lat,
+            src_lon,
         }
     }
 
@@ -265,115 +290,53 @@ impl RoutingGraph {
     pub fn drop_coastline_runs(&mut self) {
         self.coastline_runs = Vec::new();
     }
+}
 
-    /// Keep only the largest connected component, remapping node IDs.
-    /// Returns self unchanged when the graph is already one component.
-    pub fn prune_to_main_component(self) -> RoutingGraph {
-        let labels = self.component_labels();
-        let mut comp_sizes: std::collections::HashMap<u32, usize> =
-            std::collections::HashMap::new();
-        for &root in &labels {
-            *comp_sizes.entry(root).or_insert(0) += 1;
-        }
-        let main_root = comp_sizes
-            .iter()
-            .max_by_key(|(_, count)| **count)
-            .map(|(&root, _)| root)
-            .unwrap_or(0);
-        let main_count = comp_sizes.get(&main_root).copied().unwrap_or(0);
-        let pruned_count = self.num_nodes as usize - main_count;
+/// Union-find component root per node over an edge list.
+fn component_labels(n: usize, edges: &[(u32, u32)]) -> Vec<u32> {
+    debug_assert!(n <= u32::MAX as usize);
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    let mut rank = vec![0u8; n];
 
-        if pruned_count == 0 {
-            return self;
+    fn find(parent: &mut [u32], x: u32) -> u32 {
+        let mut root = x;
+        while parent[root as usize] != root {
+            root = parent[root as usize];
         }
-        tracing::info!(
-            "Pruning {} nodes in {} small components (keeping {} in main component)",
-            pruned_count,
-            comp_sizes.len() - 1,
-            main_count,
-        );
-
-        let mut old_to_new: Vec<Option<u32>> = vec![None; self.num_nodes as usize];
-        let mut new_builder = GraphBuilder::default();
-        for old_id in 0..self.num_nodes {
-            if labels[old_id as usize] == main_root {
-                let h3 = self.node_h3[old_id as usize];
-                let new_id = new_builder.add_node(h3, self.shore_dist[old_id as usize]);
-                old_to_new[old_id as usize] = Some(new_id);
-            }
+        // Path compression
+        let mut cur = x;
+        while cur != root {
+            let next = parent[cur as usize];
+            parent[cur as usize] = root;
+            cur = next;
         }
-        for old_src in 0..self.num_nodes {
-            if labels[old_src as usize] != main_root {
-                continue;
-            }
-            let new_src = old_to_new[old_src as usize].unwrap();
-            for (old_dst, weight) in self.neighbors(old_src) {
-                if let Some(new_dst) = old_to_new[old_dst as usize] {
-                    new_builder.add_directed_edge(new_src, new_dst, weight);
-                }
-            }
-        }
-        new_builder.coastline_runs = self.coastline_runs;
-        let pruned = new_builder.build();
-        tracing::info!(
-            "Pruned graph: {} nodes, {} edges",
-            pruned.num_nodes,
-            pruned.num_edges
-        );
-        pruned
+        root
     }
 
-    /// Returns a Vec where `result[i]` is the component root for node `i`.
-    /// Uses u32 to halve memory vs usize (40M nodes * 4 bytes = 160 MB).
-    fn component_labels(&self) -> Vec<u32> {
-        let n = self.num_nodes as usize;
-        debug_assert!(n <= u32::MAX as usize);
-        let mut parent: Vec<u32> = (0..n as u32).collect();
-        let mut rank = vec![0u8; n];
-
-        fn find(parent: &mut [u32], x: u32) -> u32 {
-            let mut root = x;
-            while parent[root as usize] != root {
-                root = parent[root as usize];
-            }
-            // Path compression
-            let mut cur = x;
-            while cur != root {
-                let next = parent[cur as usize];
-                parent[cur as usize] = root;
-                cur = next;
-            }
-            root
+    fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra == rb {
+            return;
         }
-
-        fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
-            let ra = find(parent, a);
-            let rb = find(parent, b);
-            if ra == rb {
-                return;
-            }
-            if rank[ra as usize] < rank[rb as usize] {
-                parent[ra as usize] = rb;
-            } else if rank[ra as usize] > rank[rb as usize] {
-                parent[rb as usize] = ra;
-            } else {
-                parent[rb as usize] = ra;
-                rank[ra as usize] += 1;
-            }
+        if rank[ra as usize] < rank[rb as usize] {
+            parent[ra as usize] = rb;
+        } else if rank[ra as usize] > rank[rb as usize] {
+            parent[rb as usize] = ra;
+        } else {
+            parent[rb as usize] = ra;
+            rank[ra as usize] += 1;
         }
-
-        for node in 0..n {
-            for (neighbor, _) in self.neighbors(node as u32) {
-                union(&mut parent, &mut rank, node as u32, neighbor);
-            }
-        }
-        drop(rank);
-
-        for i in 0..n as u32 {
-            find(&mut parent, i);
-        }
-        parent
     }
+
+    for &(a, b) in edges {
+        union(&mut parent, &mut rank, a, b);
+    }
+    drop(rank);
+    for i in 0..n as u32 {
+        find(&mut parent, i);
+    }
+    parent
 }
 
 #[cfg(test)]
@@ -422,10 +385,10 @@ mod tests {
         let n2 = idx_of(u64::from(c2));
         let n3 = idx_of(u64::from(c3));
 
-        b.add_edge(n0, n1, 1.0);
-        b.add_edge(n1, n3, 1.0);
-        b.add_edge(n0, n2, 2.0);
-        b.add_edge(n2, n3, 2.0);
+        b.add_edge(n0, n1);
+        b.add_edge(n1, n3);
+        b.add_edge(n0, n2);
+        b.add_edge(n2, n3);
         b.build()
     }
 
@@ -487,39 +450,6 @@ mod tests {
             "Error should mention ASW format: {}",
             err_msg
         );
-    }
-
-    #[test]
-    fn neighbor_iter_decodes_edge_data() {
-        let mut edge_data = Vec::new();
-        crate::varint::encode(5, &mut edge_data);
-        edge_data.extend_from_slice(&150u16.to_le_bytes());
-        crate::varint::encode(5, &mut edge_data);
-        edge_data.extend_from_slice(&200u16.to_le_bytes());
-        crate::varint::encode(32, &mut edge_data);
-        edge_data.extend_from_slice(&350u16.to_le_bytes());
-
-        let end = edge_data.len() as u32;
-
-        // Use a real H3 cell for the dummy node
-        let cell = h3o::LatLng::new(0.0, 0.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let graph = RoutingGraph {
-            node_h3: vec![u64::from(cell)],
-            offsets: vec![0, end],
-            edge_data,
-            shore_dist: vec![255],
-            coastline_runs: vec![],
-            num_nodes: 1,
-            num_edges: 3,
-        };
-
-        let neighbors: Vec<(u32, f32)> = graph.neighbors(0).collect();
-        assert_eq!(neighbors.len(), 3);
-        assert_eq!(neighbors[0], (5, 1.50));
-        assert_eq!(neighbors[1], (10, 2.00));
-        assert_eq!(neighbors[2], (42, 3.50));
     }
 
     #[test]
@@ -586,8 +516,8 @@ mod tests {
         let n1 = idx_of(u64::from(c1));
         let n2 = idx_of(u64::from(c2));
 
-        b.add_edge(n0, n1, 186.0);
-        b.add_edge(n0, n2, 50.0);
+        b.add_edge(n0, n1);
+        b.add_edge(n0, n2);
 
         let g = b.build();
 
@@ -600,61 +530,49 @@ mod tests {
         let n1_neighbors: Vec<(u32, f32)> = g.neighbors(n1).collect();
         assert_eq!(n1_neighbors.len(), 1);
         assert_eq!(n1_neighbors[0].0, n0);
-        assert!((n1_neighbors[0].1 - 186.0).abs() < 0.01);
+        let (lat0, lon0) = g.node_pos(n0);
+        let (lat1, lon1) = g.node_pos(n1);
+        let expected = crate::h3::haversine_nm(lat1, lon1, lat0, lon0);
+        assert!((n1_neighbors[0].1 as f64 - expected).abs() < 1e-3);
     }
 
-    /// Regression test for finding #2 (2026-07-06 project review): adjacent
-    /// res-13 H3 cells (used in passage corridors — Panama, Kiel, Corinth,
-    /// Welland) are ~0.0033 nm apart. The old `(weight_nm * 100.0).round() as
-    /// u16` quantization rounded that to 0, making canal transit edges free
-    /// for A*. A quantized weight must never be zero for a positive-length edge.
     #[test]
-    fn quantized_weight_never_zero_for_tiny_res13_edge() {
-        let center = h3o::LatLng::new(9.08, -79.68) // near the Panama Canal
+    fn neighbor_weights_are_centre_to_centre_haversine() {
+        let g = square_graph();
+        for n in 0..g.num_nodes {
+            let (lat, lon) = g.node_pos(n);
+            for (t, w) in g.neighbors(n) {
+                let (tlat, tlon) = g.node_pos(t);
+                let expected = crate::h3::haversine_nm(lat, lon, tlat, tlon);
+                assert!(
+                    (w as f64 - expected).abs() < 1e-3,
+                    "edge {n}->{t}: {w} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn res13_edge_weight_is_true_distance() {
+        let center = h3o::LatLng::new(9.08, -79.68)
             .unwrap()
             .to_cell(h3o::Resolution::Thirteen);
         let neighbor = crate::h3::neighbors(center)[0];
-
         let (lat0, lon0) = crate::h3::cell_center(center);
         let (lat1, lon1) = crate::h3::cell_center(neighbor);
         let true_dist_nm = crate::h3::haversine_nm(lat0, lon0, lat1, lon1);
-        assert!(
-            true_dist_nm < 0.005,
-            "expected a sub-0.005nm res-13 edge, got {true_dist_nm} nm"
-        );
+        assert!(true_dist_nm < 0.005);
 
+        let mut cells = [u64::from(center), u64::from(neighbor)];
+        cells.sort_unstable();
         let mut b = GraphBuilder::default();
-        let n0 = b.add_node(u64::from(center), 255);
-        let n1 = b.add_node(u64::from(neighbor), 255);
-        b.add_edge(n0, n1, true_dist_nm as f32);
+        let n0 = b.add_node(cells[0], 255);
+        let n1 = b.add_node(cells[1], 255);
+        b.add_edge(n0, n1);
         let g = b.build();
-
-        let neighbors: Vec<(u32, f32)> = g.neighbors(n0.min(n1)).collect();
-        assert_eq!(neighbors.len(), 1);
-        assert!(
-            neighbors[0].1 >= 0.01,
-            "quantized weight {} nm should clamp to >= 0.01 nm (1 centi-nm), not round to 0",
-            neighbors[0].1
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "exceeds u16")]
-    fn build_hard_errors_on_weight_overflowing_u16() {
-        let c0 = h3o::LatLng::new(0.0, 0.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let c1 = h3o::LatLng::new(0.0, 1.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-
-        let mut b = GraphBuilder::default();
-        let n0 = b.add_node(u64::from(c0), 255);
-        let n1 = b.add_node(u64::from(c1), 255);
-        // 655.36 nm exceeds the u16 centi-nm range (max 655.35 nm) — must be
-        // a loud failure, not a silently truncated weight.
-        b.add_edge(n0, n1, 655.36);
-        let _ = b.build();
+        let (_, w) = g.neighbors(n0).next().unwrap();
+        assert!(w > 0.0, "canal edges must never be free");
+        assert!((w as f64 - true_dist_nm).abs() < 1e-6);
     }
 
     #[test]
@@ -700,11 +618,9 @@ mod tests {
             ids.push(b.add_node(h3, q));
         }
         // Chain the first three entries (by sorted order); leave the last isolated.
-        b.add_edge(ids[0], ids[1], 1.0);
-        b.add_edge(ids[1], ids[2], 1.0);
-        let g = b.build();
-
-        let pruned = g.prune_to_main_component();
+        b.add_edge(ids[0], ids[1]);
+        b.add_edge(ids[1], ids[2]);
+        let pruned = b.prune_to_main_component().build();
         assert_eq!(pruned.num_nodes, 3);
         // Every surviving node keeps the shore_dist of the entry with its H3 index.
         for (i, &h3) in pruned.node_h3.iter().enumerate() {
@@ -734,7 +650,7 @@ mod tests {
         for &(h3, _, _, q) in &cells {
             ids.push(b.add_node(h3, q));
         }
-        b.add_edge(ids[0], ids[1], 1.0);
+        b.add_edge(ids[0], ids[1]);
         let g = b.build();
 
         let mut buf = Vec::new();

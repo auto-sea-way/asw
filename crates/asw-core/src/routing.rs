@@ -415,7 +415,18 @@ mod tests {
     use super::*;
     use crate::graph::GraphBuilder;
 
-    /// Returns (graph, node_a, node_d) where A->B->D is shortest (cost 10).
+    /// Sum of centre-to-centre haversine along a node path.
+    fn path_len(g: &RoutingGraph, path: &[u32]) -> f64 {
+        path.windows(2)
+            .map(|w| {
+                let (a1, o1) = g.node_pos(w[0]);
+                let (a2, o2) = g.node_pos(w[1]);
+                haversine_nm(a1, o1, a2, o2)
+            })
+            .sum()
+    }
+
+    /// Returns (graph, node_a, node_d): a diamond A-B-D / A-C-D of ~60 nm edges.
     fn diamond_graph() -> (RoutingGraph, u32, u32) {
         // Points spaced far enough apart to map to distinct H3 cells at res-5
         let c0 = h3o::LatLng::new(0.0, 0.0)
@@ -448,10 +459,10 @@ mod tests {
             ids.insert(*label, id);
         }
 
-        b.add_edge(ids["A"], ids["B"], 5.0);
-        b.add_edge(ids["A"], ids["C"], 10.0);
-        b.add_edge(ids["B"], ids["D"], 5.0);
-        b.add_edge(ids["C"], ids["D"], 10.0);
+        b.add_edge(ids["A"], ids["B"]);
+        b.add_edge(ids["A"], ids["C"]);
+        b.add_edge(ids["B"], ids["D"]);
+        b.add_edge(ids["C"], ids["D"]);
         (b.build(), ids["A"], ids["D"])
     }
 
@@ -462,7 +473,7 @@ mod tests {
         let result = astar(&g, node_a, node_d, &mut buffers, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
-        assert!((cost - 10.0).abs() < 1e-6, "cost was {cost}, expected 10.0");
+        assert!((cost - path_len(&g, &path)).abs() < 1e-3, "cost was {cost}");
         assert_eq!(path.len(), 3);
         assert_eq!(path[0], node_a);
         assert_eq!(*path.last().unwrap(), node_d);
@@ -583,13 +594,13 @@ mod tests {
         assert!((shore_factor(2, 5) - (1.0 + 15.0 * 0.6)).abs() < 1e-4);
     }
 
-    /// Two corridors S->A->G (short, A hugs the shore) and S->B->G (long, B
-    /// offshore). Without a buffer the short corridor wins; with one, the long.
+    /// Two corridors S->A->G (~120 nm, A hugs the shore) and S->B->G (~166 nm,
+    /// B offshore). Without a buffer the short corridor wins; with one, the long.
     fn corridor_graph() -> (RoutingGraph, u32, u32, u32, u32) {
         let coords = [
             (0.0, 0.0, "S", 255u8),
             (1.0, 0.0, "A", 0u8), // on the shore
-            (0.0, 1.0, "B", 255u8),
+            (0.0, 1.6, "B", 255u8),
             (1.0, 1.0, "G", 255u8),
         ];
         let mut cells: Vec<(u64, f64, f64, u8, &str)> = coords
@@ -609,10 +620,10 @@ mod tests {
             let id = b.add_node(*h3, *q);
             ids.insert(*label, id);
         }
-        b.add_edge(ids["S"], ids["A"], 5.0);
-        b.add_edge(ids["A"], ids["G"], 5.0); // near-shore total: 10
-        b.add_edge(ids["S"], ids["B"], 8.0);
-        b.add_edge(ids["B"], ids["G"], 8.0); // offshore total: 16
+        b.add_edge(ids["S"], ids["A"]);
+        b.add_edge(ids["A"], ids["G"]);
+        b.add_edge(ids["S"], ids["B"]);
+        b.add_edge(ids["B"], ids["G"]);
         (b.build(), ids["S"], ids["A"], ids["B"], ids["G"])
     }
 
@@ -624,14 +635,14 @@ mod tests {
         // Without penalty: short near-shore corridor via A.
         let (path, cost) = astar(&g, s, goal, &mut buffers, None).unwrap();
         assert_eq!(path, vec![s, a, goal]);
-        assert!((cost - 10.0).abs() < 1e-4);
+        assert!((cost - path_len(&g, &path)).abs() < 1e-3);
 
-        // With a 0.1 nm buffer: edge S->A costs 5 * 16 = 80 -> offshore wins.
+        // With a 0.1 nm buffer: edge S->A costs 16x -> offshore wins.
         buffers.reset();
         let shore = shore_buffer_q(0.1);
         let (path, cost) = astar(&g, s, goal, &mut buffers, shore).unwrap();
         assert_eq!(path, vec![s, b_node, goal]);
-        assert!((cost - 16.0).abs() < 1e-4);
+        assert!(cost > path_len(&g, &path) - 1e-3);
     }
 
     #[test]
@@ -790,7 +801,7 @@ mod tests {
             ids[*orig] = b.add_node(*h3, 255);
         }
         for w in ids.windows(2) {
-            b.add_edge(w[0], w[1], 60.0);
+            b.add_edge(w[0], w[1]);
         }
         (b.build(), ids)
     }
@@ -990,7 +1001,7 @@ mod tests {
             ids.push(b.add_node(h3, 255));
         }
         for i in 0..ids.len() - 1 {
-            b.add_edge(ids[i], ids[i + 1], 1.0);
+            b.add_edge(ids[i], ids[i + 1]);
         }
         let g = b.build();
 

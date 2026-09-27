@@ -289,7 +289,7 @@ pub(crate) fn chain_graph(h3s: &[u64]) -> RoutingGraph {
         ids.push(b.add_node(h3, 255));
     }
     for i in 0..ids.len().saturating_sub(1) {
-        b.add_edge(ids[i], ids[i + 1], 1.0);
+        b.add_edge(ids[i], ids[i + 1]);
     }
     b.build()
 }
