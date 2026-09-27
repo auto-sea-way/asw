@@ -28,8 +28,8 @@ const NUM_NODES_OFF: usize = 72;
 const NUM_EDGES_OFF: usize = 76;
 const NUM_RUNS_OFF: usize = 80;
 const TABLE_OFF: usize = 88;
-const SECTION_COUNT: usize = 9;
-const HEADER_LEN: usize = TABLE_OFF + SECTION_COUNT * 16; // 232
+const SECTION_COUNT: usize = 10;
+const HEADER_LEN: usize = TABLE_OFF + SECTION_COUNT * 16; // 248
 
 const SEC_NODE_H3: usize = 0;
 const SEC_OFFSETS: usize = 1;
@@ -37,9 +37,10 @@ const SEC_EDGE_TARGETS: usize = 2;
 const SEC_SHORE_DIST: usize = 3;
 const SEC_COAST_RUNS: usize = 4;
 const SEC_COAST_BBOX: usize = 5;
-const SEC_COAST_POINTS: usize = 6;
-const SEC_GRID_OFFSETS: usize = 7;
-const SEC_GRID_IDS: usize = 8;
+const SEC_COAST_HEADS: usize = 6;
+const SEC_COAST_DELTAS: usize = 7;
+const SEC_GRID_OFFSETS: usize = 8;
+const SEC_GRID_IDS: usize = 9;
 
 /// Integer types that may be viewed directly in the mapped file.
 pub trait Plain: Copy + private::Sealed {}
@@ -49,7 +50,7 @@ mod private {
 macro_rules! plain {
     ($($t:ty),*) => { $(impl private::Sealed for $t {} impl Plain for $t {})* };
 }
-plain!(u8, u32, u64, i32);
+plain!(u8, u32, u64, i32, i16);
 
 fn cast_slice<T: Plain>(bytes: &[u8]) -> &[T] {
     let size = std::mem::size_of::<T>();
@@ -108,7 +109,7 @@ struct Section {
     len: usize,
 }
 
-/// File layout: 232-byte header, then nine 8-byte-aligned little-endian
+/// File layout: 248-byte header, then ten 8-byte-aligned little-endian
 /// sections (see the v4 design spec). The struct is a view over the bytes;
 /// nothing is decoded at open time.
 ///
@@ -210,10 +211,11 @@ impl RoutingGraph {
         expect(SEC_SHORE_DIST, n, "shore_dist")?;
         expect(SEC_COAST_RUNS, (r + 1) * 4, "coast_runs")?;
         expect(SEC_COAST_BBOX, r * 16, "coast_bbox")?;
+        expect(SEC_COAST_HEADS, r * 8, "coast_heads")?;
         expect(SEC_GRID_OFFSETS, (GRID_CELLS + 1) * 4, "grid_offsets")?;
         anyhow::ensure!(
-            sections[SEC_COAST_POINTS].len % 8 == 0,
-            "coast_points length not a multiple of 8"
+            sections[SEC_COAST_DELTAS].len.is_multiple_of(4),
+            "coast_deltas length not a multiple of 4"
         );
         anyhow::ensure!(
             sections[SEC_GRID_IDS].len % 4 == 0,
@@ -244,8 +246,8 @@ impl RoutingGraph {
             "coast_runs not monotonic"
         );
         anyhow::ensure!(
-            runs[r] as usize * 8 == g.sections[SEC_COAST_POINTS].len,
-            "coast_runs sentinel != coast_points length"
+            runs[r] as usize * 4 == g.sections[SEC_COAST_DELTAS].len,
+            "coast_runs sentinel != coast_deltas length"
         );
         let grid: &[u32] = g.section(SEC_GRID_OFFSETS);
         anyhow::ensure!(grid[0] == 0, "grid_offsets[0] != 0");
@@ -305,7 +307,8 @@ impl RoutingGraph {
         CoastlineIndex::from_slices(
             self.section(SEC_COAST_RUNS),
             self.section(SEC_COAST_BBOX),
-            self.section(SEC_COAST_POINTS),
+            self.section(SEC_COAST_HEADS),
+            self.section(SEC_COAST_DELTAS),
             self.section(SEC_GRID_OFFSETS),
             self.section(SEC_GRID_IDS),
         )
@@ -531,7 +534,8 @@ impl GraphBuilder {
         push(&mut out, &mut table, &shore_dist);
         push(&mut out, &mut table, &coast.runs);
         push(&mut out, &mut table, &coast.bbox);
-        push(&mut out, &mut table, &coast.points);
+        push(&mut out, &mut table, &coast.heads);
+        push(&mut out, &mut table, &coast.deltas);
         push(&mut out, &mut table, &coast.grid_offsets);
         push(&mut out, &mut table, &coast.grid_ids);
         while !out.len().is_multiple_of(8) {
@@ -799,8 +803,10 @@ mod tests {
         let coast = g.coastline();
         assert_eq!(coast.run_count(), 1);
         assert!(coast.crosses_land(28.3, 36.5, 28.5, 36.5));
+        // The 1.5° step is subdivided into i16-sized collinear steps.
         let pts: Vec<(f64, f64)> = coast.run_points(0).collect();
-        assert_eq!(pts, vec![(28.4, 36.0), (28.4, 37.5)]);
+        assert_eq!((pts[0], *pts.last().unwrap()), ((28.4, 36.0), (28.4, 37.5)));
+        assert!(pts.iter().all(|p| p.0 == 28.4));
     }
 
     #[test]
@@ -858,7 +864,7 @@ mod tests {
         assert!(RoutingGraph::from_bytes(b1).is_err(), "offsets[0] != 0");
         // grid_offsets: make cell 1 smaller than cell 0 (non-monotonic).
         let mut b2 = bytes.clone();
-        let o = sec(7);
+        let o = sec(8);
         b2[o..o + 4].copy_from_slice(&5u32.to_le_bytes());
         assert!(
             RoutingGraph::from_bytes(b2).is_err(),

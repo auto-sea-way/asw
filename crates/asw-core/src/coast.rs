@@ -1,6 +1,6 @@
-//! Coastline stored as i32 microdegree runs plus a 0.1° grid index over run
-//! bounding boxes. `CoastlineSections` is the build-side owner of the five
-//! arrays; `CoastlineIndex` is a borrowed view over them (from a
+//! Coastline stored as microdegree runs (an absolute i32 head per run, then
+//! i16 deltas per point) plus a 0.1° grid index over run bounding boxes.
+//! `CoastlineSections` is the build-side owner of the six arrays; `CoastlineIndex` is a borrowed view over them (from a
 //! `CoastlineSections` in tests and the build, from the mapped file at
 //! query time) and answers the router's geometry questions.
 
@@ -28,15 +28,22 @@ fn grid_row(lat: f64) -> usize {
         .clamp(0.0, (GRID_ROWS - 1) as f64) as usize
 }
 
+/// Largest step a single delta can hold, in microdegrees (~3.6 km). Longer
+/// coastline edges are subdivided into collinear steps at build time.
+const MAX_DELTA: i64 = i16::MAX as i64;
+
 /// The coastline sections exactly as written to a v4 graph file.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CoastlineSections {
-    /// Point index where run `i` starts. Length = run count + 1.
+    /// Delta index where run `i` starts. Length = run count + 1. Run `i`
+    /// has `runs[i+1] - runs[i]` deltas and one more point than that.
     pub runs: Vec<u32>,
     /// Per run: min_lon, min_lat, max_lon, max_lat in microdegrees.
     pub bbox: Vec<i32>,
-    /// Interleaved lon, lat in microdegrees.
-    pub points: Vec<i32>,
+    /// Per run: absolute first point, lon then lat, microdegrees.
+    pub heads: Vec<i32>,
+    /// Per point after the first: dlon, dlat in microdegrees.
+    pub deltas: Vec<i16>,
     /// CSR offsets into `grid_ids`, one per grid cell plus a sentinel.
     pub grid_offsets: Vec<u32>,
     /// Run ids whose bbox touches the cell.
@@ -45,7 +52,9 @@ pub struct CoastlineSections {
 
 impl CoastlineSections {
     /// Runs are (lon, lat) polylines in degrees. Runs with fewer than two
-    /// points are dropped.
+    /// points are dropped. A step longer than `MAX_DELTA` is subdivided into
+    /// equal collinear steps, so no edge is lost and every point round-trips
+    /// exactly to the microdegree.
     pub fn from_runs(runs: &[Vec<(f64, f64)>]) -> Self {
         let mut out = Self {
             runs: vec![0],
@@ -56,15 +65,36 @@ impl CoastlineSections {
             let id = (out.runs.len() - 1) as u32;
             let (mut min_lon, mut min_lat) = (f64::MAX, f64::MAX);
             let (mut max_lon, mut max_lat) = (f64::MIN, f64::MIN);
+            let (mut px, mut py) = (micro(run[0].0) as i64, micro(run[0].1) as i64);
+            out.heads.push(px as i32);
+            out.heads.push(py as i32);
             for &(lon, lat) in run {
-                out.points.push(micro(lon));
-                out.points.push(micro(lat));
                 min_lon = min_lon.min(lon);
                 max_lon = max_lon.max(lon);
                 min_lat = min_lat.min(lat);
                 max_lat = max_lat.max(lat);
+                let (x, y) = (micro(lon) as i64, micro(lat) as i64);
+                let (dx, dy) = (x - px, y - py);
+                if dx == 0 && dy == 0 {
+                    continue;
+                }
+                let n = (dx.abs().max(dy.abs()) + MAX_DELTA - 1) / MAX_DELTA;
+                for k in 1..=n {
+                    // k-th subdivision point along the step; the last lands
+                    // exactly on (x, y), so the sum of deltas is exact.
+                    let (sx, sy) = (px + dx * k / n, py + dy * k / n);
+                    let (qx, qy) = if k == 1 {
+                        (px, py)
+                    } else {
+                        (px + dx * (k - 1) / n, py + dy * (k - 1) / n)
+                    };
+                    out.deltas.push((sx - qx) as i16);
+                    out.deltas.push((sy - qy) as i16);
+                }
+                px = x;
+                py = y;
             }
-            out.runs.push((out.points.len() / 2) as u32);
+            out.runs.push((out.deltas.len() / 2) as u32);
             out.bbox.extend([
                 micro(min_lon),
                 micro(min_lat),
@@ -93,7 +123,8 @@ impl CoastlineSections {
         CoastlineIndex::from_slices(
             &self.runs,
             &self.bbox,
-            &self.points,
+            &self.heads,
+            &self.deltas,
             &self.grid_offsets,
             &self.grid_ids,
         )
@@ -105,7 +136,8 @@ impl CoastlineSections {
 pub struct CoastlineIndex<'a> {
     runs: &'a [u32],
     bbox: &'a [i32],
-    points: &'a [i32],
+    heads: &'a [i32],
+    deltas: &'a [i16],
     grid_offsets: &'a [u32],
     grid_ids: &'a [u32],
 }
@@ -114,14 +146,16 @@ impl<'a> CoastlineIndex<'a> {
     pub fn from_slices(
         runs: &'a [u32],
         bbox: &'a [i32],
-        points: &'a [i32],
+        heads: &'a [i32],
+        deltas: &'a [i16],
         grid_offsets: &'a [u32],
         grid_ids: &'a [u32],
     ) -> Self {
         Self {
             runs,
             bbox,
-            points,
+            heads,
+            deltas,
             grid_offsets,
             grid_ids,
         }
@@ -131,27 +165,28 @@ impl<'a> CoastlineIndex<'a> {
         self.runs.len().saturating_sub(1)
     }
 
-    /// Points of one run as (lon, lat) degrees.
+    /// Points of one run as (lon, lat) degrees: the head, then a running
+    /// sum over the deltas.
     pub fn run_points(&self, run: usize) -> impl Iterator<Item = (f64, f64)> + 'a {
         let (s, e) = (self.runs[run] as usize * 2, self.runs[run + 1] as usize * 2);
-        self.points[s..e]
-            .chunks_exact(2)
-            .map(|p| (p[0] as f64 / MICRO, p[1] as f64 / MICRO))
+        let (hx, hy) = (self.heads[run * 2] as i64, self.heads[run * 2 + 1] as i64);
+        let (mut x, mut y) = (hx, hy);
+        std::iter::once((hx, hy))
+            .chain(self.deltas[s..e].chunks_exact(2).map(move |d| {
+                x += d[0] as i64;
+                y += d[1] as i64;
+                (x, y)
+            }))
+            .map(|(x, y)| (x as f64 / MICRO, y as f64 / MICRO))
     }
 
     fn lines(&self, run: usize) -> impl Iterator<Item = Line<f64>> + 'a {
-        let (s, e) = (self.runs[run] as usize * 2, self.runs[run + 1] as usize * 2);
-        self.points[s..e].windows(4).step_by(2).map(|w| {
-            Line::new(
-                Coord {
-                    x: w[0] as f64 / MICRO,
-                    y: w[1] as f64 / MICRO,
-                },
-                Coord {
-                    x: w[2] as f64 / MICRO,
-                    y: w[3] as f64 / MICRO,
-                },
-            )
+        let mut pts = self.run_points(run);
+        let mut prev = pts.next();
+        pts.map(move |p| {
+            let a = prev.unwrap_or(p);
+            prev = Some(p);
+            Line::new(Coord { x: a.0, y: a.1 }, Coord { x: p.0, y: p.1 })
         })
     }
 
@@ -494,11 +529,22 @@ mod tests {
             vec![(0.5, 0.5)], // dropped: fewer than 2 points
             vec![(-0.05, 0.0), (0.05, 0.0)],
         ]);
-        assert_eq!(s.runs, vec![0, 2, 4]);
-        assert_eq!(
-            s.points,
-            vec![10_000_000, -1_000_000, 10_000_000, 1_000_000, -50_000, 0, 50_000, 0]
-        );
+        // Deltas are i16 microdegrees, so the 2° wall step is subdivided into
+        // 62 collinear steps and the 0.1° step into 4. Run i owns deltas
+        // runs[i]..runs[i+1] and starts at heads[i].
+        assert_eq!(s.runs, vec![0, 62, 66]);
+        assert_eq!(s.heads, vec![10_000_000, -1_000_000, -50_000, 0]);
+        let sum = |r: std::ops::Range<usize>| -> (i64, i64) {
+            s.deltas[r.start * 2..r.end * 2]
+                .chunks_exact(2)
+                .fold((0, 0), |a, d| (a.0 + d[0] as i64, a.1 + d[1] as i64))
+        };
+        assert_eq!(sum(0..62), (0, 2_000_000));
+        assert_eq!(sum(62..66), (100_000, 0));
+        let idx = s.index();
+        let pts: Vec<(f64, f64)> = idx.run_points(0).collect();
+        assert_eq!(pts.len(), 63);
+        assert_eq!((pts[0], pts[62]), ((10.0, -1.0), (10.0, 1.0)));
         assert_eq!(
             &s.bbox[0..4],
             &[10_000_000, -1_000_000, 10_000_000, 1_000_000]
@@ -509,6 +555,36 @@ mod tests {
         assert_eq!(s.grid_ids.iter().filter(|&&id| id == 0).count(), 21);
         // The short run straddles lon 0 (cols 1799 and 1800), one row.
         assert_eq!(s.grid_ids.iter().filter(|&&id| id == 1).count(), 2);
+    }
+
+    #[test]
+    fn long_step_is_subdivided_without_losing_the_edge() {
+        // A single 1° edge: the crossing test must still see it, and its
+        // interpolated points must lie on the original line.
+        let s = CoastlineSections::from_runs(&[vec![(5.0, 0.0), (6.0, 0.0)]]);
+        let idx = s.index();
+        assert!(idx.crosses_land(5.5, -0.1, 5.5, 0.1));
+        assert_eq!(idx.crossing_count(5.5, -0.1, 5.5, 0.1), 1);
+        for (lon, lat) in idx.run_points(0) {
+            assert!((5.0..=6.0).contains(&lon) && lat == 0.0, "{lon},{lat}");
+        }
+    }
+
+    #[test]
+    fn points_round_trip_exactly_through_deltas() {
+        let run: Vec<(f64, f64)> = (0..200)
+            .map(|i| (28.0 + i as f64 * 0.000_123, 36.5 - i as f64 * 0.000_077))
+            .collect();
+        let s = CoastlineSections::from_runs(std::slice::from_ref(&run));
+        assert_eq!(s.runs, vec![0, 199]);
+        let back: Vec<(f64, f64)> = s.index().run_points(0).collect();
+        assert_eq!(back.len(), run.len());
+        for (a, b) in run.iter().zip(&back) {
+            assert!(
+                (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6,
+                "{a:?} vs {b:?}"
+            );
+        }
     }
 
     #[test]

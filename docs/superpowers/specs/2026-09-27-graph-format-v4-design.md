@@ -34,9 +34,9 @@ v3 gets it onto a phone.
 - The server uses the same mmap reader with `populate` (MAP_POPULATE) so the file is read
   in at open. No separate in-memory mode.
 - `isWater` uses crossing parity, not a boolean crossing test (section 6).
-- Coastline points are stored as `i32` microdegrees, no delta coding. Same size as the v3
-  `f32` pairs and exact to 0.11 m. `ponytail:` i16 deltas halve this section; add if the
-  planet file must shrink.
+- Coastline points are stored as an absolute `i32` microdegree head per run followed by
+  `i16` deltas. Exact to the microdegree; the first planet build without deltas came out
+  at 1.74 GB, of which 650 MB was coastline, so the deltas were added before the release.
 - No checksum inside the file. The distribution manifest (Rhumb side) and the GitHub
   release asset carry a sha256.
 - Endianness: little-endian hosts only, asserted at compile time. All release targets
@@ -58,7 +58,7 @@ offset  size  field
 76      4     num_edges  u32   (directed edge records, as today)
 80      4     num_coast_runs u32
 84      4     reserved (0)
-88      9*2*8 section table: 9 entries of (offset u64, length_bytes u64); header ends at 232
+88      10*2*8 section table: 10 entries of (offset u64, length_bytes u64); header ends at 248
 ```
 
 Sections, in table order:
@@ -69,11 +69,12 @@ Sections, in table order:
 | 1 | `offsets` | u32 | num_nodes + 1 | byte offsets into `edge_targets`; last = section length |
 | 2 | `edge_targets` | varint stream | | per node: target ids as ascending varint deltas, same encoding as v3 minus the u16 weight |
 | 3 | `shore_dist` | u8 | num_nodes | unchanged from v3 |
-| 4 | `coast_runs` | u32 | num_coast_runs + 1 | point index where each run starts; last = total points |
+| 4 | `coast_runs` | u32 | num_coast_runs + 1 | delta index where each run starts; last = total deltas |
 | 5 | `coast_bbox` | i32 × 4 | num_coast_runs | min_lon, min_lat, max_lon, max_lat per run, microdegrees; the grid lists runs by cell, the bbox prunes inside a cell |
-| 6 | `coast_points` | (i32 lon, i32 lat) | total points | microdegrees |
-| 7 | `grid_offsets` | u32 | 3600 × 1800 + 1 | index into `grid_ids` per 0.1° cell, row-major by lat band then lon |
-| 8 | `grid_ids` | u32 | | run ids whose bounding box touches the cell |
+| 6 | `coast_heads` | (i32 lon, i32 lat) | num_coast_runs | absolute first point of each run, microdegrees |
+| 7 | `coast_deltas` | (i16 dlon, i16 dlat) | total points − runs | per following point; a build-time step longer than 32,767 microdegrees (~3.6 km) is subdivided into collinear steps so no edge is lost and every point round-trips exactly |
+| 8 | `grid_offsets` | u32 | 3600 × 1800 + 1 | index into `grid_ids` per 0.1° cell, row-major by lat band then lon |
+| 9 | `grid_ids` | u32 | | run ids whose bounding box touches the cell |
 
 Grid cell for (lon, lat): `col = floor((lon + 180) / 0.1)` clamped to 0..3599,
 `row = floor((lat + 90) / 0.1)` clamped to 0..1799. A run is listed in every cell its
