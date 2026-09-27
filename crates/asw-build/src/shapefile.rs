@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use asw_core::geo_index::{LandIndex, LandPolygon};
-use geo::{BoundingRect, Coord, LineString, Polygon};
-use indicatif::{ProgressBar, ProgressStyle};
-use shapefile::PolygonRing;
+use geo::{BoundingRect, MultiPolygon, Polygon};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -30,9 +28,9 @@ fn load_polygons_from_file(shp_path: &Path, polygons: &mut Vec<LandPolygon>) -> 
     let shapes = shapefile::read_shapes_as::<_, shapefile::Polygon>(shp_path)
         .with_context(|| format!("Failed to read shapefile {:?}", shp_path))?;
     for shp_poly in shapes {
-        for poly in convert_shapefile_polygon(&shp_poly) {
-            polygons.push(LandPolygon::new(poly));
-        }
+        let multi = MultiPolygon::try_from(shp_poly)
+            .with_context(|| format!("Malformed polygon rings in {:?}", shp_path))?;
+        polygons.extend(multi.0.into_iter().map(LandPolygon::new));
     }
     Ok(())
 }
@@ -51,17 +49,12 @@ pub fn load_land_polygons(shp_path: &Path) -> Result<LandIndex> {
             shp_files.len(),
             shp_path
         );
-        let pb = ProgressBar::new(shp_files.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40} {pos}/{len} shapefiles")
-                .unwrap(),
-        );
+        let pb = crate::cells::make_progress(shp_files.len(), "shapefiles");
         for f in &shp_files {
             load_polygons_from_file(f, &mut polygons)?;
             pb.inc(1);
         }
-        pb.finish_with_message("done");
+        pb.finish_and_clear();
     } else {
         info!("Loading land polygons from {:?}", shp_path);
         load_polygons_from_file(shp_path, &mut polygons)?;
@@ -69,43 +62,6 @@ pub fn load_land_polygons(shp_path: &Path) -> Result<LandIndex> {
 
     info!("Loaded {} land polygons", polygons.len());
     Ok(LandIndex::new(polygons))
-}
-
-/// Convert a shapefile polygon into geo::Polygons.
-/// Groups rings: each Outer ring starts a new polygon, Inner rings are holes.
-fn convert_shapefile_polygon(shp_poly: &shapefile::Polygon) -> Vec<Polygon<f64>> {
-    let rings = shp_poly.rings();
-    let mut result = Vec::new();
-    let mut current_exterior: Option<LineString<f64>> = None;
-    let mut current_holes: Vec<LineString<f64>> = Vec::new();
-
-    for ring in rings {
-        let (points, is_outer) = match ring {
-            PolygonRing::Outer(pts) => (pts, true),
-            PolygonRing::Inner(pts) => (pts, false),
-        };
-
-        let coords: Vec<Coord<f64>> = points.iter().map(|p| Coord { x: p.x, y: p.y }).collect();
-        let ls = LineString::new(coords);
-
-        if is_outer {
-            // Flush previous polygon
-            if let Some(ext) = current_exterior.take() {
-                result.push(Polygon::new(ext, std::mem::take(&mut current_holes)));
-            }
-            current_exterior = Some(ls);
-            current_holes.clear();
-        } else {
-            current_holes.push(ls);
-        }
-    }
-
-    // Flush last polygon
-    if let Some(ext) = current_exterior {
-        result.push(Polygon::new(ext, current_holes));
-    }
-
-    result
 }
 
 pub fn polygon_intersects_bbox(poly: &Polygon<f64>, bbox: Bbox) -> bool {
@@ -157,57 +113,23 @@ pub fn download_and_extract(output_dir: &Path) -> Result<PathBuf> {
     Ok(extract_dir)
 }
 
-/// Extract the flat (non-directory) files of a zip archive into `extract_dir`, atomically.
-///
-/// Entries are written into a temporary sibling directory first; `extract_dir` itself is
-/// only populated (via `fs::rename`) once every entry has been extracted without error. This
-/// means a failure partway through extraction (corrupt zip entry, truncated/interrupted
-/// download, disk full) never leaves a partial `extract_dir` behind for a later run's cache
-/// check (`find_shp_files(&extract_dir)` in `download_and_extract`) to mistake for a
-/// complete, valid extraction. Mirrors the `.pbf.tmp` download-then-rename pattern already
-/// used in `canal_water.rs`.
+/// Extract a zip archive into `extract_dir` (dropping its single root directory,
+/// if any), atomically: entries go to a temporary sibling directory first, which
+/// is renamed into place only once every entry extracted cleanly. A corrupt entry
+/// or interrupted download therefore never leaves a partial `extract_dir` for a
+/// later run's cache check to mistake for a complete extraction.
 fn extract_zip_atomic<R: Read + Seek>(reader: R, extract_dir: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(reader).context("Failed to read zip")?;
-
-    let tmp_name = format!(
-        "{}.extracting.tmp",
-        extract_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "extract".to_string())
-    );
-    let tmp_dir = extract_dir.with_file_name(tmp_name);
-    // Clean up any leftovers from a previously interrupted extraction attempt.
+    let tmp_dir = extract_dir.with_extension("extracting.tmp");
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    std::fs::create_dir_all(&tmp_dir).context("Failed to create temporary extraction dir")?;
-
-    let extracted: Result<()> = (|| {
-        for i in 0..archive.len() {
-            let mut entry = archive.by_index(i)?;
-            let name = entry.name().to_string();
-            if let Some(filename) = name.rsplit('/').next() {
-                if !filename.is_empty() {
-                    let out_path = tmp_dir.join(filename);
-                    let mut out_file = std::fs::File::create(&out_path)
-                        .with_context(|| format!("Failed to create {:?}", out_path))?;
-                    std::io::copy(&mut entry, &mut out_file)
-                        .with_context(|| format!("Failed to extract entry {:?}", name))?;
-                }
-            }
-        }
-        Ok(())
-    })();
-
-    if let Err(e) = extracted {
+    if let Err(e) = archive.extract_unwrapped_root_dir(&tmp_dir, zip::read::root_dir_common_filter)
+    {
         let _ = std::fs::remove_dir_all(&tmp_dir);
-        return Err(e);
+        return Err(e).context("Failed to extract zip");
     }
-
-    // extract_dir should not exist yet (the caller only reaches here when the cache check
-    // failed), but guard against a stale partial directory from an older, pre-atomic run.
+    // Guard against a stale partial directory from an older, pre-atomic run.
     let _ = std::fs::remove_dir_all(extract_dir);
-    std::fs::rename(&tmp_dir, extract_dir).context("Failed to move extracted files into place")?;
-    Ok(())
+    std::fs::rename(&tmp_dir, extract_dir).context("Failed to move extracted files into place")
 }
 
 #[cfg(test)]

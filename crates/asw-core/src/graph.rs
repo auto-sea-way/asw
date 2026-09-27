@@ -68,34 +68,20 @@ impl<'a> Iterator for NeighborIter<'a> {
     }
 }
 
+#[derive(Default)]
 pub struct GraphBuilder {
-    /// (h3_index, lat_deg, lng_deg, shore_dist_q) per node.
-    /// lat/lng kept temporarily for edge weight calculation in the build pipeline.
-    nodes: Vec<(u64, f64, f64, u8)>,
+    /// (h3_index, shore_dist_q) per node.
+    nodes: Vec<(u64, u8)>,
     /// (src, dst, weight_nm)
     edges: Vec<(u32, u32, f32)>,
     pub coastline_coords: Vec<Vec<(f32, f32)>>,
 }
 
-impl Default for GraphBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl GraphBuilder {
-    pub fn new() -> Self {
-        Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            coastline_coords: Vec::new(),
-        }
-    }
-
     /// Add a node with its quantized shore distance. Returns node ID.
-    pub fn add_node(&mut self, h3_index: u64, lat: f64, lng: f64, shore_dist_q: u8) -> u32 {
+    pub fn add_node(&mut self, h3_index: u64, shore_dist_q: u8) -> u32 {
         let id = self.nodes.len() as u32;
-        self.nodes.push((h3_index, lat, lng, shore_dist_q));
+        self.nodes.push((h3_index, shore_dist_q));
         id
     }
 
@@ -115,8 +101,8 @@ impl GraphBuilder {
         let num_nodes = self.nodes.len() as u32;
         let num_edges = self.edges.len() as u32;
 
-        let node_h3: Vec<u64> = self.nodes.iter().map(|(h3, _, _, _)| *h3).collect();
-        let shore_dist: Vec<u8> = self.nodes.iter().map(|(_, _, _, q)| *q).collect();
+        let node_h3: Vec<u64> = self.nodes.iter().map(|(h3, _)| *h3).collect();
+        let shore_dist: Vec<u8> = self.nodes.iter().map(|(_, q)| *q).collect();
 
         // Group edges by source, sort targets ascending per source
         let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes as usize];
@@ -270,10 +256,8 @@ impl RoutingGraph {
 
     /// Decode H3 cell center coordinates to f64 (lat, lng) in degrees.
     pub fn node_pos(&self, node: u32) -> (f64, f64) {
-        let h3 = self.node_h3[node as usize];
-        let cell = h3o::CellIndex::try_from(h3).expect("invalid H3 index");
-        let ll = h3o::LatLng::from(cell);
-        (ll.lat(), ll.lng())
+        let cell = h3o::CellIndex::try_from(self.node_h3[node as usize]).expect("invalid H3 index");
+        crate::h3::cell_center(cell)
     }
 
     /// Drop coastline coordinate data to free memory after it has been
@@ -310,12 +294,11 @@ impl RoutingGraph {
         );
 
         let mut old_to_new: Vec<Option<u32>> = vec![None; self.num_nodes as usize];
-        let mut new_builder = GraphBuilder::new();
+        let mut new_builder = GraphBuilder::default();
         for old_id in 0..self.num_nodes {
             if labels[old_id as usize] == main_root {
                 let h3 = self.node_h3[old_id as usize];
-                let (lat, lon) = self.node_pos(old_id);
-                let new_id = new_builder.add_node(h3, lat, lon, self.shore_dist[old_id as usize]);
+                let new_id = new_builder.add_node(h3, self.shore_dist[old_id as usize]);
                 old_to_new[old_id as usize] = Some(new_id);
             }
         }
@@ -342,7 +325,7 @@ impl RoutingGraph {
 
     /// Returns a Vec where `result[i]` is the component root for node `i`.
     /// Uses u32 to halve memory vs usize (40M nodes * 4 bytes = 160 MB).
-    pub fn component_labels(&self) -> Vec<u32> {
+    fn component_labels(&self) -> Vec<u32> {
         let n = self.num_nodes as usize;
         debug_assert!(n <= u32::MAX as usize);
         let mut parent: Vec<u32> = (0..n as u32).collect();
@@ -420,10 +403,10 @@ mod tests {
         ];
         cells.sort_by_key(|(h3, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for (h3, lat, lng) in &cells {
-            ids.push(b.add_node(*h3, *lat, *lng, 255));
+        for (h3, _, _) in &cells {
+            ids.push(b.add_node(*h3, 255));
         }
 
         // Find which sorted index corresponds to which original cell
@@ -586,10 +569,10 @@ mod tests {
         ];
         cells.sort_by_key(|(h3, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for (h3, lat, lng) in &cells {
-            ids.push(b.add_node(*h3, *lat, *lng, 255));
+        for (h3, _, _) in &cells {
+            ids.push(b.add_node(*h3, 255));
         }
 
         let idx_of = |target_h3: u64| -> u32 {
@@ -640,9 +623,9 @@ mod tests {
             "expected a sub-0.005nm res-13 edge, got {true_dist_nm} nm"
         );
 
-        let mut b = GraphBuilder::new();
-        let n0 = b.add_node(u64::from(center), lat0, lon0, 255);
-        let n1 = b.add_node(u64::from(neighbor), lat1, lon1, 255);
+        let mut b = GraphBuilder::default();
+        let n0 = b.add_node(u64::from(center), 255);
+        let n1 = b.add_node(u64::from(neighbor), 255);
         b.add_edge(n0, n1, true_dist_nm as f32);
         let g = b.build();
 
@@ -665,9 +648,9 @@ mod tests {
             .unwrap()
             .to_cell(h3o::Resolution::Five);
 
-        let mut b = GraphBuilder::new();
-        let n0 = b.add_node(u64::from(c0), 0.0, 0.0, 255);
-        let n1 = b.add_node(u64::from(c1), 0.0, 1.0, 255);
+        let mut b = GraphBuilder::default();
+        let n0 = b.add_node(u64::from(c0), 255);
+        let n1 = b.add_node(u64::from(c1), 255);
         // 655.36 nm exceeds the u16 centi-nm range (max 655.35 nm) — must be
         // a loud failure, not a silently truncated weight.
         b.add_edge(n0, n1, 655.36);
@@ -711,10 +694,10 @@ mod tests {
             .collect();
         entries.sort_by_key(|(h3, _, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for &(h3, lat, lng, q) in &entries {
-            ids.push(b.add_node(h3, lat, lng, q));
+        for &(h3, _, _, q) in &entries {
+            ids.push(b.add_node(h3, q));
         }
         // Chain the first three entries (by sorted order); leave the last isolated.
         b.add_edge(ids[0], ids[1], 1.0);
@@ -746,10 +729,10 @@ mod tests {
         ];
         cells.sort_by_key(|(h3, _, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for &(h3, lat, lng, q) in &cells {
-            ids.push(b.add_node(h3, lat, lng, q));
+        for &(h3, _, _, q) in &cells {
+            ids.push(b.add_node(h3, q));
         }
         b.add_edge(ids[0], ids[1], 1.0);
         let g = b.build();

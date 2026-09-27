@@ -17,8 +17,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Unused dependencies: `sha2` and `serde_json` (asw-cloud), `geojson` (asw-core), `geojson` and `anyhow` (asw-serve), `geo-types` (asw-core, asw-build, and the workspace — no crate imports it directly; the types come via `geo`); `tokio` trimmed from `full` to the used features
   - `asw-serve` stub binary (the crate is a library; the binary is `asw`)
 
+- Second audit pass (~930 lines, 1 dependency, 11k lines of historical plan/spec docs):
+  - Serve-time connected-component labels (the build already prunes the graph to one component): saves ~160 MB RSS and a union-find pass on planet load
+  - `RangeMin` sparse table in route smoothing (a slice min is cheaper than the R-tree query next to it), `ShorePenalty` struct (now `shore_buffer_q` + `shore_factor`), `AstarPool` capacity cap (the `/route` semaphore already bounds it), unused lat/lng on `GraphBuilder::add_node`, `Passage.water_types` (one hardcoded list; Panama now also keeps `water=canal`), `tier_name`, per-passage SSH key display names, the `asw --version` integration test
+  - `asw-cli/src/srcdir.rs`: `asw cloud build --src` now simply defaults to the current directory
+  - `docs/superpowers/` and `docs/reviews/` (history keeps them)
+  - Dependency `ordered-float`: A* orders its heap on `f32::to_bits`, valid because f-scores are never negative
+
 ### Changed
 
+- `asw cloud build` caches the remote compile by `git rev-parse HEAD` instead of a hash of the working tree (the upload is `git archive HEAD` anyway)
+- Server readiness uses `std::sync::OnceLock` instead of an async `RwLock<Option<_>>`
+- Shapefile rings convert through the `shapefile` crate's `geo-types` support; zip extraction uses `ZipArchive::extract_unwrapped_root_dir`; graph download streams with `std::io::copy` (no 50 MB progress lines)
+- Cell classification, progress bars, API error responses, SSH/scp process spawning, Hetzner requests and bench result structs each share one helper instead of repeated copies
 - Bench timestamps use the `time` crate instead of hand-rolled calendar math; bench timings are sorted once per route instead of on every stat call
 - Hand-rolled bounding-box code replaced with geo's `BoundingRect` (load/build time only; the hot-path point-to-segment distance stays hand-rolled — geo's `hypot`-based version measured +9-30% p50 on short-route benches)
 

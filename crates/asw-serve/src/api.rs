@@ -42,6 +42,12 @@ struct ErrorResponse {
     error: String,
 }
 
+type ApiError = (StatusCode, Json<ErrorResponse>);
+
+fn err(status: StatusCode, msg: &str) -> ApiError {
+    (status, Json(ErrorResponse { error: msg.into() }))
+}
+
 #[derive(Serialize)]
 struct InfoResponse {
     nodes: u32,
@@ -63,45 +69,33 @@ fn parse_latlng(s: &str) -> Option<(f64, f64)> {
 async fn route_handler(
     State(state): State<Arc<ServerState>>,
     Query(params): Query<RouteQuery>,
-) -> Result<Json<RouteResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Clone the Arc<AppState> out and drop the read guard immediately —
-    // holding it across the (potentially slow, CPU-bound) route computation
-    // below would starve other readers of `state.inner`, including the
-    // `/health`/`/ready` probes and concurrent `/route`/`/info` requests.
-    let app = state.app().await.ok_or_else(|| {
-        (
+) -> Result<Json<RouteResponse>, ApiError> {
+    let app = state.app.get().cloned().ok_or_else(|| {
+        err(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Server is loading graph...".into(),
-            }),
+            "Server is loading graph...",
         )
     })?;
 
     let (from_lat, from_lon) = parse_latlng(&params.from).ok_or_else(|| {
-        (
+        err(
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid 'from' parameter. Expected: lat,lon".into(),
-            }),
+            "Invalid 'from' parameter. Expected: lat,lon",
         )
     })?;
 
     let (to_lat, to_lon) = parse_latlng(&params.to).ok_or_else(|| {
-        (
+        err(
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid 'to' parameter. Expected: lat,lon".into(),
-            }),
+            "Invalid 'to' parameter. Expected: lat,lon",
         )
     })?;
 
     let shore_buffer_nm = params.shore_buffer.unwrap_or(0.0);
     if !shore_buffer_nm.is_finite() || !(0.0..=5.0).contains(&shore_buffer_nm) {
-        return Err((
+        return Err(err(
             StatusCode::BAD_REQUEST,
-            Json(ErrorResponse {
-                error: "Invalid 'shore_buffer' parameter. Expected nautical miles from 0 to 5.0 inclusive".into(),
-            }),
+            "Invalid 'shore_buffer' parameter. Expected nautical miles from 0 to 5.0 inclusive",
         ));
     }
 
@@ -117,11 +111,9 @@ async fn route_handler(
     // closed, which this server never does — map defensively to 503 rather
     // than panicking via `unwrap`/`expect`.
     let _permit = state.route_permits.acquire().await.map_err(|_| {
-        (
+        err(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse {
-                error: "Server is at capacity, please retry".into(),
-            }),
+            "Server is at capacity, please retry",
         )
     })?;
 
@@ -148,19 +140,15 @@ async fn route_handler(
     })
     .await
     .map_err(|_| {
-        (
+        err(
             StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: "Route computation failed unexpectedly".into(),
-            }),
+            "Route computation failed unexpectedly",
         )
     })?
     .ok_or_else(|| {
-        (
+        err(
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse {
-                error: "No route found between the given points".into(),
-            }),
+            "No route found between the given points",
         )
     })?;
 
@@ -185,8 +173,7 @@ async fn health_handler() -> &'static str {
 }
 
 async fn ready_handler(State(state): State<Arc<ServerState>>) -> Result<&'static str, StatusCode> {
-    let guard = state.inner.read().await;
-    if guard.is_some() {
+    if state.app.get().is_some() {
         Ok("ready")
     } else {
         Err(StatusCode::SERVICE_UNAVAILABLE)
@@ -196,8 +183,7 @@ async fn ready_handler(State(state): State<Arc<ServerState>>) -> Result<&'static
 async fn info_handler(
     State(state): State<Arc<ServerState>>,
 ) -> Result<Json<InfoResponse>, StatusCode> {
-    let guard = state.inner.read().await;
-    let app = guard.as_ref().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
+    let app = state.app.get().ok_or(StatusCode::SERVICE_UNAVAILABLE)?;
 
     Ok(Json(InfoResponse {
         nodes: app.graph.num_nodes,
@@ -211,7 +197,7 @@ async fn api_key_middleware(
     State(state): State<Arc<ServerState>>,
     req: Request,
     next: Next,
-) -> Result<axum::response::Response, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<axum::response::Response, ApiError> {
     let provided = req.headers().get("X-Api-Key").and_then(|v| v.to_str().ok());
 
     match provided {
@@ -220,12 +206,7 @@ async fn api_key_middleware(
         }
         _ => {
             tracing::warn!("Rejected request: invalid or missing API key");
-            Err((
-                StatusCode::UNAUTHORIZED,
-                Json(ErrorResponse {
-                    error: "unauthorized".into(),
-                }),
-            ))
+            Err(err(StatusCode::UNAUTHORIZED, "unauthorized"))
         }
     }
 }
@@ -303,35 +284,29 @@ mod tests {
         ))
     }
 
-    /// Directly install an `AppState` as "ready", bypassing `set_ready`.
-    ///
-    /// `set_ready` uses `blocking_write()` because production code calls it
-    /// from inside `spawn_blocking` (see `main.rs`); calling it directly from
-    /// an async test body panics ("Cannot block the current thread from
-    /// within a runtime"). Tests instead populate `inner` via the async
-    /// `write()` guard, which is equivalent for our purposes.
-    async fn mark_ready(state: &ServerState, app: crate::state::AppState) {
-        *state.inner.write().await = Some(Arc::new(app));
+    fn mark_ready(state: &ServerState, app: crate::state::AppState) {
+        assert!(state.app.set(Arc::new(app)).is_ok());
     }
 
     /// Like `ready_state_with_small_graph`, but with an injected coastline
     /// (lon, lat) polyline so tests can block specific lines of sight.
     async fn ready_state_with_graph(coastline: Vec<Vec<(f32, f32)>>) -> Arc<ServerState> {
         let coords = [(36.848, 28.268), (36.9, 28.3), (37.0, 28.5)];
-        let entries: Vec<(u64, f64, f64)> = coords
+        let h3s: Vec<u64> = coords
             .iter()
             .map(|&(lat, lng)| {
-                let cell = h3o::LatLng::new(lat, lng)
-                    .unwrap()
-                    .to_cell(h3o::Resolution::Five);
-                (u64::from(cell), lat, lng)
+                u64::from(
+                    h3o::LatLng::new(lat, lng)
+                        .unwrap()
+                        .to_cell(h3o::Resolution::Five),
+                )
             })
             .collect();
-        let mut graph = crate::state::chain_graph(&entries);
+        let mut graph = crate::state::chain_graph(&h3s);
         graph.coastline_coords = coastline;
 
         let state = test_state();
-        mark_ready(&state, crate::state::AppState::new(graph)).await;
+        mark_ready(&state, crate::state::AppState::new(graph));
         state
     }
 
@@ -500,12 +475,12 @@ mod tests {
             "test.graph".into(),
             "secret-key-1234567890".into(),
         ));
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         // Wall crossing the from->to line (lon 28.4, lat 36.0..37.5), so the
         // direct-line shortcut cannot answer; with no nodes to snap to, the
         // route must still surface as 404.
         b.coastline_coords = vec![vec![(28.4, 36.0), (28.4, 37.5)]];
-        mark_ready(&state, AppState::new(b.build())).await;
+        mark_ready(&state, AppState::new(b.build()));
 
         let app = create_router(state);
         let req = Request::get("/route?from=36.848,28.268&to=37.0,28.5")

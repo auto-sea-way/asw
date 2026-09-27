@@ -15,7 +15,7 @@ pub struct LandPolygon {
 
 impl LandPolygon {
     pub fn new(polygon: Polygon<f64>) -> Self {
-        let (min, max) = bounding_rect(&polygon);
+        let (min, max) = corners(&polygon);
         let envelope = AABB::from_corners(min, max);
         Self { polygon, envelope }
     }
@@ -37,7 +37,7 @@ pub struct CoastlineSegment {
 
 impl CoastlineSegment {
     pub fn new(line: LineString<f64>) -> Self {
-        let (min, max) = line_bounding_rect(&line);
+        let (min, max) = corners(&line);
         let envelope = AABB::from_corners(min, max);
         Self { line, envelope }
     }
@@ -93,7 +93,7 @@ impl LandIndex {
     }
 
     fn intersects_polygon_single(&self, poly: &Polygon<f64>) -> bool {
-        let (min, max) = bounding_rect(poly);
+        let (min, max) = corners(poly);
         let envelope = AABB::from_corners(min, max);
         for lp in self.tree.locate_in_envelope_intersecting(envelope) {
             if lp.polygon.intersects(poly) {
@@ -117,7 +117,7 @@ impl LandIndex {
     }
 
     fn contains_polygon_single(&self, poly: &Polygon<f64>) -> bool {
-        let (min, max) = bounding_rect(poly);
+        let (min, max) = corners(poly);
         let envelope = AABB::from_corners(min, max);
         for lp in self.tree.locate_in_envelope_intersecting(envelope) {
             if lp.polygon.contains(poly) {
@@ -154,7 +154,7 @@ impl LandIndex {
         let water_tree = RTree::bulk_load(water_entries);
 
         // Compute water bounding box for quick global filtering
-        let water_envelope = water_polygons.iter().map(bounding_rect).fold(
+        let water_envelope = water_polygons.iter().map(corners).fold(
             ([f64::MAX, f64::MAX], [f64::MIN, f64::MIN]),
             |(acc_min, acc_max), (min, max)| {
                 (
@@ -511,8 +511,8 @@ fn shift_polygon(poly: &Polygon<f64>, dx: f64) -> Polygon<f64> {
 }
 
 /// Rect→AABB-corners adapter over geo's `BoundingRect`.
-fn bounding_rect(poly: &Polygon<f64>) -> ([f64; 2], [f64; 2]) {
-    let r = poly.bounding_rect().expect("non-empty polygon");
+fn corners<G: BoundingRect<f64, Output = Option<geo::Rect<f64>>>>(g: &G) -> ([f64; 2], [f64; 2]) {
+    let r = g.bounding_rect().expect("non-empty geometry");
     ([r.min().x, r.min().y], [r.max().x, r.max().y])
 }
 
@@ -582,12 +582,6 @@ fn point_to_segment_dist(p: Coord<f64>, a: Coord<f64>, b: Coord<f64>) -> f64 {
     let ex = p.x - proj_x;
     let ey = p.y - proj_y;
     (ex * ex + ey * ey).sqrt()
-}
-
-/// Rect→AABB-corners adapter over geo's `BoundingRect`.
-fn line_bounding_rect(ls: &LineString<f64>) -> ([f64; 2], [f64; 2]) {
-    let r = ls.bounding_rect().expect("non-empty line");
-    ([r.min().x, r.min().y], [r.max().x, r.max().y])
 }
 
 #[cfg(test)]

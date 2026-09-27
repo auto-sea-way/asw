@@ -4,14 +4,10 @@ use std::sync::Arc;
 
 /// Wrapper that tracks readiness — the HTTP server starts before the graph is loaded.
 ///
-/// `inner` holds an `Arc<AppState>` (rather than `AppState` directly) so
-/// handlers can clone it out from under the read lock, drop the lock, and
-/// run CPU-bound work (nearest-node lookup + `compute_route`) on a
-/// `spawn_blocking` thread without holding the lock — and without starving
-/// other requests (notably `/health` and `/ready`) for the duration of a
-/// potentially slow route computation.
+/// `app` is set once by the graph loader; handlers clone the `Arc` out and run
+/// CPU-bound work on a `spawn_blocking` thread without holding any lock.
 pub struct ServerState {
-    pub inner: tokio::sync::RwLock<Option<Arc<AppState>>>,
+    pub app: std::sync::OnceLock<Arc<AppState>>,
     pub graph_path: String,
     pub(crate) api_key: String,
     /// Bounds the number of `/route` requests concurrently running A* search
@@ -35,24 +31,11 @@ impl ServerState {
             "API key must not be empty or whitespace-only"
         );
         Self {
-            inner: tokio::sync::RwLock::new(None),
+            app: std::sync::OnceLock::new(),
             graph_path,
             api_key,
             route_permits: tokio::sync::Semaphore::new(asw_core::astar_pool::DEFAULT_POOL_SIZE),
         }
-    }
-
-    pub fn set_ready(&self, app: AppState) {
-        // Use blocking_lock since this is called from spawn_blocking
-        *self.inner.blocking_write() = Some(Arc::new(app));
-    }
-
-    /// Clone out the current `Arc<AppState>` (if the graph has finished
-    /// loading) and drop the read guard immediately. Callers can then use
-    /// the returned `Arc` without holding `inner`'s lock, so a slow route
-    /// computation never blocks `/health`/`/ready` or other requests.
-    pub async fn app(&self) -> Option<Arc<AppState>> {
-        self.inner.read().await.clone()
     }
 }
 
@@ -60,9 +43,6 @@ impl ServerState {
 pub struct AppState {
     pub graph: RoutingGraph,
     pub coastline: CoastlineIndex,
-    /// Component root for each node; nodes in the main component share `main_component`.
-    component_labels: Vec<u32>,
-    main_component: u32,
     /// Pre-allocated A* search buffer pool. Sized to
     /// `asw_core::astar_pool::DEFAULT_POOL_SIZE` buffer sets; concurrent
     /// access above that capacity is prevented upstream by
@@ -78,23 +58,9 @@ impl AppState {
     /// allocation is completed (and its temporaries dropped) before the
     /// next one begins.
     pub fn new(mut graph: RoutingGraph) -> Self {
-        // Step 1: Build coastline R-tree, then free the raw coords from the graph.
+        // Build coastline R-tree, then free the raw coords from the graph.
         let coastline = CoastlineIndex::from_serialized(&graph.coastline_coords);
         graph.drop_coastline_coords();
-
-        // Step 2: Connected components (u32 parent vec = 160 MB for 40M nodes).
-        let component_labels = graph.component_labels();
-        let main_component = {
-            let mut comp_sizes = std::collections::HashMap::new();
-            for &root in &component_labels {
-                *comp_sizes.entry(root).or_insert(0usize) += 1;
-            }
-            comp_sizes
-                .into_iter()
-                .max_by_key(|&(_, size)| size)
-                .map(|(root, _)| root)
-                .unwrap_or(0)
-        };
 
         let astar_pool = asw_core::astar_pool::AstarPool::new(
             graph.num_nodes as usize,
@@ -104,8 +70,6 @@ impl AppState {
         Self {
             graph,
             coastline,
-            component_labels,
-            main_component,
             astar_pool,
         }
     }
@@ -169,7 +133,7 @@ impl AppState {
     /// ring 0, ring 1, ... — the grouping logic below relies on this.
     ///
     /// Early-return semantics are identical to the old per-k code: as soon as
-    /// a fully-scanned k-level contains at least one main-component match,
+    /// a fully-scanned k-level contains at least one match,
     /// `best` (updated to the closest such match) is final for this call and
     /// we stop — larger k are never examined, and larger disks are never
     /// requested. A k-level is never split across steps (each step's bound is
@@ -213,15 +177,12 @@ impl AppState {
                     found_at_current_k = false;
                 }
 
-                let nh3 = u64::from(neighbor);
-                if let Some(node_id) = self.h3_lookup(nh3) {
-                    if self.component_labels[node_id as usize] == self.main_component {
-                        found_at_current_k = true;
-                        let (nlat, nlon) = self.graph.node_pos(node_id);
-                        let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
-                        if best.is_none_or(|(_, d)| dist < d) {
-                            *best = Some((node_id, dist));
-                        }
+                if let Some(node_id) = self.h3_lookup(u64::from(neighbor)) {
+                    found_at_current_k = true;
+                    let (nlat, nlon) = self.graph.node_pos(node_id);
+                    let dist = asw_core::h3::haversine_nm(lat, lon, nlat, nlon);
+                    if best.is_none_or(|(_, d)| dist < d) {
+                        *best = Some((node_id, dist));
                     }
                 }
             }
@@ -239,7 +200,9 @@ impl AppState {
         }
     }
 
-    /// Find nearest node in the main connected component via two-pass adaptive k-ring expansion.
+    /// Find the nearest node via two-pass adaptive k-ring expansion. The graph
+    /// is pruned to one connected component at build time, so any node is
+    /// routable.
     ///
     /// Two-pass approach:
     /// - Pass 1 (fast): k=3 at each resolution, fine→coarse. Handles 99% of queries.
@@ -313,18 +276,17 @@ impl AppState {
     }
 }
 
-/// Test helper: build a graph from (h3, lat, lng) entries — sorted and
-/// deduplicated by H3 index, every node shore_dist=255, all nodes chained
-/// with unit edges into a single component.
+/// Test helper: build a graph from H3 indices — sorted and deduplicated,
+/// every node shore_dist=255, all nodes chained with unit edges.
 #[cfg(test)]
-pub(crate) fn chain_graph(entries: &[(u64, f64, f64)]) -> RoutingGraph {
-    let mut entries = entries.to_vec();
-    entries.sort_by_key(|(h3, _, _)| *h3);
-    entries.dedup_by_key(|(h3, _, _)| *h3);
-    let mut b = asw_core::graph::GraphBuilder::new();
+pub(crate) fn chain_graph(h3s: &[u64]) -> RoutingGraph {
+    let mut h3s = h3s.to_vec();
+    h3s.sort_unstable();
+    h3s.dedup();
+    let mut b = asw_core::graph::GraphBuilder::default();
     let mut ids = Vec::new();
-    for &(h3, lat, lng) in &entries {
-        ids.push(b.add_node(h3, lat, lng, 255));
+    for &h3 in &h3s {
+        ids.push(b.add_node(h3, 255));
     }
     for i in 0..ids.len().saturating_sub(1) {
         b.add_edge(ids[i], ids[i + 1], 1.0);
@@ -339,16 +301,17 @@ mod app_state_tests {
 
     /// Build a small test graph with nodes sorted by H3 index.
     fn test_graph(cells: &[(f64, f64)]) -> RoutingGraph {
-        let entries: Vec<(u64, f64, f64)> = cells
+        let h3s: Vec<u64> = cells
             .iter()
             .map(|&(lat, lng)| {
-                let cell = h3o::LatLng::new(lat, lng)
-                    .unwrap()
-                    .to_cell(h3o::Resolution::Five);
-                (u64::from(cell), lat, lng)
+                u64::from(
+                    h3o::LatLng::new(lat, lng)
+                        .unwrap()
+                        .to_cell(h3o::Resolution::Five),
+                )
             })
             .collect();
-        chain_graph(&entries)
+        chain_graph(&h3s)
     }
 
     #[test]
@@ -378,74 +341,12 @@ mod app_state_tests {
 
     #[test]
     fn empty_graph_returns_none() {
-        let b = GraphBuilder::new();
+        let b = GraphBuilder::default();
         let graph = b.build();
         let state = AppState::new(graph);
 
         let result = state.nearest_node(36.848, 28.268);
         assert!(result.is_none(), "empty graph should return None");
-    }
-
-    /// Build a graph with two components: a main chain and an isolated node.
-    /// The isolated node is NOT connected to the chain.
-    fn graph_with_isolated_node() -> (RoutingGraph, (f64, f64), (f64, f64)) {
-        // Main component: 3 nodes forming a chain, ~1 degree apart
-        let main_a = (36.0, 28.0);
-        let main_b = (36.5, 28.5);
-        let main_c = (37.0, 29.0);
-        // Isolated node: close to main_a but NOT connected.
-        // Offset by ~0.3° (~18nm) to ensure distinct res-5 cells.
-        let isolated = (36.3, 28.3);
-
-        let mut entries: Vec<(u64, f64, f64, bool)> = Vec::new();
-        for &(lat, lng) in &[main_a, main_b, main_c] {
-            let cell = h3o::LatLng::new(lat, lng)
-                .unwrap()
-                .to_cell(h3o::Resolution::Five);
-            entries.push((u64::from(cell), lat, lng, true));
-        }
-        {
-            let cell = h3o::LatLng::new(isolated.0, isolated.1)
-                .unwrap()
-                .to_cell(h3o::Resolution::Five);
-            entries.push((u64::from(cell), isolated.0, isolated.1, false));
-        }
-        entries.sort_by_key(|(h3, _, _, _)| *h3);
-        entries.dedup_by_key(|(h3, _, _, _)| *h3);
-
-        let mut b = GraphBuilder::new();
-        let mut ids = Vec::new();
-        let mut is_main = Vec::new();
-        for &(h3, lat, lng, main) in &entries {
-            ids.push(b.add_node(h3, lat, lng, 255));
-            is_main.push(main);
-        }
-        // Connect only the main-component nodes in a chain
-        let main_ids: Vec<u32> = ids
-            .iter()
-            .zip(is_main.iter())
-            .filter(|(_, &m)| m)
-            .map(|(&id, _)| id)
-            .collect();
-        for i in 0..main_ids.len().saturating_sub(1) {
-            b.add_edge(main_ids[i], main_ids[i + 1], 1.0);
-        }
-        (b.build(), isolated, main_a)
-    }
-
-    #[test]
-    fn skips_isolated_component_snaps_to_main() {
-        let (graph, isolated_pos, _main_pos) = graph_with_isolated_node();
-        let state = AppState::new(graph);
-
-        // Query at the isolated node's position — should snap to main component instead
-        let result = state.nearest_node(isolated_pos.0, isolated_pos.1);
-        assert!(result.is_some(), "should find a main-component node");
-        let (node_id, _dist) = result.unwrap();
-        assert_eq!(
-            state.component_labels[node_id as usize], state.main_component,
-            "snapped node must be in main component"
-        );
     }
 
     /// Build a graph with nodes at two different resolutions.
@@ -463,10 +364,7 @@ mod app_state_tests {
             .unwrap()
             .to_cell(h3o::Resolution::Nine);
 
-        chain_graph(&[
-            (u64::from(far_cell), far_pos.0, far_pos.1),
-            (u64::from(near_cell), near_pos.0, near_pos.1),
-        ])
+        chain_graph(&[u64::from(far_cell), u64::from(near_cell)])
     }
 
     #[test]
@@ -495,8 +393,8 @@ mod app_state_tests {
             .unwrap()
             .to_cell(h3o::Resolution::Three);
 
-        let mut b = GraphBuilder::new();
-        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1, 255);
+        let mut b = GraphBuilder::default();
+        b.add_node(u64::from(ocean_cell), 255);
         let graph = b.build();
         let state = AppState::new(graph);
 
@@ -515,8 +413,8 @@ mod app_state_tests {
             .unwrap()
             .to_cell(h3o::Resolution::Three);
 
-        let mut b = GraphBuilder::new();
-        b.add_node(u64::from(ocean_cell), ocean_pos.0, ocean_pos.1, 255);
+        let mut b = GraphBuilder::default();
+        b.add_node(u64::from(ocean_cell), 255);
         let graph = b.build();
         let state = AppState::new(graph);
 
@@ -547,10 +445,7 @@ mod app_state_tests {
         let a_ll = h3o::LatLng::from(a);
         let b_ll = h3o::LatLng::from(b);
 
-        let state = AppState::new(chain_graph(&[
-            (u64::from(a), a_ll.lat(), a_ll.lng()),
-            (u64::from(b), b_ll.lat(), b_ll.lng()),
-        ]));
+        let state = AppState::new(chain_graph(&[u64::from(a), u64::from(b)]));
 
         let result = state.nearest_node(origin_pos.0, origin_pos.1);
         assert!(result.is_some(), "should find a ring-1 candidate");
@@ -587,10 +482,7 @@ mod app_state_tests {
         let near_ll = h3o::LatLng::from(near);
         let far_ll = h3o::LatLng::from(far);
 
-        let state = AppState::new(chain_graph(&[
-            (u64::from(near), near_ll.lat(), near_ll.lng()),
-            (u64::from(far), far_ll.lat(), far_ll.lng()),
-        ]));
+        let state = AppState::new(chain_graph(&[u64::from(near), u64::from(far)]));
 
         let result = state.nearest_node(origin_pos.0, origin_pos.1);
         assert!(result.is_some(), "should find the ring-2 candidate");
@@ -637,10 +529,7 @@ mod app_state_tests {
         let boundary_ll = h3o::LatLng::from(boundary);
         let beyond_ll = h3o::LatLng::from(beyond);
 
-        let state = AppState::new(chain_graph(&[
-            (u64::from(boundary), boundary_ll.lat(), boundary_ll.lng()),
-            (u64::from(beyond), beyond_ll.lat(), beyond_ll.lng()),
-        ]));
+        let state = AppState::new(chain_graph(&[u64::from(boundary), u64::from(beyond)]));
 
         let result = state.nearest_node(origin_pos.0, origin_pos.1);
         assert!(

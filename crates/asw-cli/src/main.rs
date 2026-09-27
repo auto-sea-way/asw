@@ -1,6 +1,5 @@
 mod bench;
 mod download;
-mod srcdir;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -126,7 +125,7 @@ enum Commands {
 /// clap `value_parser` for `--shore-buffer`: must be finite and within the
 /// same 0.0..=5.0 nm range the `/route` HTTP API enforces (see
 /// asw-serve/src/api.rs), so an out-of-range value fails fast at the CLI
-/// instead of silently reaching `ShorePenalty::from_nm`.
+/// instead of silently reaching `shore_buffer_q`.
 fn parse_shore_buffer(s: &str) -> Result<f64, String> {
     let value: f64 = s
         .parse()
@@ -163,12 +162,9 @@ enum CloudAction {
         #[arg(long)]
         ssh_key: Option<PathBuf>,
 
-        /// Path to the workspace root to upload for the remote build.
-        /// Defaults to the current directory if it looks like the asw
-        /// workspace, else the checkout this binary was built from (dev
-        /// builds only — meaningless for a distributed release binary).
-        #[arg(long)]
-        src: Option<PathBuf>,
+        /// Workspace root to upload for the remote build (a git checkout)
+        #[arg(long, default_value = ".")]
+        src: PathBuf,
     },
     /// Provision a Hetzner server (create + bootstrap)
     Provision {
@@ -219,19 +215,22 @@ fn resolve_ssh_key(ssh_key: Option<PathBuf>) -> Result<PathBuf> {
     }
 }
 
-/// Workspace root baked in at compile time (`CARGO_MANIFEST_DIR` points to
-/// crates/asw-cli, so the workspace root is two levels up). Only meaningful
-/// for binaries built and run from a local checkout — a binary built on a
-/// CI runner and distributed as a release asset has no such directory on
-/// the end user's machine. Used only as a last-resort fallback; see
-/// `srcdir::resolve_src_dir`.
-fn compile_time_src_dir() -> PathBuf {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest_dir
-        .parent() // crates/
-        .and_then(|p| p.parent()) // workspace root
-        .map(|p| p.to_path_buf())
-        .unwrap_or(manifest_dir)
+/// Warn (non-fatal) if `dir`'s git working tree has uncommitted changes:
+/// the cloud build uploads `git archive HEAD`, so they are silently excluded.
+fn warn_if_dirty(dir: &Path) {
+    let output = std::process::Command::new("git")
+        .args(["-C", &dir.to_string_lossy(), "status", "--porcelain"])
+        .output();
+    if let Ok(out) = output {
+        if out.status.success() && !out.stdout.is_empty() {
+            tracing::warn!(
+                "Working tree at {:?} has uncommitted changes. `asw cloud build` uploads \
+                 `git archive HEAD` (the last commit), so those changes will NOT be included \
+                 in the remote build.",
+                dir
+            );
+        }
+    }
 }
 
 fn main() -> Result<()> {
@@ -296,10 +295,10 @@ fn main() -> Result<()> {
                 let listener = tokio::net::TcpListener::bind(&listen).await?;
                 info!("Listening on {}", listen);
 
-                // Load graph in background
+                // Load graph in background; exit on failure so an orchestrator can restart.
                 let graph_file = graph.clone();
                 let bg_state = state.clone();
-                let load_handle = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let loader = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                     info!("Loading graph from {:?}...", graph_file);
                     let file =
                         std::fs::File::open(&graph_file).context("Failed to open graph file")?;
@@ -318,23 +317,15 @@ fn main() -> Result<()> {
                         app_state.coastline.segment_count()
                     );
 
-                    bg_state.set_ready(app_state);
+                    let _ = bg_state.app.set(std::sync::Arc::new(app_state));
                     info!("Server ready");
                     Ok(())
                 });
-
-                // Monitor graph loading — exit on failure so orchestrator can restart
                 tokio::spawn(async move {
-                    match load_handle.await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => {
-                            tracing::error!("Graph loading failed: {:#}", e);
-                            std::process::exit(1);
-                        }
-                        Err(e) => {
-                            tracing::error!("Graph loading task panicked: {}", e);
-                            std::process::exit(1);
-                        }
+                    let outcome = loader.await.map_err(anyhow::Error::from).and_then(|r| r);
+                    if let Err(e) = outcome {
+                        tracing::error!("Graph loading failed: {:#}", e);
+                        std::process::exit(1);
                     }
                 });
 
@@ -387,9 +378,7 @@ fn main() -> Result<()> {
                 let ssh_key_path = resolve_ssh_key(ssh_key)?;
                 let bbox = bbox.map(|b| parse_bbox(&b)).transpose()?;
 
-                let cwd = std::env::current_dir().context("Failed to get current directory")?;
-                let src_dir = srcdir::resolve_src_dir(src, &cwd, &compile_time_src_dir());
-                srcdir::warn_if_dirty(&src_dir);
+                warn_if_dirty(&src);
 
                 let mut pipeline = asw_cloud::pipeline::Pipeline {
                     host: None,
@@ -398,7 +387,7 @@ fn main() -> Result<()> {
                     keep_server,
                     hetzner_token: Some(hetzner_token),
                     bbox,
-                    rust_src_dir: src_dir,
+                    rust_src_dir: src,
                 };
                 pipeline.run()?;
             }
@@ -429,47 +418,39 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Build a single GeoJSON feature string for a hex cell polygon.
+/// GeoJSON feature for a hex cell polygon, serialized to a string.
 fn hex_feature_string(boundary: &[(f64, f64)], res: u8, color: &str) -> String {
-    let mut s = String::with_capacity(512);
-    s.push_str(r#"{"type":"Feature","geometry":{"type":"Polygon","coordinates":[["#);
-    for (j, &(lat, lon)) in boundary.iter().enumerate() {
-        if j > 0 {
-            s.push(',');
+    let mut ring: Vec<[f64; 2]> = boundary.iter().map(|&(lat, lon)| [lon, lat]).collect();
+    if let Some(&first) = ring.first() {
+        ring.push(first);
+    }
+    serde_json::json!({
+        "type": "Feature",
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+        "properties": {
+            "layer": format!("hex-res-{res}"),
+            "fill": color, "fill-opacity": 0.38,
+            "stroke": color, "stroke-opacity": 1.0, "stroke-width": 1
         }
-        use std::fmt::Write as FmtWrite;
-        write!(s, "[{},{}]", lon, lat).unwrap();
-    }
-    // Close the ring
-    if let Some(&(lat, lon)) = boundary.first() {
-        use std::fmt::Write as FmtWrite;
-        write!(s, ",[{},{}]", lon, lat).unwrap();
-    }
-    use std::fmt::Write as FmtWrite;
-    write!(
-        s,
-        r#"]]}},"properties":{{"layer":"hex-res-{}","fill":"{}","fill-opacity":0.38,"stroke":"{}","stroke-opacity":1.0,"stroke-width":1}}}}"#,
-        res, color, color
-    ).unwrap();
-    s
+    })
+    .to_string()
 }
 
-/// Build a single GeoJSON feature string for a coastline segment.
+/// GeoJSON feature for a coastline segment, serialized to a string.
 fn coastline_feature_string(seg: &[(f32, f32)]) -> String {
-    let mut s = String::with_capacity(256 + seg.len() * 24);
-    s.push_str(r#"{"type":"Feature","geometry":{"type":"LineString","coordinates":["#);
-    for (j, &(lon, lat)) in seg.iter().enumerate() {
-        if j > 0 {
-            s.push(',');
-        }
-        use std::fmt::Write as FmtWrite;
-        write!(s, "[{},{}]", lon as f64, lat as f64).unwrap();
-    }
-    s.push_str(r##"]},"properties":{"layer":"coastline","stroke":"#ff0000","stroke-width":1.5}}"##);
-    s
+    let coords: Vec<[f64; 2]> = seg
+        .iter()
+        .map(|&(lon, lat)| [lon as f64, lat as f64])
+        .collect();
+    serde_json::json!({
+        "type": "Feature",
+        "geometry": {"type": "LineString", "coordinates": coords},
+        "properties": {"layer": "coastline", "stroke": "#ff0000", "stroke-width": 1.5}
+    })
+    .to_string()
 }
 
-/// Write a GeoJSON FeatureCollection to the given path from pre-built feature strings.
+/// Stream pre-serialized features into a FeatureCollection at `path`.
 fn write_feature_collection<S: AsRef<str>>(path: &Path, features: &[S]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

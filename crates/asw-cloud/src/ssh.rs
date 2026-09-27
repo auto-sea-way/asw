@@ -12,12 +12,6 @@ pub(crate) struct SshConfig {
     pub(crate) key_path: PathBuf,
 }
 
-impl SshConfig {
-    pub(crate) fn new(host: String, key_path: PathBuf) -> Self {
-        Self { host, key_path }
-    }
-}
-
 /// Common SSH options to avoid interactive prompts.
 const SSH_OPTS: &[&str] = &[
     "-o",
@@ -66,29 +60,25 @@ pub(crate) fn run_ssh(cfg: &SshConfig, cmd: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Run `bin` with inherited stdio (streaming output); error on non-zero exit.
+fn stream(bin: &str, args: &[String], what: &str) -> Result<()> {
+    let status = Command::new(bin)
+        .args(args)
+        .status()
+        .with_context(|| format!("Failed to execute {bin}"))?;
+    if !status.success() {
+        bail!("{} failed (exit {})", what, status.code().unwrap_or(-1));
+    }
+    Ok(())
+}
+
 /// Run an SSH command with stdio inherited (streaming output).
 pub(crate) fn run_ssh_stream(cfg: &SshConfig, cmd: &str) -> Result<()> {
     debug!("ssh (stream) root@{}: {}", cfg.host, cmd);
     let mut args = ssh_base_args(cfg);
     args.push(ssh_target(cfg));
     args.push(cmd.to_string());
-
-    let status = Command::new("ssh")
-        .args(&args)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .context("Failed to execute ssh")?;
-
-    if !status.success() {
-        bail!(
-            "SSH command failed (exit {}): {}",
-            status.code().unwrap_or(-1),
-            cmd
-        );
-    }
-    Ok(())
+    stream("ssh", &args, &format!("SSH command `{cmd}`"))
 }
 
 /// Upload a local file to the remote server via scp.
@@ -97,19 +87,7 @@ pub(crate) fn scp_upload(cfg: &SshConfig, local: &Path, remote: &str) -> Result<
     let mut args = ssh_base_args(cfg);
     args.push(local.to_string_lossy().to_string());
     args.push(format!("{}:{}", ssh_target(cfg), remote));
-
-    let status = Command::new("scp")
-        .args(&args)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .context("Failed to execute scp")?;
-
-    if !status.success() {
-        bail!("scp upload failed (exit {})", status.code().unwrap_or(-1));
-    }
-    Ok(())
+    stream("scp", &args, "scp upload")
 }
 
 /// Download a remote file to the local machine via scp.
@@ -131,18 +109,7 @@ pub(crate) fn scp_download(cfg: &SshConfig, remote: &str, local: &Path) -> Resul
     let mut args = ssh_base_args(cfg);
     args.push(format!("{}:{}", ssh_target(cfg), remote));
     args.push(tmp_path.to_string_lossy().to_string());
-
-    let status = Command::new("scp")
-        .args(&args)
-        .stdin(std::process::Stdio::inherit())
-        .stdout(std::process::Stdio::inherit())
-        .stderr(std::process::Stdio::inherit())
-        .status()
-        .context("Failed to execute scp")?;
-
-    if !status.success() {
-        bail!("scp download failed (exit {})", status.code().unwrap_or(-1));
-    }
+    stream("scp", &args, "scp download")?;
 
     std::fs::rename(&tmp_path, local)
         .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, local))?;

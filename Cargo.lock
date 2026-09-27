@@ -189,7 +189,6 @@ dependencies = [
  "bitcode",
  "geo",
  "h3o",
- "ordered-float",
  "rayon",
  "rstar 0.13.0",
  "serde",
@@ -1703,15 +1702,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
-name = "ordered-float"
-version = "5.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
 name = "pbkdf2"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2364,6 +2354,7 @@ checksum = "92fedc0c44dc53a02655cd8dccd2fdf3159c372c0f6eb59115e889f11325e4f0"
 dependencies = [
  "byteorder",
  "dbase",
+ "geo-types",
 ]
 
 [[package]]

@@ -3,7 +3,6 @@ use asw_core::geo_index::LandIndex;
 use asw_core::h3::{cell_center, haversine_nm, neighbors};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
 use h3o::{CellIndex, Resolution};
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use tracing::info;
@@ -17,12 +16,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
 
     // Step 1: Same-resolution edges (parallel)
     info!("Building same-resolution edges...");
-    let pb = ProgressBar::new(cell_list.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40} {pos}/{len} same-res edges")
-            .unwrap(),
-    );
+    let pb = crate::cells::make_progress(cell_list.len(), "same-res edges");
 
     let same_res_edges: Vec<Edge> = cell_list
         .par_iter()
@@ -82,14 +76,9 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
             "Building cross-resolution edges: res-{} ↔ res-{}...",
             fine_res, coarse_res
         );
-        let pb = ProgressBar::new(fine_cells.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(&format!(
-                    "[{{elapsed_precise}}] {{bar:40}} {{pos}}/{{len}} cross-res {}-{}",
-                    fine_res, coarse_res
-                ))
-                .unwrap(),
+        let pb = crate::cells::make_progress(
+            fine_cells.len(),
+            &format!("cross-res {}-{}", fine_res, coarse_res),
         );
 
         let cross_edges: Vec<Edge> = fine_cells
@@ -145,12 +134,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     // Step 3: Land crossing removal (parallel)
     info!("Removing land-crossing edges...");
     let total = all_edges.len();
-    let pb = ProgressBar::new(total as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40} {pos}/{len} land check")
-            .unwrap(),
-    );
+    let pb = crate::cells::make_progress(total, "land check");
 
     let node_positions: HashMap<u32, (f64, f64)> = cells
         .iter()

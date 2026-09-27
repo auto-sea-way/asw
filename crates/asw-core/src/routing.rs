@@ -1,7 +1,6 @@
 use crate::geo_index::CoastlineIndex;
 use crate::graph::RoutingGraph;
 use crate::h3::haversine_nm;
-use ordered_float::OrderedFloat;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
@@ -41,64 +40,59 @@ fn touch_and_cache_h(
     }
 }
 
-/// Query-time shore clearance penalty. Edges into nodes closer to shore than
-/// `buffer_q` get their weight multiplied by `1 + DEFAULT_K * (1 - d/buffer_q)`.
-/// The penalty strength is a fixed constant (`DEFAULT_K`) — nothing in the
-/// codebase varies it per-request, so there is no configurable field for it.
-#[derive(Debug, Clone, Copy)]
-pub struct ShorePenalty {
-    /// Requested clearance in shore_dist units (SHORE_DIST_UNIT_NM each).
-    pub buffer_q: u8,
-}
-
-impl ShorePenalty {
-    pub const DEFAULT_K: f32 = 15.0;
-
-    /// Build from a buffer in nautical miles. Returns None for buffer <= 0
-    /// (and for NaN). Quantizes UP so the requested clearance is never
-    /// understated.
-    pub fn from_nm(buffer_nm: f64) -> Option<Self> {
-        if buffer_nm.is_nan() || buffer_nm <= 0.0 {
-            return None;
-        }
-        // Subtract a small epsilon before ceiling so float error on an exact
-        // multiple (e.g. 0.14 / 0.02 = 7.000000000000001) doesn't overstate
-        // buffer_q by one unit. Mirrors quantize_shore_dist's epsilon guard
-        // in graph.rs (added before floor there; subtracted before ceil here).
-        let q = (buffer_nm / crate::graph::SHORE_DIST_UNIT_NM - 1e-9)
+/// Query-time shore clearance in shore_dist units (SHORE_DIST_UNIT_NM each).
+/// Returns None for buffer <= 0 (and for NaN). Quantizes UP so the requested
+/// clearance is never understated.
+pub fn shore_buffer_q(buffer_nm: f64) -> Option<u8> {
+    if buffer_nm.is_nan() || buffer_nm <= 0.0 {
+        return None;
+    }
+    // Subtract a small epsilon before ceiling so float error on an exact
+    // multiple (e.g. 0.14 / 0.02 = 7.000000000000001) doesn't overstate
+    // buffer_q by one unit. Mirrors quantize_shore_dist's epsilon guard
+    // in graph.rs (added before floor there; subtracted before ceil here).
+    Some(
+        (buffer_nm / crate::graph::SHORE_DIST_UNIT_NM - 1e-9)
             .ceil()
-            .clamp(1.0, 255.0) as u8;
-        Some(Self { buffer_q: q })
-    }
+            .clamp(1.0, 255.0) as u8,
+    )
+}
 
-    /// Weight multiplier for an edge into a node `d` shore_dist units from shore.
-    #[inline]
-    pub fn factor(&self, d: u8) -> f32 {
-        if d >= self.buffer_q {
-            1.0
-        } else {
-            1.0 + Self::DEFAULT_K * (1.0 - d as f32 / self.buffer_q as f32)
-        }
+/// Fixed penalty strength: nothing varies it per request.
+const SHORE_K: f32 = 15.0;
+
+/// Weight multiplier for an edge into a node `d` shore_dist units from shore:
+/// `1 + SHORE_K * (1 - d/buffer_q)` inside the buffer, 1 outside.
+#[inline]
+fn shore_factor(d: u8, buffer_q: u8) -> f32 {
+    if d >= buffer_q {
+        1.0
+    } else {
+        1.0 + SHORE_K * (1.0 - d as f32 / buffer_q as f32)
     }
 }
 
-/// A* pathfinding with haversine heuristic.
+/// A* pathfinding with haversine heuristic. `shore` is the clearance from
+/// `shore_buffer_q`, or None for no penalty.
 pub fn astar(
     graph: &RoutingGraph,
     start: u32,
     goal: u32,
     buffers: &mut crate::astar_pool::AstarBuffers,
-    shore: Option<ShorePenalty>,
+    shore: Option<u8>,
 ) -> Option<(Vec<u32>, f64)> {
-    // Priority queue: (f_score, node_id)
-    let mut open: BinaryHeap<Reverse<(OrderedFloat<f32>, u32)>> = BinaryHeap::new();
+    // Priority queue: (f_score bits, node_id).
+    // ponytail: f >= 0 always (g and haversine h are non-negative), so the
+    // raw IEEE-754 bit pattern orders exactly like the float. Swap in
+    // ordered-float if a negative or NaN score ever becomes possible.
+    let mut open: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
 
     let (goal_lat, goal_lon) = graph.node_pos(goal);
 
     touch_and_cache_h(buffers, start, graph, goal_lat, goal_lon);
     buffers.g_score[start as usize] = 0.0;
     let h_start = buffers.h_score[start as usize];
-    open.push(Reverse((OrderedFloat(h_start), start)));
+    open.push(Reverse((h_start.to_bits(), start)));
 
     while let Some(Reverse((_, current))) = open.pop() {
         if current == goal {
@@ -128,7 +122,7 @@ pub fn astar(
                 continue;
             }
             let weight = match shore {
-                Some(sp) => weight * sp.factor(graph.shore_dist[neighbor as usize]),
+                Some(q) => weight * shore_factor(graph.shore_dist[neighbor as usize], q),
                 None => weight,
             };
             let tentative_g = current_g + weight;
@@ -137,52 +131,12 @@ pub fn astar(
                 buffers.came_from[neighbor as usize] = current;
                 let h = buffers.h_score[neighbor as usize];
                 let f = tentative_g + h;
-                open.push(Reverse((OrderedFloat(f), neighbor)));
+                open.push(Reverse((f.to_bits(), neighbor)));
             }
         }
     }
 
     None // No path found
-}
-
-/// Sparse table for O(1) range-minimum queries over a fixed `u8` slice.
-/// Built once (O(n log n)) and queried O(1) per anchor in `smooth_indices()`,
-/// replacing an O(n) running-min rebuild per anchor (worst case O(n^2)
-/// across the whole smoothing pass for long, twisty raw paths).
-struct RangeMin {
-    /// `table[k][i]` = min over `values[i .. i + 2^k]`.
-    table: Vec<Vec<u8>>,
-}
-
-impl RangeMin {
-    fn build(values: &[u8]) -> Self {
-        let n = values.len();
-        let levels = if n == 0 {
-            1
-        } else {
-            (n as u32).ilog2() as usize + 1
-        };
-        let mut table: Vec<Vec<u8>> = Vec::with_capacity(levels);
-        table.push(values.to_vec());
-        for k in 1..levels {
-            let half = 1usize << (k - 1);
-            let span = half * 2;
-            let prev = &table[k - 1];
-            let row: Vec<u8> = (0..=n - span)
-                .map(|i| prev[i].min(prev[i + half]))
-                .collect();
-            table.push(row);
-        }
-        Self { table }
-    }
-
-    /// Minimum of `values[i..=j]` (inclusive), both indices in bounds.
-    fn query(&self, i: usize, j: usize) -> u8 {
-        let len = j - i + 1;
-        let k = (len as u32).ilog2() as usize;
-        let span = 1usize << k;
-        self.table[k][i].min(self.table[k][j + 1 - span])
-    }
 }
 
 /// Result of `smooth_indices`: the kept waypoint indices plus which kept
@@ -229,14 +183,6 @@ pub fn smooth_indices(
         "shore_dist must be parallel to coords when a buffer is requested"
     );
 
-    // Range-min over the whole input's shore_dist, built once per call (not
-    // per anchor) so smoothing is O(n log n) overall instead of O(n^2).
-    let range_min = if use_buffer {
-        Some(RangeMin::build(shore_dist))
-    } else {
-        None
-    };
-
     let mut result = vec![0];
     let mut land_segs = Vec::new();
     let mut current_idx = 0;
@@ -250,8 +196,12 @@ pub fn smooth_indices(
             if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
                 return false;
             }
-            if let Some(rm) = &range_min {
-                let raw_min_nm = rm.query(current_idx, j) as f64 * crate::graph::SHORE_DIST_UNIT_NM;
+            if use_buffer {
+                // ponytail: O(n) slice scan per probe; the R-tree query above
+                // dwarfs it. Sparse-table range-min if a profile ever says so.
+                let raw_min = shore_dist[current_idx..=j].iter().min().copied();
+                let raw_min_nm =
+                    raw_min.unwrap_or(u8::MAX) as f64 * crate::graph::SHORE_DIST_UNIT_NM;
                 let threshold = shore_buffer_nm.min(raw_min_nm);
                 if threshold > 0.0
                     && coastline.segment_min_distance_nm(c_lon, c_lat, t_lon, t_lat, threshold)
@@ -402,7 +352,7 @@ pub fn compute_route(
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
 
-    let shore = ShorePenalty::from_nm(shore_buffer_nm);
+    let shore = shore_buffer_q(shore_buffer_nm);
     let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, shore)?;
     let raw_hops = raw_path.len();
 
@@ -491,10 +441,10 @@ mod tests {
         cells.dedup_by_key(|(h3, _, _, _)| *h3);
         assert_eq!(cells.len(), 4, "Need 4 distinct H3 cells for diamond graph");
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = std::collections::HashMap::new();
-        for (h3, lat, lng, label) in &cells {
-            let id = b.add_node(*h3, *lat, *lng, 255);
+        for (h3, _, _, label) in &cells {
+            let id = b.add_node(*h3, 255);
             ids.insert(*label, id);
         }
 
@@ -606,9 +556,9 @@ mod tests {
             .to_cell(h3o::Resolution::Five);
         let mut cells = vec![(u64::from(c0), 0.0, 0.0), (u64::from(c1), 10.0, 10.0)];
         cells.sort_by_key(|(h3, _, _)| *h3);
-        let mut b = GraphBuilder::new();
-        for (h3, lat, lng) in &cells {
-            b.add_node(*h3, *lat, *lng, 255);
+        let mut b = GraphBuilder::default();
+        for (h3, _, _) in &cells {
+            b.add_node(*h3, 255);
         }
         let g = b.build();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
@@ -617,47 +567,20 @@ mod tests {
     }
 
     #[test]
-    fn range_min_matches_brute_force_min() {
-        let values: [u8; 9] = [5, 3, 8, 1, 9, 2, 7, 6, 4];
-        let rm = RangeMin::build(&values);
-        for i in 0..values.len() {
-            for j in i..values.len() {
-                let expected = values[i..=j].iter().copied().min().unwrap();
-                assert_eq!(
-                    rm.query(i, j),
-                    expected,
-                    "range [{i}, {j}] expected {expected}"
-                );
-            }
-        }
-    }
+    fn shore_buffer_q_and_factor() {
+        assert!(shore_buffer_q(0.0).is_none());
+        assert!(shore_buffer_q(-1.0).is_none());
+        assert_eq!(shore_buffer_q(0.1), Some(5)); // 0.1 / 0.02 = 5
+        assert_eq!(shore_buffer_q(0.001), Some(1)); // rounds UP to 1
+        assert_eq!(shore_buffer_q(99.0), Some(255)); // clamps to 255
+                                                     // 0.14 / 0.02 == 7.000000000000001 in f64; without the epsilon guard
+                                                     // this ceils to 8 instead of the intended exact 7.
+        assert_eq!(shore_buffer_q(0.14), Some(7));
 
-    #[test]
-    fn range_min_single_element() {
-        let values: [u8; 1] = [42];
-        let rm = RangeMin::build(&values);
-        assert_eq!(rm.query(0, 0), 42);
-    }
-
-    #[test]
-    fn shore_penalty_from_nm_and_factor() {
-        assert!(ShorePenalty::from_nm(0.0).is_none());
-        assert!(ShorePenalty::from_nm(-1.0).is_none());
-        let p = ShorePenalty::from_nm(0.1).unwrap(); // 0.1 / 0.02 = 5
-        assert_eq!(p.buffer_q, 5);
-        let p2 = ShorePenalty::from_nm(0.001).unwrap(); // rounds UP to 1
-        assert_eq!(p2.buffer_q, 1);
-        let p3 = ShorePenalty::from_nm(99.0).unwrap(); // clamps to 255
-        assert_eq!(p3.buffer_q, 255);
-        // 0.14 / 0.02 == 7.000000000000001 in f64; without the epsilon guard
-        // this ceils to 8 instead of the intended exact 7.
-        let p4 = ShorePenalty::from_nm(0.14).unwrap();
-        assert_eq!(p4.buffer_q, 7);
-
-        assert_eq!(p.factor(5), 1.0); // at the buffer: no penalty
-        assert_eq!(p.factor(255), 1.0); // far offshore: no penalty
-        assert!((p.factor(0) - 16.0).abs() < 1e-6); // 1 + 15*1
-        assert!((p.factor(2) - (1.0 + 15.0 * 0.6)).abs() < 1e-4);
+        assert_eq!(shore_factor(5, 5), 1.0); // at the buffer: no penalty
+        assert_eq!(shore_factor(255, 5), 1.0); // far offshore: no penalty
+        assert!((shore_factor(0, 5) - 16.0).abs() < 1e-6); // 1 + 15*1
+        assert!((shore_factor(2, 5) - (1.0 + 15.0 * 0.6)).abs() < 1e-4);
     }
 
     /// Two corridors S->A->G (short, A hugs the shore) and S->B->G (long, B
@@ -680,10 +603,10 @@ mod tests {
             .collect();
         cells.sort_by_key(|(h3, _, _, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = std::collections::HashMap::new();
-        for (h3, lat, lng, q, label) in &cells {
-            let id = b.add_node(*h3, *lat, *lng, *q);
+        for (h3, _, _, q, label) in &cells {
+            let id = b.add_node(*h3, *q);
             ids.insert(*label, id);
         }
         b.add_edge(ids["S"], ids["A"], 5.0);
@@ -705,7 +628,7 @@ mod tests {
 
         // With a 0.1 nm buffer: edge S->A costs 5 * 16 = 80 -> offshore wins.
         buffers.reset();
-        let shore = ShorePenalty::from_nm(0.1);
+        let shore = shore_buffer_q(0.1);
         let (path, cost) = astar(&g, s, goal, &mut buffers, shore).unwrap();
         assert_eq!(path, vec![s, b_node, goal]);
         assert!((cost - 16.0).abs() < 1e-4);
@@ -717,7 +640,7 @@ mod tests {
         let mut b1 = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
         let mut b2 = crate::astar_pool::AstarBuffers::new(g.num_nodes as usize);
         let plain = astar(&g, node_a, node_d, &mut b1, None).unwrap();
-        let with = astar(&g, node_a, node_d, &mut b2, ShorePenalty::from_nm(0.2)).unwrap();
+        let with = astar(&g, node_a, node_d, &mut b2, shore_buffer_q(0.2)).unwrap();
         assert_eq!(plain.0, with.0);
         assert!((plain.1 - with.1).abs() < 1e-6);
     }
@@ -855,10 +778,10 @@ mod tests {
             .collect();
         cells.sort_by_key(|(h3, _, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = vec![0u32; coords.len()];
-        for (h3, lat, lon, orig) in &cells {
-            ids[*orig] = b.add_node(*h3, *lat, *lon, 255);
+        for (h3, _, _, orig) in &cells {
+            ids[*orig] = b.add_node(*h3, 255);
         }
         for w in ids.windows(2) {
             b.add_edge(w[0], w[1], 60.0);
@@ -869,7 +792,7 @@ mod tests {
     #[test]
     fn shortcut_returns_direct_route_when_line_is_clear() {
         let coastline = CoastlineIndex::new(vec![]);
-        let g = GraphBuilder::new().build();
+        let g = GraphBuilder::default().build();
         // knn returning None proves the shortcut runs BEFORE snapping.
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
@@ -883,7 +806,7 @@ mod tests {
     #[test]
     fn shortcut_handles_identical_points() {
         let coastline = CoastlineIndex::new(vec![]);
-        let g = GraphBuilder::new().build();
+        let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
         let r = compute_route(&g, 0.5, 0.5, 0.5, 0.5, &coastline, &knn, &mut buffers, 0.0).unwrap();
@@ -896,7 +819,7 @@ mod tests {
         // Dogleg geometry: wall at lon 28.0 (lat 36.45..36.55); the direct
         // pin-to-pin line at lon 28.05 passes ~2.41 nm off the coast.
         let coastline = wall_index(28.0, 36.45, 36.55);
-        let g = GraphBuilder::new().build();
+        let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
 
@@ -936,7 +859,7 @@ mod tests {
         // to min(3.0, pin clearance) and the direct line (whose closest
         // approach IS the from-pin) passes despite the 3 nm buffer.
         let coastline = wall_index(28.0, 36.45, 36.55);
-        let g = GraphBuilder::new().build();
+        let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
         let r = compute_route(
@@ -1050,10 +973,10 @@ mod tests {
             })
             .collect();
         entries.sort_by_key(|(h3, _, _)| *h3);
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for &(h3, lat, lng) in &entries {
-            ids.push(b.add_node(h3, lat, lng, 255));
+        for &(h3, _, _) in &entries {
+            ids.push(b.add_node(h3, 255));
         }
         for i in 0..ids.len() - 1 {
             b.add_edge(ids[i], ids[i + 1], 1.0);

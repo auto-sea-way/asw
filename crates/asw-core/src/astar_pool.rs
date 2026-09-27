@@ -85,22 +85,15 @@ impl AstarBuffers {
 /// match the pool's capacity without duplicating the number in two places.
 pub const DEFAULT_POOL_SIZE: usize = 2;
 
-/// Pool of reusable A* buffer sets.
-/// Uses a simple Mutex<Vec> so multiple callers can acquire concurrently
-/// without serializing behind a channel receiver lock.
+/// Pool of reusable A* buffer sets behind a simple Mutex<Vec>.
 ///
-/// The pool is soft-bounded at `capacity`: `acquire()` will still allocate a
-/// fresh buffer set on demand if the pool is temporarily empty (so a caller
-/// is never blocked), but `release()` drops any buffer set that would push
-/// the pool beyond `capacity` instead of retaining it. This caps the pool's
-/// steady-state memory at `capacity` buffer sets even if callers momentarily
-/// over-subscribe it (e.g. a concurrency limiter upstream is misconfigured or
-/// absent) — belt-and-braces alongside whatever concurrency limit the caller
-/// enforces (see `asw-serve::state::ServerState::route_permits`).
+/// `acquire()` allocates a fresh buffer set if the pool is empty, so a caller
+/// is never blocked; the caller is expected to cap concurrency at `size`
+/// (see `asw-serve::state::ServerState::route_permits`) so that never
+/// happens in steady state.
 pub struct AstarPool {
     buffers: std::sync::Mutex<Vec<AstarBuffers>>,
     num_nodes: usize,
-    capacity: usize,
 }
 
 impl AstarPool {
@@ -109,7 +102,6 @@ impl AstarPool {
         Self {
             buffers: std::sync::Mutex::new(buffers),
             num_nodes,
-            capacity: size,
         }
     }
 
@@ -120,25 +112,10 @@ impl AstarPool {
             .unwrap_or_else(|| AstarBuffers::new(self.num_nodes))
     }
 
-    /// Return a buffer set to the pool after resetting it, unless the pool
-    /// already holds `capacity` buffer sets — in which case the returned
-    /// buffer is dropped instead of growing the pool further. This is what
-    /// keeps the pool from ratcheting up to a burst's peak concurrency and
-    /// never shrinking back down.
+    /// Return a buffer set to the pool after resetting it.
     pub fn release(&self, mut buf: AstarBuffers) {
         buf.reset();
-        let mut pool = self.buffers.lock().expect("pool lock poisoned");
-        if pool.len() < self.capacity {
-            pool.push(buf);
-        }
-        // else: pool is already at capacity — drop `buf` here.
-    }
-
-    /// Test-only hook to observe the pool's current length without consuming
-    /// buffers via `acquire()`.
-    #[cfg(test)]
-    pub(crate) fn len_for_test(&self) -> usize {
-        self.buffers.lock().expect("pool lock poisoned").len()
+        self.buffers.lock().expect("pool lock poisoned").push(buf);
     }
 }
 
@@ -250,31 +227,6 @@ mod tests {
         assert!(buf2.touch(0));
         assert_eq!(buf2.g_score[0], f32::MAX);
         assert!(!buf2.closed[0]);
-    }
-
-    #[test]
-    fn pool_release_beyond_capacity_drops_buffer() {
-        let pool = AstarPool::new(50, 2);
-
-        // Drain the pool, then acquire a third buffer set — since the pool is
-        // empty, `acquire()` allocates a fresh one beyond the configured
-        // capacity (callers must never be blocked by an empty pool).
-        let a = pool.acquire();
-        let b = pool.acquire();
-        let c = pool.acquire();
-        assert_eq!(pool.len_for_test(), 0);
-
-        // Releasing all three: the pool must cap at `capacity` (2), dropping
-        // the third instead of growing unboundedly.
-        pool.release(a);
-        pool.release(b);
-        assert_eq!(pool.len_for_test(), 2);
-        pool.release(c);
-        assert_eq!(
-            pool.len_for_test(),
-            2,
-            "pool must not grow past its configured capacity"
-        );
     }
 
     #[test]

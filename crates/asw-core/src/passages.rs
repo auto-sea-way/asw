@@ -13,9 +13,6 @@ pub struct Passage {
     /// Geofabrik PBF URL for inland canal water extraction.
     /// None for natural straits where coastline already provides water gaps.
     pub geofabrik_url: Option<&'static str>,
-    /// OSM water= tag values to keep (e.g., "lock", "reservoir", "lake", "river").
-    /// Empty means skip water extraction even if geofabrik_url is set.
-    pub water_types: &'static [&'static str],
 }
 
 /// H3 resolution used for passage-zone membership lookups.
@@ -35,14 +32,12 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (32.20, 29.85, 32.65, 31.32),
         leaf_resolution: 11,
         geofabrik_url: None, // sea-level canal, coastline provides gaps
-        water_types: &[],
     },
     Passage {
         name: "Panama Canal",
         corridor: (-79.95, 8.88, -79.50, 9.42),
         leaf_resolution: 13, // bumped from 11 — lock channels need 3.5m edges
         geofabrik_url: Some("https://download.geofabrik.de/central-america/panama-latest.osm.pbf"),
-        water_types: &["lock", "reservoir", "lake", "river"],
     },
     Passage {
         name: "Kiel Canal",
@@ -51,57 +46,49 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: Some(
             "https://download.geofabrik.de/europe/germany/schleswig-holstein-latest.osm.pbf",
         ),
-        water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
         name: "Corinth Canal",
         corridor: (22.94, 37.88, 23.03, 37.96),
         leaf_resolution: 13,
         geofabrik_url: None, // sea-level canal, coastline provides gaps
-        water_types: &[],
     },
-    // Natural straits — all get geofabrik_url: None, water_types: &[]
+    // Natural straits — coastline already provides the water gaps
     Passage {
         name: "Bosphorus",
         corridor: (28.95, 40.95, 29.20, 41.28),
         leaf_resolution: 10,
         geofabrik_url: None,
-        water_types: &[],
     },
     Passage {
         name: "Dardanelles",
         corridor: (26.10, 39.95, 26.75, 40.50),
         leaf_resolution: 10,
         geofabrik_url: None,
-        water_types: &[],
     },
     Passage {
         name: "Malacca Strait",
         corridor: (103.35, 1.10, 103.90, 1.40),
         leaf_resolution: 10,
         geofabrik_url: None,
-        water_types: &[],
     },
     Passage {
         name: "Singapore Strait",
         corridor: (103.70, 1.15, 104.35, 1.30),
         leaf_resolution: 10,
         geofabrik_url: None,
-        water_types: &[],
     },
     Passage {
         name: "Messina Strait",
         corridor: (15.55, 38.05, 15.70, 38.35),
         leaf_resolution: 10,
         geofabrik_url: None,
-        water_types: &[],
     },
     Passage {
         name: "Dover Strait",
         corridor: (1.15, 50.85, 1.70, 51.20),
         leaf_resolution: 10,
         geofabrik_url: None,
-        water_types: &[],
     },
     // ── New canals ──────────────────────────────────────────────────────
     Passage {
@@ -109,7 +96,6 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (-95.30, 29.30, -94.70, 29.80),
         leaf_resolution: 12,
         geofabrik_url: Some("https://download.geofabrik.de/north-america/us/texas-latest.osm.pbf"),
-        water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
         name: "Cape Cod Canal",
@@ -118,7 +104,6 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: Some(
             "https://download.geofabrik.de/north-america/us/massachusetts-latest.osm.pbf",
         ),
-        water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
         name: "Chesapeake-Delaware Canal",
@@ -127,7 +112,6 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: Some(
             "https://download.geofabrik.de/north-america/us/delaware-latest.osm.pbf",
         ),
-        water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
     Passage {
         name: "Welland Canal",
@@ -136,6 +120,5 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: Some(
             "https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf",
         ),
-        water_types: &["lock", "reservoir", "lake", "river", "canal"],
     },
 ];

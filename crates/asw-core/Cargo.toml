@@ -11,7 +11,6 @@ rstar.workspace = true
 rayon.workspace = true
 serde.workspace = true
 bitcode.workspace = true
-ordered-float.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 zstd.workspace = true

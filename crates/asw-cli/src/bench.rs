@@ -39,56 +39,40 @@ const ROUTES: &[(&str, f64, f64, f64, f64)] = &[
     ("Dover Strait", 51.15, 1.30, 50.85, 1.75),
 ];
 
-struct BenchRoute {
-    name: String,
-    from_lat: f64,
-    from_lon: f64,
-    to_lat: f64,
-    to_lon: f64,
-    is_passage: bool,
-}
-
+/// Per-route stats. Only the timing summary and route metadata are serialized;
+/// the rest is used for the markdown and GeoJSON outputs of the current run.
+#[derive(Default, Serialize, Deserialize)]
 struct RouteStats {
     name: String,
     distance_nm: f64,
     raw_hops: usize,
     smooth_hops: usize,
-    timings_us: Vec<u64>,
+    min_us: u64,
+    p50_us: u64,
+    p95_us: u64,
+    max_us: u64,
+    #[serde(skip)]
     is_passage: bool,
+    #[serde(skip)]
     coordinates: Vec<[f64; 2]>,
+    #[serde(skip)]
     land_legs: Vec<usize>,
+    #[serde(skip)]
     from_lat: f64,
+    #[serde(skip)]
     from_lon: f64,
+    #[serde(skip)]
     to_lat: f64,
+    #[serde(skip)]
     to_lon: f64,
 }
 
-impl RouteStats {
-    // `timings_us` is sorted once in `run_benchmark`.
-    fn min_us(&self) -> u64 {
-        self.timings_us.first().copied().unwrap_or(0)
+/// `p`-th percentile of a sorted slice (nearest-rank, 0 when empty).
+fn percentile(sorted: &[u64], p: f64) -> u64 {
+    if sorted.is_empty() {
+        return 0;
     }
-
-    fn max_us(&self) -> u64 {
-        self.timings_us.last().copied().unwrap_or(0)
-    }
-
-    fn percentile(&self, p: f64) -> u64 {
-        if self.timings_us.is_empty() {
-            return 0;
-        }
-        let idx =
-            ((self.timings_us.len() as f64 * p / 100.0) as usize).min(self.timings_us.len() - 1);
-        self.timings_us[idx]
-    }
-
-    fn p50_us(&self) -> u64 {
-        self.percentile(50.0)
-    }
-
-    fn p95_us(&self) -> u64 {
-        self.percentile(95.0)
-    }
+    sorted[((sorted.len() as f64 * p / 100.0) as usize).min(sorted.len() - 1)]
 }
 
 #[derive(Serialize, Deserialize)]
@@ -99,7 +83,7 @@ struct BenchResult {
     iterations: usize,
     #[serde(default)]
     shore_buffer_nm: f64,
-    routes: Vec<RouteBenchResult>,
+    routes: Vec<RouteStats>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -107,18 +91,6 @@ struct GraphMeta {
     nodes: u32,
     edges: u32,
     file: String,
-}
-
-#[derive(Serialize, Deserialize)]
-struct RouteBenchResult {
-    name: String,
-    distance_nm: f64,
-    raw_hops: usize,
-    smooth_hops: usize,
-    min_us: u64,
-    p50_us: u64,
-    p95_us: u64,
-    max_us: u64,
 }
 
 fn format_time(us: u64) -> String {
@@ -160,148 +132,100 @@ fn git_commit() -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-/// Resolve hardcoded routes against the loaded graph.
-///
-/// Skips routes whose endpoints can't be snapped to graph nodes or
-/// aren't in the same connected component.
-fn resolve_routes(app: &AppState, shore_buffer_nm: f64) -> Vec<BenchRoute> {
-    let mut routes = Vec::new();
+/// Indices into `ROUTES` that are routable on the loaded graph.
+fn resolve_routes(app: &AppState, shore_buffer_nm: f64) -> Vec<usize> {
+    let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
     let mut buffers = asw_core::astar_pool::AstarBuffers::new(app.graph.num_nodes as usize);
-
+    let mut routes = Vec::new();
     for (i, &(name, from_lat, from_lon, to_lat, to_lon)) in ROUTES.iter().enumerate() {
-        let from_node = app.nearest_node(from_lat, from_lon);
-        let to_node = app.nearest_node(to_lat, to_lon);
-
-        match (from_node, to_node) {
-            (Some(_), Some(_)) => {
-                // Validate routability with a test computation
-                let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
-                buffers.reset();
-                if compute_route(
-                    &app.graph,
-                    from_lat,
-                    from_lon,
-                    to_lat,
-                    to_lon,
-                    &app.coastline,
-                    &knn,
-                    &mut buffers,
-                    shore_buffer_nm,
-                )
-                .is_none()
-                {
-                    info!("  SKIP {} (no route found)", name);
-                    continue;
-                }
-                routes.push(BenchRoute {
-                    name: name.to_string(),
-                    from_lat,
-                    from_lon,
-                    to_lat,
-                    to_lon,
-                    is_passage: i >= NUM_SAILING_ROUTES,
-                });
-                info!("  OK   {}", name);
-            }
-            _ => {
-                info!("  SKIP {} (endpoints not in graph)", name);
-            }
+        buffers.reset();
+        let found = compute_route(
+            &app.graph,
+            from_lat,
+            from_lon,
+            to_lat,
+            to_lon,
+            &app.coastline,
+            &knn,
+            &mut buffers,
+            shore_buffer_nm,
+        )
+        .is_some();
+        if found {
+            info!("  OK   {}", name);
+            routes.push(i);
+        } else {
+            info!("  SKIP {} (no route found)", name);
         }
     }
-
     routes
 }
 
 /// Run benchmark iterations for each route.
 fn run_benchmark(
     app: &AppState,
-    graph: &RoutingGraph,
-    routes: &[BenchRoute],
+    routes: &[usize],
     iterations: usize,
     shore_buffer_nm: f64,
 ) -> Vec<RouteStats> {
     let warmup = 3;
+    let graph = &app.graph;
     let knn = |lat: f64, lon: f64| app.nearest_node(lat, lon);
     let mut buffers = asw_core::astar_pool::AstarBuffers::new(graph.num_nodes as usize);
 
     routes
         .iter()
-        .map(|route| {
-            // Warmup
-            for _ in 0..warmup {
+        .map(|&i| {
+            let (name, from_lat, from_lon, to_lat, to_lon) = ROUTES[i];
+            let run = |buffers: &mut asw_core::astar_pool::AstarBuffers| {
                 buffers.reset();
-                let _ = compute_route(
+                compute_route(
                     graph,
-                    route.from_lat,
-                    route.from_lon,
-                    route.to_lat,
-                    route.to_lon,
+                    from_lat,
+                    from_lon,
+                    to_lat,
+                    to_lon,
                     &app.coastline,
                     &knn,
-                    &mut buffers,
+                    buffers,
                     shore_buffer_nm,
-                );
-            }
-
-            // Capture metadata from first measured run
-            buffers.reset();
-            let first = compute_route(
-                graph,
-                route.from_lat,
-                route.from_lon,
-                route.to_lat,
-                route.to_lon,
-                &app.coastline,
-                &knn,
-                &mut buffers,
-                shore_buffer_nm,
-            );
-            let (distance_nm, raw_hops, smooth_hops, coordinates, land_legs) = match &first {
-                Some(r) => (
-                    r.distance_nm,
-                    r.raw_hops,
-                    r.smooth_hops,
-                    r.coordinates.clone(),
-                    r.land_legs.clone(),
-                ),
-                None => (0.0, 0, 0, Vec::new(), Vec::new()),
+                )
             };
+            for _ in 0..warmup {
+                let _ = run(&mut buffers);
+            }
+            // Capture metadata from first measured run
+            let first = run(&mut buffers);
 
-            // Measured iterations
             let mut timings_us = Vec::with_capacity(iterations);
-
             for _ in 0..iterations {
-                buffers.reset();
                 let start = Instant::now();
-                let _ = compute_route(
-                    graph,
-                    route.from_lat,
-                    route.from_lon,
-                    route.to_lat,
-                    route.to_lon,
-                    &app.coastline,
-                    &knn,
-                    &mut buffers,
-                    shore_buffer_nm,
-                );
+                let _ = run(&mut buffers);
                 timings_us.push(start.elapsed().as_micros() as u64);
             }
             timings_us.sort_unstable();
 
-            RouteStats {
-                name: route.name.clone(),
-                distance_nm,
-                raw_hops,
-                smooth_hops,
-                timings_us,
-                is_passage: route.is_passage,
-                coordinates,
-                land_legs,
-                from_lat: route.from_lat,
-                from_lon: route.from_lon,
-                to_lat: route.to_lat,
-                to_lon: route.to_lon,
+            let mut stats = RouteStats {
+                name: name.to_string(),
+                min_us: timings_us.first().copied().unwrap_or(0),
+                p50_us: percentile(&timings_us, 50.0),
+                p95_us: percentile(&timings_us, 95.0),
+                max_us: timings_us.last().copied().unwrap_or(0),
+                is_passage: i >= NUM_SAILING_ROUTES,
+                from_lat,
+                from_lon,
+                to_lat,
+                to_lon,
+                ..Default::default()
+            };
+            if let Some(r) = first {
+                stats.distance_nm = r.distance_nm;
+                stats.raw_hops = r.raw_hops;
+                stats.smooth_hops = r.smooth_hops;
+                stats.coordinates = r.coordinates;
+                stats.land_legs = r.land_legs;
             }
+            stats
         })
         .collect()
 }
@@ -326,49 +250,15 @@ fn print_table(stats: &[RouteStats], graph: &RoutingGraph, iterations: usize) {
             "{:<20} {:>9.1}nm {:>10} {:>10} {:>10} {:>10} {:>5}>{:<4}",
             s.name,
             s.distance_nm,
-            format_time(s.min_us()),
-            format_time(s.p50_us()),
-            format_time(s.p95_us()),
-            format_time(s.max_us()),
+            format_time(s.min_us),
+            format_time(s.p50_us),
+            format_time(s.p95_us),
+            format_time(s.max_us),
             s.raw_hops,
             s.smooth_hops,
         );
     }
     println!();
-}
-
-/// Build a JSON-serializable result.
-fn build_result(
-    stats: &[RouteStats],
-    graph: &RoutingGraph,
-    graph_path: &str,
-    iterations: usize,
-    shore_buffer_nm: f64,
-) -> BenchResult {
-    BenchResult {
-        graph: GraphMeta {
-            nodes: graph.num_nodes,
-            edges: graph.num_edges,
-            file: graph_path.to_string(),
-        },
-        commit: git_commit(),
-        timestamp: now_iso8601(),
-        iterations,
-        shore_buffer_nm,
-        routes: stats
-            .iter()
-            .map(|s| RouteBenchResult {
-                name: s.name.clone(),
-                distance_nm: s.distance_nm,
-                raw_hops: s.raw_hops,
-                smooth_hops: s.smooth_hops,
-                min_us: s.min_us(),
-                p50_us: s.p50_us(),
-                p95_us: s.p95_us(),
-                max_us: s.max_us(),
-            })
-            .collect(),
-    }
 }
 
 /// ISO 8601 timestamp (UTC), e.g. "2026-07-17T12:34:56Z".
@@ -475,10 +365,10 @@ fn push_table(md: &mut String, title: &str, rows: &[&RouteStats]) {
             "| {} | {:.1}nm | {} | {} | {} | {} | {}>{} |\n",
             s.name,
             s.distance_nm,
-            format_time(s.min_us()),
-            format_time(s.p50_us()),
-            format_time(s.p95_us()),
-            format_time(s.max_us()),
+            format_time(s.min_us),
+            format_time(s.p50_us),
+            format_time(s.p95_us),
+            format_time(s.max_us),
             s.raw_hops,
             s.smooth_hops,
         ));
@@ -677,31 +567,39 @@ pub fn run(
     }
     info!("Resolved {} benchmark routes", routes.len());
 
-    for route in &routes {
-        let dist = haversine_nm(route.from_lat, route.from_lon, route.to_lat, route.to_lon);
+    for &i in &routes {
+        let (name, from_lat, from_lon, to_lat, to_lon) = ROUTES[i];
+        let dist = haversine_nm(from_lat, from_lon, to_lat, to_lon);
         info!(
             "  {} ({:.1}nm): ({:.4},{:.4}) -> ({:.4},{:.4}){}",
-            route.name,
+            name,
             dist,
-            route.from_lat,
-            route.from_lon,
-            route.to_lat,
-            route.to_lon,
-            if route.is_passage { " [passage]" } else { "" }
+            from_lat,
+            from_lon,
+            to_lat,
+            to_lon,
+            if i >= NUM_SAILING_ROUTES {
+                " [passage]"
+            } else {
+                ""
+            }
         );
     }
 
     info!("Running {} iterations per route...", iterations);
-    let stats = run_benchmark(&app, &app.graph, &routes, iterations, shore_buffer_nm);
-
-    let graph_path_str = graph_path.display().to_string();
-    let result = build_result(
-        &stats,
-        &app.graph,
-        &graph_path_str,
+    let result = BenchResult {
+        graph: GraphMeta {
+            nodes: app.graph.num_nodes,
+            edges: app.graph.num_edges,
+            file: graph_path.display().to_string(),
+        },
+        commit: git_commit(),
+        timestamp: now_iso8601(),
         iterations,
         shore_buffer_nm,
-    );
+        routes: run_benchmark(&app, &routes, iterations, shore_buffer_nm),
+    };
+    let stats = &result.routes;
 
     if json {
         println!(
@@ -709,7 +607,7 @@ pub fn run(
             serde_json::to_string_pretty(&result).context("Failed to serialize results")?
         );
     } else {
-        print_table(&stats, &app.graph, iterations);
+        print_table(stats, &app.graph, iterations);
     }
 
     if let Some(out_path) = output {
@@ -720,8 +618,8 @@ pub fn run(
     }
 
     // Always write markdown and GeoJSON
-    write_markdown(&stats, &app.graph, iterations)?;
-    write_geojson(&stats)?;
+    write_markdown(stats, &app.graph, iterations)?;
+    write_geojson(stats)?;
 
     if let Some(compare_path) = compare {
         let baseline_str =
@@ -752,7 +650,7 @@ mod tests {
             timestamp: "2026-01-01T00:00:00Z".to_string(),
             iterations: 50,
             shore_buffer_nm,
-            routes: vec![RouteBenchResult {
+            routes: vec![RouteStats {
                 name: "Test Route".to_string(),
                 distance_nm: 10.0,
                 raw_hops: 5,
@@ -761,6 +659,7 @@ mod tests {
                 p50_us,
                 p95_us: p50_us,
                 max_us: p50_us,
+                ..Default::default()
             }],
         }
     }
