@@ -1,5 +1,6 @@
+use crate::land_index::LandIndex;
 use anyhow::Result;
-use asw_core::geo_index::{CoastlineIndex, LandIndex};
+use asw_core::geo_index::CoastlineIndex;
 use asw_core::h3::{cell_boundary, cell_center, cell_polygon};
 use asw_core::passages::{Passage, ZONE_RESOLUTION};
 use asw_core::{CASCADE, H3_RES_BASE, H3_RES_LEAF};

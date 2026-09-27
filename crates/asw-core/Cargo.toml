@@ -8,7 +8,6 @@ license = "MIT OR Apache-2.0"
 h3o.workspace = true
 geo.workspace = true
 rstar.workspace = true
-rayon.workspace = true
 serde.workspace = true
 bitcode.workspace = true
 tracing.workspace = true

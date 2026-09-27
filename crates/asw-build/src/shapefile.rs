@@ -1,5 +1,5 @@
+use crate::land_index::{LandIndex, LandPolygon};
 use anyhow::{Context, Result};
-use asw_core::geo_index::{LandIndex, LandPolygon};
 use geo::{BoundingRect, MultiPolygon, Polygon};
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};

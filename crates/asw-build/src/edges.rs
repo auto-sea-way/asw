@@ -1,5 +1,5 @@
+use crate::land_index::LandIndex;
 use anyhow::Result;
-use asw_core::geo_index::LandIndex;
 use asw_core::h3::{cell_center, haversine_nm, neighbors};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
 use h3o::{CellIndex, Resolution};
