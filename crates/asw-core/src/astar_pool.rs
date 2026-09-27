@@ -23,9 +23,13 @@ pub struct AstarBuffers {
 
 impl AstarBuffers {
     pub fn new(num_nodes: usize) -> Self {
+        // All-zero fills: `vec![0; n]` uses calloc, so pages are mapped lazily
+        // and resident memory grows with the search, not the graph. The
+        // initial values are never read: `touch()` initialises a slot on
+        // first use in a generation.
         Self {
-            g_score: vec![f32::MAX; num_nodes],
-            came_from: vec![u32::MAX; num_nodes],
+            g_score: vec![0.0; num_nodes],
+            came_from: vec![0; num_nodes],
             closed: vec![false; num_nodes],
             h_score: vec![0.0; num_nodes],
             gen: vec![0; num_nodes],
@@ -87,8 +91,8 @@ pub const DEFAULT_POOL_SIZE: usize = 2;
 
 /// Pool of reusable A* buffer sets behind a simple Mutex<Vec>.
 ///
-/// `acquire()` allocates a fresh buffer set if the pool is empty, so a caller
-/// is never blocked; the caller is expected to cap concurrency at `size`
+/// `acquire()` allocates a fresh buffer set if the pool is empty (always the
+/// case for the first `size` acquires), so a caller is never blocked; the caller is expected to cap concurrency at `size`
 /// (see `asw-serve::state::ServerState::route_permits`) so that never
 /// happens in steady state.
 pub struct AstarPool {
@@ -97,10 +101,11 @@ pub struct AstarPool {
 }
 
 impl AstarPool {
+    /// Buffer sets are allocated on first `acquire` and kept after
+    /// `release`, so a process that never routes never pays for them.
     pub fn new(num_nodes: usize, size: usize) -> Self {
-        let buffers: Vec<AstarBuffers> = (0..size).map(|_| AstarBuffers::new(num_nodes)).collect();
         Self {
-            buffers: std::sync::Mutex::new(buffers),
+            buffers: std::sync::Mutex::new(Vec::with_capacity(size)),
             num_nodes,
         }
     }
@@ -190,8 +195,8 @@ mod tests {
         assert!(buf.touch(3));
         buf.g_score[3] = 42.0;
         buf.closed[3] = true;
-        // A node NOT touched under this generation.
-        assert_eq!(buf.g_score[4], f32::MAX);
+        // A node NOT touched under this generation still holds the zero fill.
+        assert_eq!(buf.g_score[4], 0.0);
 
         buf.reset(); // wraps: full clear of `gen`, current_gen restarts at 1
 
@@ -204,6 +209,25 @@ mod tests {
         // A second reset after wraparound should go back to simple bumps.
         buf.reset();
         assert!(buf.touch(3));
+    }
+
+    #[test]
+    fn buffers_new_is_zero_filled() {
+        // Zero fills go through calloc, so untouched pages are never resident.
+        let buf = AstarBuffers::new(1000);
+        assert!(buf.g_score.iter().all(|&g| g == 0.0));
+        assert!(buf.came_from.iter().all(|&c| c == 0));
+        assert!(buf.gen.iter().all(|&g| g == 0));
+    }
+
+    #[test]
+    fn pool_new_allocates_nothing_until_acquire() {
+        let pool = AstarPool::new(1_000_000, 2);
+        assert_eq!(pool.buffers.lock().unwrap().len(), 0);
+        let buf = pool.acquire();
+        assert_eq!(buf.g_score.len(), 1_000_000);
+        pool.release(buf);
+        assert_eq!(pool.buffers.lock().unwrap().len(), 1);
     }
 
     #[test]
