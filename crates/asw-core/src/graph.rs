@@ -227,17 +227,32 @@ impl RoutingGraph {
             num_runs,
             sections,
         };
+        // CSR tables: first entry 0, last entry = target section length. The
+        // two small tables are also checked for monotonicity (a few ms); the
+        // node-sized `offsets` table is not scanned, keeping open O(1) in
+        // the node count as the spec asks.
         let offsets: &[u32] = g.section(SEC_OFFSETS);
+        anyhow::ensure!(offsets[0] == 0, "offsets[0] != 0");
         anyhow::ensure!(
             offsets[n] as usize == g.sections[SEC_EDGE_TARGETS].len,
             "offsets sentinel != edge_targets length"
         );
         let runs: &[u32] = g.section(SEC_COAST_RUNS);
+        anyhow::ensure!(runs[0] == 0, "coast_runs[0] != 0");
+        anyhow::ensure!(
+            runs.windows(2).all(|w| w[0] <= w[1]),
+            "coast_runs not monotonic"
+        );
         anyhow::ensure!(
             runs[r] as usize * 8 == g.sections[SEC_COAST_POINTS].len,
             "coast_runs sentinel != coast_points length"
         );
         let grid: &[u32] = g.section(SEC_GRID_OFFSETS);
+        anyhow::ensure!(grid[0] == 0, "grid_offsets[0] != 0");
+        anyhow::ensure!(
+            grid.windows(2).all(|w| w[0] <= w[1]),
+            "grid_offsets not monotonic"
+        );
         anyhow::ensure!(
             grid[GRID_CELLS] as usize * 4 == g.sections[SEC_GRID_IDS].len,
             "grid_offsets sentinel != grid_ids length"
@@ -824,6 +839,37 @@ mod tests {
         let n = u32::from_le_bytes(bytes[72..76].try_into().unwrap());
         bytes[72..76].copy_from_slice(&(n + 1).to_le_bytes());
         assert!(RoutingGraph::from_bytes(bytes).is_err());
+    }
+
+    /// Corrupt-but-well-formed files: section lengths match the counts, but
+    /// a CSR table is not monotonic. Must fail at open, not panic at query.
+    #[test]
+    fn from_bytes_rejects_non_monotonic_csr_tables() {
+        let bytes = square_graph_bytes();
+        let g = RoutingGraph::from_bytes(bytes.clone()).unwrap();
+        let sec = |i: usize| {
+            let off = u64::from_le_bytes(bytes[88 + i * 16..96 + i * 16].try_into().unwrap());
+            off as usize
+        };
+        // offsets[0] must be 0: write 1 into it.
+        let mut b1 = bytes.clone();
+        let o = sec(1);
+        b1[o..o + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert!(RoutingGraph::from_bytes(b1).is_err(), "offsets[0] != 0");
+        // grid_offsets: make cell 1 smaller than cell 0 (non-monotonic).
+        let mut b2 = bytes.clone();
+        let o = sec(7);
+        b2[o..o + 4].copy_from_slice(&5u32.to_le_bytes());
+        assert!(
+            RoutingGraph::from_bytes(b2).is_err(),
+            "grid_offsets not monotonic"
+        );
+        // coast_runs[0] must be 0.
+        let o = sec(4);
+        let mut b3 = bytes.clone();
+        b3[o..o + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert!(RoutingGraph::from_bytes(b3).is_err(), "coast_runs[0] != 0");
+        drop(g);
     }
 
     #[test]

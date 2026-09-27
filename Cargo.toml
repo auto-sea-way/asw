@@ -15,13 +15,11 @@ rstar = "0.13"
 rayon = "1.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bitcode = { version = "0.6", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 indicatif = "0.18"
 geojson = "1.0"
 anyhow = "1"
-zstd = "0.13"
 memmap2 = "0.9"
 
 [profile.release]
