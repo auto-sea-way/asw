@@ -314,6 +314,28 @@ impl RoutingGraph {
         }
     }
 
+    /// Neighbour ids only, no centre decode. A* uses this with its own
+    /// position cache; `neighbors()` computes the weight for everyone else.
+    pub fn neighbor_ids(&self, node: u32) -> impl Iterator<Item = u32> + '_ {
+        let offsets: &[u32] = self.section(SEC_OFFSETS);
+        let (start, end) = (
+            offsets[node as usize] as usize,
+            offsets[node as usize + 1] as usize,
+        );
+        let data = &self.section::<u8>(SEC_EDGE_TARGETS)[start..end];
+        let mut pos = 0usize;
+        let mut prev = 0u32;
+        std::iter::from_fn(move || {
+            if pos >= data.len() {
+                return None;
+            }
+            let (delta, new_pos) = crate::varint::decode(data, pos);
+            pos = new_pos;
+            prev += delta;
+            Some(prev)
+        })
+    }
+
     /// Decode H3 cell center coordinates to f64 (lat, lng) in degrees.
     pub fn node_pos(&self, node: u32) -> (f64, f64) {
         let cell = h3o::CellIndex::try_from(self.node_h3(node)).expect("invalid H3 index");
@@ -836,6 +858,16 @@ mod tests {
                     "edge {n}->{t}: {w} vs {expected}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn neighbor_ids_match_neighbors_without_decoding() {
+        let g = square_graph();
+        for n in 0..g.num_nodes() {
+            let ids: Vec<u32> = g.neighbor_ids(n).collect();
+            let full: Vec<u32> = g.neighbors(n).map(|(t, _)| t).collect();
+            assert_eq!(ids, full);
         }
     }
 

@@ -21,8 +21,8 @@ pub struct RouteResult {
 }
 
 /// Ensure `node` is valid for the current generation in `buffers`, computing
-/// and caching its haversine heuristic to `(goal_lat, goal_lon)` on first
-/// touch this generation. `g_score`/`came_from`/`closed` are reset to their
+/// and caching its cell centre and haversine heuristic to `(goal_lat,
+/// goal_lon)` on first touch this generation. `g_score`/`came_from`/`closed` are reset to their
 /// defaults by `touch()` itself; the heuristic decode (H3 -> lat/lng + trig)
 /// only happens once per node per search, no matter how many times the node
 /// is relaxed afterwards.
@@ -36,6 +36,7 @@ fn touch_and_cache_h(
 ) {
     if buffers.touch(node) {
         let (nlat, nlon) = graph.node_pos(node);
+        buffers.pos[node as usize] = [nlat, nlon];
         buffers.h_score[node as usize] = haversine_nm(nlat, nlon, goal_lat, goal_lon) as f32;
     }
 }
@@ -115,12 +116,17 @@ pub fn astar(
         buffers.closed[current as usize] = true;
 
         let current_g = buffers.g_score[current as usize];
+        let [clat, clon] = buffers.pos[current as usize];
 
-        for (neighbor, weight) in graph.neighbors(current) {
+        for neighbor in graph.neighbor_ids(current) {
             touch_and_cache_h(buffers, neighbor, graph, goal_lat, goal_lon);
             if buffers.closed[neighbor as usize] {
                 continue;
             }
+            // Edge length from the cached centres: one haversine per
+            // relaxation, no H3 decode (the file stores no weights).
+            let [nlat, nlon] = buffers.pos[neighbor as usize];
+            let weight = haversine_nm(clat, clon, nlat, nlon) as f32;
             let weight = match shore {
                 Some(q) => weight * shore_factor(graph.shore_dist(neighbor), q),
                 None => weight,

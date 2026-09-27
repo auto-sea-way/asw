@@ -17,6 +17,9 @@ pub struct AstarBuffers {
     /// under the same generation guard as the other fields. Populated lazily
     /// by the caller on first `touch()` of a node.
     pub(crate) h_score: Vec<f32>,
+    /// Cached cell centre `[lat, lon]` per node, filled on first touch
+    /// alongside `h_score`, so edge relaxation never decodes an H3 cell.
+    pub(crate) pos: Vec<[f64; 2]>,
     gen: Vec<u32>,
     current_gen: u32,
 }
@@ -32,6 +35,7 @@ impl AstarBuffers {
             came_from: vec![0; num_nodes],
             closed: vec![false; num_nodes],
             h_score: vec![0.0; num_nodes],
+            pos: vec![[0.0, 0.0]; num_nodes],
             gen: vec![0; num_nodes],
             // Start at 1 so the all-zero `gen` vec from a fresh allocation is
             // immediately treated as "never touched" (0 != 1).
@@ -209,6 +213,13 @@ mod tests {
         // A second reset after wraparound should go back to simple bumps.
         buf.reset();
         assert!(buf.touch(3));
+    }
+
+    #[test]
+    fn buffers_carry_a_zero_filled_position_cache() {
+        let buf = AstarBuffers::new(10);
+        assert_eq!(buf.pos.len(), 10);
+        assert!(buf.pos.iter().all(|p| *p == [0.0, 0.0]));
     }
 
     #[test]
