@@ -10,9 +10,12 @@ export CARGO_PROFILE_RELEASE_LTO=false
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 cargo build --release -p asw-mobile --target aarch64-apple-ios
 cargo build --release -p asw-mobile --target aarch64-apple-ios-sim
-# The shipped archives must still export the binding entry points.
+# The shipped archives must still export the binding entry points. The
+# symbol list is captured first: piping nm into `grep -q` under pipefail
+# fails on SIGPIPE, and nm exits non-zero on archive members without symbols.
 for a in target/aarch64-apple-ios/release/libasw_mobile.a target/aarch64-apple-ios-sim/release/libasw_mobile.a; do
-  nm -g "$a" 2>/dev/null | grep -q uniffi_asw_mobile_fn_func_open_graph \
+  syms=$(nm -g "$a" 2>/dev/null || true)
+  grep -q uniffi_asw_mobile_fn_func_open_graph <<<"$syms" \
     || { echo "error: $a does not export the binding entry points" >&2; exit 1; }
 done
 # Bindings come from the host debug build: the release profile strips the

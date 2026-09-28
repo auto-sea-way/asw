@@ -14,8 +14,11 @@ RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384" \
   cargo ndk --platform 21 -t arm64-v8a -o target/jniLibs build --release -p asw-mobile
 # The shipped library must still export the binding entry points (JNA looks
 # them up in the dynamic symbol table at runtime).
+# The symbol list is captured first: piping nm into `grep -q` under pipefail
+# fails on SIGPIPE.
 nm_tool="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
-"$nm_tool" -D --defined-only target/jniLibs/arm64-v8a/libasw_mobile.so | grep -q uniffi_asw_mobile_fn_func_open_graph \
+syms=$("$nm_tool" -D --defined-only target/jniLibs/arm64-v8a/libasw_mobile.so 2>/dev/null || true)
+grep -q uniffi_asw_mobile_fn_func_open_graph <<<"$syms" \
   || { echo "error: libasw_mobile.so does not export the binding entry points" >&2; exit 1; }
 # Bindings come from the host debug build: the release profile strips the
 # UniFFI metadata the generator reads, and the API is the same either way.
