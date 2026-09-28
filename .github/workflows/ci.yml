@@ -16,3 +16,26 @@ jobs:
     permissions:
       contents: read
       checks: write
+
+  mobile-swift:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mobile-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+      - name: Generate Swift bindings
+        run: crates/asw-mobile/scripts/gen-bindings.sh debug swift target/uniffi/swift
+      - name: Type-check Swift bindings
+        run: |
+          mkdir -p target/uniffi/swift-mod
+          cp target/uniffi/swift/AswMobileFFI.h target/uniffi/swift-mod/
+          cp target/uniffi/swift/AswMobileFFI.modulemap target/uniffi/swift-mod/module.modulemap
+          swiftc -typecheck -I target/uniffi/swift-mod target/uniffi/swift/AswMobile.swift
