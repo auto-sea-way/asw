@@ -90,8 +90,56 @@ jobs:
           name: ${{ matrix.binary }}
           path: ${{ matrix.binary }}
 
+  mobile:
+    needs: [check]
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            script: crates/asw-mobile/scripts/build-ios.sh
+            artifact: AswMobile-${{ inputs.version }}.zip
+          - os: ubuntu-latest
+            script: crates/asw-mobile/scripts/build-android.sh
+            artifact: asw-mobile-${{ inputs.version }}.aar
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-mobile-${{ hashFiles('rust-toolchain.toml') }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Set up Gradle
+        if: runner.os == 'Linux'
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: "8.14"
+
+      - name: Set up JDK 17
+        if: runner.os == 'Linux'
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build
+        run: ${{ matrix.script }} ${{ inputs.version }}
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: target/mobile/${{ matrix.artifact }}
+
   release:
-    needs: [build]
+    needs: [build, mobile]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -124,10 +172,10 @@ jobs:
       - name: Collect binaries and generate checksums
         run: |
           mkdir -p release
-          find artifacts -type f -name 'asw-*' -exec cp {} release/ \;
+          find artifacts -type f \( -name 'asw-*' -o -name 'AswMobile-*.zip' \) -exec cp {} release/ \;
           cp asw.graph release/
           cd release
-          sha256sum asw-* asw.graph > SHA256SUMS
+          sha256sum asw-* AswMobile-*.zip asw.graph > SHA256SUMS
 
       - name: Create annotated tag
         run: |
@@ -172,6 +220,7 @@ jobs:
           generate_release_notes: ${{ steps.changelog.outputs.generate_notes == 'true' }}
           files: |
             release/asw-*
+            release/AswMobile-*.zip
             release/asw.graph
             release/SHA256SUMS
 
