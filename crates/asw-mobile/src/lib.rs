@@ -33,6 +33,30 @@ impl std::fmt::Display for AswError {
 
 impl std::error::Error for AswError {}
 
+/// Answer of `Graph::is_water`. `Unknown` only when the call could not be
+/// evaluated (a panic inside the graph code or a vanished mapping).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum Water {
+    Water,
+    Land,
+    Unknown,
+}
+
+/// Test-only one-shot switch that makes the next `is_water` or `route` panic,
+/// proving the panic never crosses the boundary.
+#[cfg(test)]
+static PANIC_NEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn maybe_panic() {
+    if PANIC_NEXT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        panic!("forced panic for the boundary test");
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_panic() {}
+
 /// An opened graph file. Reference counted across the FFI; safe to share
 /// between threads. Routes serialise on the single A* buffer set.
 #[derive(uniffi::Object)]
@@ -90,6 +114,20 @@ impl Graph {
     /// The version string stored in the file header.
     pub fn version(&self) -> String {
         self.inner.version().to_string()
+    }
+
+    /// Is the point on navigable water? Snap to the nearest water node and
+    /// count coastline crossings on the way; even means water, no node means
+    /// land. Never panics.
+    pub fn is_water(&self, lat: f64, lon: f64) -> Water {
+        match catch_unwind(AssertUnwindSafe(|| {
+            maybe_panic();
+            asw_core::routing::is_water(&self.inner, lat, lon)
+        })) {
+            Ok(true) => Water::Water,
+            Ok(false) => Water::Land,
+            Err(_) => Water::Unknown,
+        }
     }
 }
 
@@ -178,5 +216,54 @@ mod tests {
             .to_string(),
             "not a usable graph file: x"
         );
+    }
+
+    #[test]
+    fn is_water_marina_behind_mole_is_water() {
+        let (dir, path) = fixture_graph_path();
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(
+            g.is_water(36.5, 28.0),
+            Water::Water,
+            "berth behind the mole"
+        );
+        assert_eq!(g.is_water(36.5, 28.3), Water::Water, "next to the node");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn is_water_inside_island_is_land() {
+        let (dir, path) = fixture_graph_path();
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(g.is_water(36.5, 27.6), Water::Land);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn is_water_far_inland_is_land() {
+        // A graph with no node at all: the snapping ladder finds nothing, so
+        // the answer is Land, in bounded time (the res-3 fallback disk).
+        let empty = GraphBuilder::default().build();
+        let dir = std::env::temp_dir().join(format!("asw-mobile-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("empty.graph");
+        empty.save(&path).unwrap();
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(g.is_water(44.8, 20.5), Water::Land);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn is_water_panic_becomes_unknown() {
+        let (dir, path) = fixture_graph_path();
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        PANIC_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(g.is_water(36.5, 28.3), Water::Unknown);
+        assert_eq!(
+            g.is_water(36.5, 28.3),
+            Water::Water,
+            "the switch is one-shot"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
