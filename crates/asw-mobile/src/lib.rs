@@ -109,6 +109,14 @@ impl std::fmt::Debug for Graph {
     }
 }
 
+/// Finite and within the WGS84 ranges (lat -90..=90, lon -180..=180).
+fn valid_point(lat: f64, lon: f64) -> bool {
+    lat.is_finite()
+        && lon.is_finite()
+        && (-90.0..=90.0).contains(&lat)
+        && (-180.0..=180.0).contains(&lon)
+}
+
 /// Turn a panic payload into a message.
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(s) = payload.downcast_ref::<&str>() {
@@ -170,6 +178,9 @@ impl Graph {
     /// count coastline crossings on the way; even means water, no node means
     /// land. Never panics.
     pub fn is_water(&self, lat: f64, lon: f64) -> Water {
+        if !valid_point(lat, lon) {
+            return Water::Unknown;
+        }
         match catch_unwind(AssertUnwindSafe(|| {
             maybe_panic();
             asw_core::routing::is_water(&self.inner, lat, lon)
@@ -190,15 +201,10 @@ impl Graph {
         to_lon: f64,
         shore_buffer_nm: f64,
     ) -> Result<Route, AswError> {
-        for (name, v) in [
-            ("from_lat", from_lat),
-            ("from_lon", from_lon),
-            ("to_lat", to_lat),
-            ("to_lon", to_lon),
-        ] {
-            if !v.is_finite() {
+        for (name, lat, lon) in [("from", from_lat, from_lon), ("to", to_lat, to_lon)] {
+            if !valid_point(lat, lon) {
                 return Err(AswError::InvalidArgument {
-                    detail: format!("{name} is not a finite number"),
+                    detail: format!("{name} is not a finite lat/lon within -90..90 and -180..180"),
                 });
             }
         }
@@ -570,6 +576,24 @@ mod tests {
             AswError::NotFound,
             "unreadable file is NotFound, no OS error text"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn out_of_range_coordinates_are_rejected_or_unknown() {
+        let (dir, path) = chain_graph_path(vec![]);
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
+        assert!(matches!(
+            g.route(200.0, 0.0, 201.0, 0.0, 0.0),
+            Err(AswError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            g.route(36.0, 26.0, 37.0, 181.0, 0.0),
+            Err(AswError::InvalidArgument { .. })
+        ));
+        assert_eq!(g.is_water(f64::NAN, 26.0), Water::Unknown);
+        assert_eq!(g.is_water(95.0, 26.0), Water::Unknown);
+        assert_eq!(g.is_water(36.0, -181.0), Water::Unknown);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
