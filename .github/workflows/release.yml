@@ -93,6 +93,8 @@ jobs:
   mobile:
     needs: [check]
     strategy:
+      # One platform failing must not cancel the other's build.
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
