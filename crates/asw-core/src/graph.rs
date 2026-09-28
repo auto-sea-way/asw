@@ -383,8 +383,8 @@ impl Iterator for NeighborIter<'_> {
         self.pos = new_pos;
         let target = self.prev_target + delta;
         self.prev_target = target;
-        // ponytail: one cell-centre decode per relaxation; cache positions in
-        // the A* buffers if the bench says this dominates.
+        // One cell-centre decode per edge. A* does not use this iterator: it
+        // walks `neighbor_ids()` and computes weights from cached centres.
         let (lat, lon) = self.graph.node_pos(target);
         let weight_nm = crate::h3::haversine_nm(self.src_lat, self.src_lon, lat, lon) as f32;
         Some((target, weight_nm))

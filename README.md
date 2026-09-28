@@ -135,7 +135,7 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
-# Full image — zero config, graph included (~740 MB)
+# Full image — zero config, graph included (~1.5 GB)
 docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.7.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)

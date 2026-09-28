@@ -1,6 +1,6 @@
-/// Pre-allocated buffers for A* search to avoid per-request allocation.
+/// Reusable buffers for A* search to avoid per-request allocation.
 ///
-/// Per-node state (`g_score`, `came_from`, `closed`, `h_score`) is guarded by
+/// Per-node state (`g_score`, `came_from`, `closed`, `h_score`, `pos`) is guarded by
 /// a generation counter (`gen`/`current_gen`) instead of being eagerly
 /// cleared: a node's entry is only meaningful when `gen[node] ==
 /// current_gen`. `reset()` therefore just bumps `current_gen` (O(1)) rather
@@ -58,11 +58,11 @@ impl AstarBuffers {
     /// Ensure `node`'s slot is valid for the current generation. Returns
     /// `true` if this is the first touch this generation (in which case the
     /// caller is responsible for populating any derived per-node state, e.g.
-    /// the cached heuristic in `h_score`) — `g_score`/`came_from`/`closed`
+    /// the cached heuristic in `h_score` and centre in `pos`) — `g_score`/`came_from`/`closed`
     /// are reset to their defaults here unconditionally on first touch.
     ///
     /// Must be called before reading or writing `g_score`, `came_from`,
-    /// `closed`, or `h_score` for a given node in a given generation.
+    /// `closed`, `h_score` or `pos` for a given node in a given generation.
     #[inline]
     pub(crate) fn touch(&mut self, node: u32) -> bool {
         let idx = node as usize;

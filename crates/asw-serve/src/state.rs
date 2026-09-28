@@ -14,7 +14,7 @@ pub struct ServerState {
     ///
     /// Without this, `spawn_blocking` (used to run route computation off the
     /// async executor) can spin up to Tokio's 512-thread blocking pool, and
-    /// each thread beyond the pool's pre-allocated buffer sets forces
+    /// each thread beyond the pool's `DEFAULT_POOL_SIZE` buffer sets forces
     /// `AstarPool::acquire` to allocate a fresh full-size buffer set
     /// (hundreds of MB at planet scale) — a handful of concurrent long routes
     /// can OOM a small instance. Acquiring this permit is `async`, so
@@ -41,7 +41,7 @@ impl ServerState {
 /// Shared application state for the HTTP server.
 pub struct AppState {
     pub graph: RoutingGraph,
-    /// Pre-allocated A* search buffer pool. Sized to
+    /// A* search buffer pool, filled lazily on first use up to
     /// `asw_core::astar_pool::DEFAULT_POOL_SIZE` buffer sets; concurrent
     /// access above that capacity is prevented upstream by
     /// `ServerState::route_permits`, a semaphore sized to match, so requests

@@ -36,5 +36,5 @@ pub const CASCADE: &[(u8, f64)] = &[
     (9, 0.002),
 ];
 
-/// Max vertices per coastline segment for R-tree indexing
+/// Max vertices per coastline run, so the grid index stays selective
 pub const COASTLINE_SUBDIVIDE_MAX: usize = 256;

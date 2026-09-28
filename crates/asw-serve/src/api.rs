@@ -104,7 +104,7 @@ async fn route_handler(
     // Bound concurrent A* computations to the buffer pool's capacity before
     // handing off to the blocking pool: without this, `spawn_blocking` can
     // spin up to Tokio's 512-thread blocking pool, and each thread beyond the
-    // pool's pre-allocated buffer sets forces `AstarPool::acquire` to
+    // pool's `DEFAULT_POOL_SIZE` buffer sets forces `AstarPool::acquire` to
     // allocate a fresh full-size buffer set (hundreds of MB at planet scale),
     // which can OOM a small instance under a handful of concurrent long
     // routes (see finding 1 in the 2026-07-06 project review). Acquiring is

@@ -203,7 +203,7 @@ pub fn smooth_indices(
                 return false;
             }
             if use_buffer {
-                // ponytail: O(n) slice scan per probe; the R-tree query above
+                // ponytail: O(n) slice scan per probe; the coastline query above
                 // dwarfs it. Sparse-table range-min if a profile ever says so.
                 let raw_min = shore_dist[current_idx..=j].iter().min().copied();
                 let raw_min_nm =
