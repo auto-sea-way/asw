@@ -42,6 +42,24 @@ pub enum Water {
     Unknown,
 }
 
+/// A point as the app thinks of it: latitude first, degrees.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Coordinate {
+    pub lat: f64,
+    pub lon: f64,
+}
+
+/// Result of `Graph::route`. Same semantics as the HTTP `/route` response:
+/// the polyline starts and ends at the requested points, `distance_nm`
+/// counts water segments only, `land_legs` are indices of segments
+/// (`coordinates[i] -> coordinates[i+1]`) that cross land.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Route {
+    pub coordinates: Vec<Coordinate>,
+    pub distance_nm: f64,
+    pub land_legs: Vec<u32>,
+}
+
 /// Test-only one-shot switch that makes the next `is_water` or `route` panic,
 /// proving the panic never crosses the boundary.
 #[cfg(test)]
@@ -62,8 +80,6 @@ fn maybe_panic() {}
 #[derive(uniffi::Object)]
 pub struct Graph {
     inner: RoutingGraph,
-    // Read by `route` (Task 3); the allow goes with it.
-    #[allow(dead_code)]
     buffers: Mutex<Option<AstarBuffers>>,
 }
 
@@ -127,6 +143,79 @@ impl Graph {
             Ok(true) => Water::Water,
             Ok(false) => Water::Land,
             Err(_) => Water::Unknown,
+        }
+    }
+
+    /// Route between two points with an optional shore clearance in
+    /// nautical miles (0 to 5). Blocking; routes serialise on one buffer set.
+    pub fn route(
+        &self,
+        from_lat: f64,
+        from_lon: f64,
+        to_lat: f64,
+        to_lon: f64,
+        shore_buffer_nm: f64,
+    ) -> Result<Route, AswError> {
+        for (name, v) in [
+            ("from_lat", from_lat),
+            ("from_lon", from_lon),
+            ("to_lat", to_lat),
+            ("to_lon", to_lon),
+        ] {
+            if !v.is_finite() {
+                return Err(AswError::InvalidArgument {
+                    message: format!("{name} is not a finite number"),
+                });
+            }
+        }
+        if !shore_buffer_nm.is_finite() || !(0.0..=5.0).contains(&shore_buffer_nm) {
+            return Err(AswError::InvalidArgument {
+                message: "shore_buffer_nm must be between 0 and 5 nautical miles".into(),
+            });
+        }
+        // A panic inside must not poison the mutex for the next call: the
+        // lock is taken inside the unwind boundary and dropped before it is
+        // left, and a poisoned lock is recovered anyway.
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            maybe_panic();
+            let mut slot = self
+                .buffers
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let buffers =
+                slot.get_or_insert_with(|| AstarBuffers::new(self.inner.num_nodes() as usize));
+            let knn = |lat: f64, lon: f64| self.inner.nearest_node(lat, lon);
+            let result = asw_core::routing::compute_route(
+                &self.inner,
+                from_lat,
+                from_lon,
+                to_lat,
+                to_lon,
+                &self.inner.coastline(),
+                &knn,
+                buffers,
+                shore_buffer_nm,
+            );
+            buffers.reset();
+            result
+        }));
+        match outcome {
+            Err(payload) => Err(AswError::Internal {
+                message: panic_message(payload),
+            }),
+            Ok(None) => Err(AswError::NoRoute),
+            Ok(Some(r)) => Ok(Route {
+                coordinates: r
+                    .coordinates
+                    .iter()
+                    .map(|c| Coordinate {
+                        lat: c[1],
+                        lon: c[0],
+                    })
+                    .collect(),
+                distance_nm: r.distance_nm,
+                land_legs: r.land_legs.iter().map(|&i| i as u32).collect(),
+            }),
         }
     }
 }
@@ -264,6 +353,157 @@ mod tests {
             Water::Water,
             "the switch is one-shot"
         );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Three res-5 nodes in a chain across the Aegean, with the coastline
+    /// runs given per test.
+    pub(crate) fn chain_graph_path(coast: Vec<Vec<(f64, f64)>>) -> (PathBuf, PathBuf) {
+        let coords = [(36.0, 26.0), (36.5, 27.0), (37.0, 28.0)];
+        let mut h3s: Vec<u64> = coords
+            .iter()
+            .map(|&(lat, lon)| {
+                u64::from(
+                    h3o::LatLng::new(lat, lon)
+                        .unwrap()
+                        .to_cell(h3o::Resolution::Five),
+                )
+            })
+            .collect();
+        h3s.sort_unstable();
+        h3s.dedup();
+        let mut b = GraphBuilder::with_version("chain");
+        let ids: Vec<u32> = h3s.iter().map(|&h| b.add_node(h, 255)).collect();
+        for w in ids.windows(2) {
+            b.add_edge(w[0], w[1]);
+        }
+        b.coastline_runs = coast;
+        let dir = std::env::temp_dir().join(format!(
+            "asw-mobile-chain-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("chain.graph");
+        b.build().save(&path).unwrap();
+        (dir, path)
+    }
+
+    #[test]
+    fn route_clear_line_of_sight_returns_two_points() {
+        let (dir, path) = chain_graph_path(vec![]);
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let r = g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap();
+        assert_eq!(r.coordinates.len(), 2);
+        assert_eq!(
+            r.coordinates[0],
+            Coordinate {
+                lat: 36.0,
+                lon: 26.0
+            }
+        );
+        assert_eq!(
+            r.coordinates[1],
+            Coordinate {
+                lat: 37.0,
+                lon: 28.0
+            }
+        );
+        assert!(
+            r.distance_nm > 90.0 && r.distance_nm < 130.0,
+            "{}",
+            r.distance_nm
+        );
+        assert!(r.land_legs.is_empty());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn route_through_the_graph_when_the_direct_line_is_blocked() {
+        // A wall at lon 27.5 blocks the direct line, so the route goes through
+        // the graph. The chain's own hop 27.0 -> 28.0 crosses the wall too and
+        // is reported as a land leg; what this test pins is that a route comes
+        // back and that a shore buffer is accepted.
+        let wall = vec![vec![(27.5, 36.2), (27.5, 37.5)]];
+        let (dir, path) = chain_graph_path(wall);
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let r = g.route(36.0, 26.0, 37.0, 28.0, 0.5).unwrap();
+        assert!(r.coordinates.len() >= 2);
+        assert!(r.distance_nm > 0.0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn route_rejects_bad_arguments() {
+        let (dir, path) = chain_graph_path(vec![]);
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        assert!(matches!(
+            g.route(36.0, 26.0, 37.0, 28.0, 6.0),
+            Err(AswError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            g.route(f64::NAN, 26.0, 37.0, 28.0, 0.0),
+            Err(AswError::InvalidArgument { .. })
+        ));
+        assert!(matches!(
+            g.route(36.0, 26.0, 37.0, 28.0, -0.1),
+            Err(AswError::InvalidArgument { .. })
+        ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn route_with_no_nodes_and_a_wall_is_no_route() {
+        let empty = {
+            let mut b = GraphBuilder::default();
+            b.coastline_runs = vec![vec![(27.5, 36.2), (27.5, 37.5)]];
+            b.build()
+        };
+        let dir = std::env::temp_dir().join(format!("asw-mobile-noroute-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("noroute.graph");
+        empty.save(&path).unwrap();
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap_err(),
+            AswError::NoRoute
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn route_recovers_after_a_panic() {
+        let (dir, path) = chain_graph_path(vec![]);
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        PANIC_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0),
+            Err(AswError::Internal { .. })
+        ));
+        assert!(
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0).is_ok(),
+            "mutex must not stay poisoned"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_routes_serialise_on_one_buffer_set() {
+        let (dir, path) = chain_graph_path(vec![]);
+        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let g = Arc::clone(&g);
+                std::thread::spawn(move || {
+                    g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap().distance_nm
+                })
+            })
+            .collect();
+        let d: Vec<f64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert!(d.iter().all(|&x| (x - d[0]).abs() < 1e-9));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
