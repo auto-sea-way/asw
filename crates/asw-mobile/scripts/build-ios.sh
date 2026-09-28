@@ -4,6 +4,9 @@
 set -euo pipefail
 version="$1"
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
+# The workspace release profile's thin LTO drops the exported UniFFI entry
+# points from the library; the mobile builds turn it off.
+export CARGO_PROFILE_RELEASE_LTO=false
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 cargo build --release -p asw-mobile --target aarch64-apple-ios
 cargo build --release -p asw-mobile --target aarch64-apple-ios-sim

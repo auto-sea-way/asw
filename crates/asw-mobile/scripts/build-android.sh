@@ -4,6 +4,9 @@
 set -euo pipefail
 version="$1"
 rustup target add aarch64-linux-android
+# The workspace release profile's thin LTO drops the exported UniFFI entry
+# points from the library; the mobile builds turn it off.
+export CARGO_PROFILE_RELEASE_LTO=false
 command -v cargo-ndk >/dev/null || cargo install cargo-ndk --version 4.1.2 --locked
 rm -rf target/jniLibs
 # 16 KB page alignment for Android 15 devices.
