@@ -13,20 +13,21 @@ uniffi::setup_scaffolding!();
 #[derive(Debug, Clone, PartialEq, uniffi::Error)]
 pub enum AswError {
     NotFound,
-    BadFormat { message: String },
-    InvalidArgument { message: String },
+    // `detail`, not `message`: Kotlin's Throwable already has `message`.
+    BadFormat { detail: String },
+    InvalidArgument { detail: String },
     NoRoute,
-    Internal { message: String },
+    Internal { detail: String },
 }
 
 impl std::fmt::Display for AswError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AswError::NotFound => write!(f, "graph file not found"),
-            AswError::BadFormat { message } => write!(f, "not a usable graph file: {message}"),
-            AswError::InvalidArgument { message } => write!(f, "invalid argument: {message}"),
+            AswError::BadFormat { detail } => write!(f, "not a usable graph file: {detail}"),
+            AswError::InvalidArgument { detail } => write!(f, "invalid argument: {detail}"),
             AswError::NoRoute => write!(f, "no route between the given points"),
-            AswError::Internal { message } => write!(f, "internal error: {message}"),
+            AswError::Internal { detail } => write!(f, "internal error: {detail}"),
         }
     }
 }
@@ -114,11 +115,11 @@ pub fn open_graph(path: String) -> Result<Arc<Graph>, AswError> {
     }
     let opened = catch_unwind(AssertUnwindSafe(|| RoutingGraph::open(p, false))).map_err(|e| {
         AswError::Internal {
-            message: panic_message(e),
+            detail: panic_message(e),
         }
     })?;
     let inner = opened.map_err(|e| AswError::BadFormat {
-        message: format!("{e:#}"),
+        detail: format!("{e:#}"),
     })?;
     Ok(Arc::new(Graph {
         inner,
@@ -165,13 +166,13 @@ impl Graph {
         ] {
             if !v.is_finite() {
                 return Err(AswError::InvalidArgument {
-                    message: format!("{name} is not a finite number"),
+                    detail: format!("{name} is not a finite number"),
                 });
             }
         }
         if !shore_buffer_nm.is_finite() || !(0.0..=5.0).contains(&shore_buffer_nm) {
             return Err(AswError::InvalidArgument {
-                message: "shore_buffer_nm must be between 0 and 5 nautical miles".into(),
+                detail: "shore_buffer_nm must be between 0 and 5 nautical miles".into(),
             });
         }
         // A panic inside must not poison the mutex for the next call: the
@@ -202,7 +203,7 @@ impl Graph {
         }));
         match outcome {
             Err(payload) => Err(AswError::Internal {
-                message: panic_message(payload),
+                detail: panic_message(payload),
             }),
             Ok(None) => Err(AswError::NoRoute),
             Ok(Some(r)) => Ok(Route {
@@ -292,7 +293,7 @@ mod tests {
         std::fs::write(&v3, b"ASW\x03whatever").unwrap();
         for p in [dir.clone(), empty, v3] {
             match open_graph(p.to_string_lossy().into_owned()) {
-                Err(AswError::BadFormat { message }) => assert!(!message.is_empty()),
+                Err(AswError::BadFormat { detail }) => assert!(!detail.is_empty()),
                 other => panic!("{p:?}: expected BadFormat, got {other:?}"),
             }
         }
@@ -303,10 +304,7 @@ mod tests {
     fn error_display_is_readable() {
         assert_eq!(AswError::NotFound.to_string(), "graph file not found");
         assert_eq!(
-            AswError::BadFormat {
-                message: "x".into()
-            }
-            .to_string(),
+            AswError::BadFormat { detail: "x".into() }.to_string(),
             "not a usable graph file: x"
         );
     }
