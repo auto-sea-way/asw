@@ -128,9 +128,8 @@ jobs:
           java-version: "17"
 
       - name: Build
+        # ubuntu-latest exports ANDROID_NDK_HOME itself; macOS needs nothing.
         run: ${{ matrix.script }} ${{ inputs.version }}
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_LATEST_HOME }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7

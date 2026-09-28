@@ -76,6 +76,22 @@ fn maybe_panic() {
 #[cfg(not(test))]
 fn maybe_panic() {}
 
+/// Test-only switch that panics after the search has stamped the A* buffers
+/// and before they are reset: the window a mid-route panic leaves behind.
+#[cfg(test)]
+static PANIC_AFTER_SEARCH: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+fn maybe_panic_after_search() {
+    if PANIC_AFTER_SEARCH.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        panic!("forced panic after the search");
+    }
+}
+
+#[cfg(not(test))]
+fn maybe_panic_after_search() {}
+
 /// An opened graph file. Reference counted across the FFI; safe to share
 /// between threads. Routes serialise on the single A* buffer set.
 #[derive(uniffi::Object)]
@@ -110,16 +126,32 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 #[uniffi::export]
 pub fn open_graph(path: String) -> Result<Arc<Graph>, AswError> {
     let p = Path::new(&path);
-    if !p.exists() {
-        return Err(AswError::NotFound);
+    let meta = std::fs::metadata(p).map_err(|_| AswError::NotFound)?;
+    if !meta.is_file() {
+        return Err(AswError::BadFormat {
+            detail: "not a regular file".into(),
+        });
+    }
+    if meta.len() < 4 {
+        return Err(AswError::BadFormat {
+            detail: "file is empty or truncated".into(),
+        });
     }
     let opened = catch_unwind(AssertUnwindSafe(|| RoutingGraph::open(p, false))).map_err(|e| {
         AswError::Internal {
             detail: panic_message(e),
         }
     })?;
-    let inner = opened.map_err(|e| AswError::BadFormat {
-        detail: format!("{e:#}"),
+    // An I/O failure (unreadable, vanished between metadata and open) is
+    // NotFound; anything the reader rejects is BadFormat with its message.
+    let inner = opened.map_err(|e| {
+        if e.downcast_ref::<std::io::Error>().is_some() {
+            AswError::NotFound
+        } else {
+            AswError::BadFormat {
+                detail: format!("{e:#}"),
+            }
+        }
     })?;
     Ok(Arc::new(Graph {
         inner,
@@ -186,6 +218,10 @@ impl Graph {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let buffers =
                 slot.get_or_insert_with(|| AstarBuffers::new(self.inner.num_nodes() as usize));
+            // Reset before the search, not after: a panic mid-route would
+            // otherwise leave the previous generation's closed flags and
+            // heuristics live for the next call.
+            buffers.reset();
             let knn = |lat: f64, lon: f64| self.inner.nearest_node(lat, lon);
             let result = asw_core::routing::compute_route(
                 &self.inner,
@@ -198,7 +234,7 @@ impl Graph {
                 buffers,
                 shore_buffer_nm,
             );
-            buffers.reset();
+            maybe_panic_after_search();
             result
         }));
         match outcome {
@@ -496,6 +532,44 @@ mod tests {
             .collect();
         let d: Vec<f64> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         assert!(d.iter().all(|&x| (x - d[0]).abs() < 1e-9));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn route_after_a_panic_past_the_search_does_not_reuse_stale_buffers() {
+        // A panic after A* has stamped the buffers but before they are reset
+        // must not leave closed flags and heuristics live for the next route.
+        let (dir, path) = chain_graph_path(vec![vec![(27.5, 36.2), (27.5, 37.5)]]);
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
+        let first = g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap();
+        PANIC_AFTER_SEARCH.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0),
+            Err(AswError::Internal { .. })
+        ));
+        let again = g
+            .route(36.0, 26.0, 37.0, 28.0, 0.0)
+            .expect("stale search state must not turn a valid route into NoRoute");
+        assert_eq!(again, first);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn open_graph_reports_a_directory_and_an_unreadable_file_plainly() {
+        let (dir, path) = fixture_graph_path();
+        match open_graph(dir.to_string_lossy().into_owned()) {
+            Err(AswError::BadFormat { detail }) => assert_eq!(detail, "not a regular file"),
+            other => panic!("directory: expected BadFormat, got {other:?}"),
+        }
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let err = open_graph(path.to_string_lossy().into_owned()).unwrap_err();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(
+            err,
+            AswError::NotFound,
+            "unreadable file is NotFound, no OS error text"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
