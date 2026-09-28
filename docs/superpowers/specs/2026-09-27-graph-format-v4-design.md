@@ -2,9 +2,9 @@
 
 - **Date:** 2026-09-27
 - **Status:** design approved in brainstorming, awaiting spec review
-- **Driver:** Rhumb Logbook needs the whole planet graph on the phone, opened in a
+- **Driver:** a mobile app needs the whole planet graph on the phone, opened in a
   background relaunch with a ~10 s budget and tens of MB resident. The contract is
-  section 3 of `rhumb/docs/superpowers/specs/2026-09-27-automatic-logbook-design.md`,
+  the mobile app's design document (kept in that app's repository),
   with the amendments listed in section 8 below.
 - **Scope of this spec:** the file format, the asw-core refactor, the build pipeline and
   the server. The mobile binding (`asw-mobile`, UniFFI, xcframework and AAR CI) is a
@@ -24,7 +24,7 @@ v3 gets it onto a phone.
   section is a plain array or a self-delimiting varint stream, so a query touches only the
   pages it needs.
 - Node ids stay plain sorted `u64`. The "64-entry blocks with u16 deltas" idea from the
-  Rhumb contract does not work: measured on the Marmaris graph, 0 of 1342 blocks fit and
+  original contract does not work: measured on the Marmaris graph, 0 of 1342 blocks fit and
   only 53 % of consecutive deltas fit u16. `ponytail:` u64 ids cost 315 MB on the planet;
   a per-block varint scheme is the upgrade path if the file must shrink.
 - No stored edge weights. Verified: every v3 weight is centre-to-centre haversine within
@@ -37,7 +37,7 @@ v3 gets it onto a phone.
 - Coastline points are stored as an absolute `i32` microdegree head per run followed by
   `i16` deltas. Exact to the microdegree; the first planet build without deltas came out
   at 1.74 GB, of which 650 MB was coastline, so the deltas were added before the release.
-- No checksum inside the file. The distribution manifest (Rhumb side) and the GitHub
+- No checksum inside the file. The distribution manifest (app side) and the GitHub
   release asset carry a sha256.
 - Endianness: little-endian hosts only, asserted at compile time. All release targets
   (x86_64, aarch64) qualify.
@@ -162,11 +162,11 @@ a v3 file fails with "Unsupported ASW graph version 3. Rebuild required."
 A point is snapped to the nearest water node. The node centre is known water. A straight
 line from the centre to the point crosses the coastline zero or more times; each crossing
 flips water and land, so an even count means the point is on water. The boolean test the
-Rhumb contract proposed fails in marinas: a basin narrower than a res-10 cell has no water
+original contract proposed fails in marinas: a basin narrower than a res-10 cell has no water
 node inside it, the nearest node is outside the mole, and the line crosses the mole ring
 twice. Parity says water; the boolean said land. A point genuinely on land enters the
 land ring once and never leaves it: odd, land. Inland lakes and rivers have no coastline,
-so they are reported as land, which matches the Rhumb decision to keep them out of scope.
+so they are reported as land, which matches the app's decision to keep them out of scope.
 
 ## 7. Testing and verification
 
@@ -185,7 +185,7 @@ so they are reported as land, which matches the Rhumb decision to keep them out 
 - Docs: README, CLAUDE.md and CHANGELOG updated; the stale "res-9 leaf" wording becomes
   res-10 (`H3_RES_LEAF`).
 
-## 8. Amendments to the Rhumb contract
+## 8. Amendments to the original mobile contract
 
 1. Node ids are plain u64, not u16-delta blocks. Planet file ~1.1-1.2 GB, not ~1 GB.
 2. `isWater` uses crossing parity.
