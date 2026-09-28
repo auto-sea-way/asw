@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-09-28
+
+The planet graph file is unchanged from 0.7.0 (format v4).
+
+### Added
+
+- `asw.graph.zst` release asset: the planet graph compressed with zstd level 19 (about 540 MB instead of 1,437 MB), listed in `SHA256SUMS`.
+- `asw-mobile`: `installGraph(source, destination)` decompresses a downloaded `asw.graph.zst`, verifies the zstd checksum and the graph header, and atomically renames the result over the destination; on failure the old file is untouched. This is now the recommended way to install or update the graph on a phone.
+
 ## [0.8.0] - 2026-09-28
 
 The planet graph file is unchanged from 0.7.0 (format v4); the release carries the same `asw.graph`.
@@ -208,6 +217,7 @@ The planet graph file is unchanged from 0.7.0 (format v4); the release carries t
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.8.1]: https://github.com/auto-sea-way/asw/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/auto-sea-way/asw/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/auto-sea-way/asw/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/auto-sea-way/asw/compare/v0.6.0...v0.6.1

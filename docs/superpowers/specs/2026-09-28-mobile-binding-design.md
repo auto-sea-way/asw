@@ -159,3 +159,23 @@ Both assets and their checksums join the existing `SHA256SUMS`.
 | `crates/asw-mobile/README.md` | how to consume the xcframework and AAR, measured numbers |
 | `.github/workflows/ci.yml`, `release.yml` | the checks and the `mobile` job |
 | `Cargo.toml` | workspace member, `uniffi` workspace dependency |
+
+## 10. Amendment (0.8.1): compressed download and install
+
+Releases attach `asw.graph.zst` (zstd level 19 with content checksum, about 540 MB
+for the planet; gzip would be about 590 MB and zstd was chosen for the smaller
+download). The binding gains:
+
+```
+install_graph(source: String, destination: String) -> Result<(), AswError>
+    Stream-decompress `source` into a temporary file next to `destination`,
+    verify the zstd checksum and the v4 header, then rename over `destination`
+    atomically. On failure the destination is untouched and the temporary file
+    is removed. Errors: NotFound (missing source), BadFormat (not zstd, corrupt,
+    or not a graph), Internal (write failures such as a full disk).
+```
+
+This makes atomic replacement the default path, instead of a rule the app must
+follow. The error cases are the existing ones, so 0.8.1 stays compatible with
+exhaustive `switch` statements over `AswError` in Swift and Kotlin.
+
