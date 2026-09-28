@@ -170,13 +170,21 @@ jobs:
             exit 1
           fi
 
+      - name: Compress graph
+        # zstd level 19 with its content checksum: ~540 MB for the planet, the
+        # download mobile apps install with asw-mobile's installGraph.
+        run: |
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          zstd -19 -T0 -q --check asw.graph -o asw.graph.zst
+          zstd -q -t asw.graph.zst
+
       - name: Collect binaries and generate checksums
         run: |
           mkdir -p release
           find artifacts -type f \( -name 'asw-*' -o -name 'AswMobile-*.zip' \) -exec cp {} release/ \;
-          cp asw.graph release/
+          cp asw.graph asw.graph.zst release/
           cd release
-          sha256sum asw-* AswMobile-*.zip asw.graph > SHA256SUMS
+          sha256sum asw-* AswMobile-*.zip asw.graph asw.graph.zst > SHA256SUMS
 
       - name: Create annotated tag
         run: |
@@ -223,6 +231,7 @@ jobs:
             release/asw-*
             release/AswMobile-*.zip
             release/asw.graph
+            release/asw.graph.zst
             release/SHA256SUMS
 
   docker:

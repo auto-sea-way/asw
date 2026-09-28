@@ -27,7 +27,7 @@ You run it yourself: one binary and one graph file. Routing happens on your own 
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.0-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (a few seconds while the graph file is mapped and read in), then query a route:
@@ -129,23 +129,23 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.8.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.8.0-full` | Full image — graph file included (~1.5 GB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.8.1` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.8.1-full` | Full image — graph file included (~1.5 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~1.5 GB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.8.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.8.1/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1
 ```
 
 The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
@@ -156,7 +156,8 @@ See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and b
 
 Each release also attaches `AswMobile-<version>.zip` (iOS xcframework and Swift
 source) and `asw-mobile-<version>.aar` (Android, arm64-v8a): the same graph file,
-opened on the phone through `openGraph`, `version`, `isWater` and `route`. See
+opened on the phone through `openGraph`, `version`, `isWater` and `route`. Apps
+download `asw.graph.zst` (about 540 MB) and install it with `installGraph`. See
 [crates/asw-mobile/README.md](crates/asw-mobile/README.md).
 
 ### Pre-built Binaries
@@ -170,7 +171,7 @@ Download from [GitHub Releases](https://github.com/auto-sea-way/asw/releases):
 | macOS x86_64 | `asw-darwin-amd64` |
 | macOS ARM64 (Apple Silicon) | `asw-darwin-arm64` |
 
-Each release also includes the pre-built `asw.graph` file and `SHA256SUMS` for verification.
+Each release also includes the pre-built `asw.graph` file, its zstd-compressed `asw.graph.zst`, and `SHA256SUMS` for verification.
 
 ## Full Planet Build
 

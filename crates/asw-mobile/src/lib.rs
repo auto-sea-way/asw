@@ -168,6 +168,91 @@ pub fn open_graph(path: String) -> Result<Arc<Graph>, AswError> {
     }))
 }
 
+/// Deletes the temporary file unless the install succeeded (`keep`).
+struct TempFile {
+    path: std::path::PathBuf,
+    keep: bool,
+}
+
+impl Drop for TempFile {
+    fn drop(&mut self) {
+        if !self.keep {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Install a zstd-compressed graph file (the release's `asw.graph.zst`) at
+/// `destination`: decompress into a temporary file next to it, check that
+/// it is a usable v4 graph, then rename it over `destination` atomically.
+/// On any failure the destination is untouched and nothing is left behind.
+/// A `Graph` already open on the old file keeps working until released.
+#[uniffi::export]
+pub fn install_graph(source: String, destination: String) -> Result<(), AswError> {
+    catch_unwind(AssertUnwindSafe(|| {
+        install_graph_inner(&source, &destination)
+    }))
+    .unwrap_or_else(|e| {
+        Err(AswError::Internal {
+            detail: panic_message(e),
+        })
+    })
+}
+
+fn install_graph_inner(source: &str, destination: &str) -> Result<(), AswError> {
+    use std::io::{Read, Write};
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let internal = |e: std::io::Error| AswError::Internal {
+        detail: e.to_string(),
+    };
+    let bad = |e: std::io::Error| AswError::BadFormat {
+        detail: format!("not a zstd-compressed graph: {e}"),
+    };
+
+    let input = std::fs::File::open(source).map_err(|_| AswError::NotFound)?;
+    let dest = Path::new(destination);
+    let dir = dest
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = dest
+        .file_name()
+        .ok_or_else(|| AswError::InvalidArgument {
+            detail: "destination has no file name".into(),
+        })?
+        .to_string_lossy();
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp = TempFile {
+        path: dir.join(format!(".{name}.install-{}-{n}", std::process::id())),
+        keep: false,
+    };
+
+    let mut out = std::fs::File::create(&tmp.path).map_err(internal)?;
+    let mut decoder = zstd::stream::read::Decoder::new(input).map_err(bad)?;
+    // Read and write separately so bad data (BadFormat) and a failing disk
+    // (Internal) are told apart. The zstd frame checksum is verified by the
+    // decoder at the end of the stream.
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let k = decoder.read(&mut buf).map_err(bad)?;
+        if k == 0 {
+            break;
+        }
+        out.write_all(&buf[..k]).map_err(internal)?;
+    }
+    out.sync_all().map_err(internal)?;
+    drop(out);
+
+    // Header check: the decompressed file must be a v4 graph this build reads.
+    RoutingGraph::open(&tmp.path, false).map_err(|e| AswError::BadFormat {
+        detail: format!("{e:#}"),
+    })?;
+
+    std::fs::rename(&tmp.path, dest).map_err(internal)?;
+    tmp.keep = true;
+    Ok(())
+}
+
 #[uniffi::export]
 impl Graph {
     /// The version string stored in the file header.
@@ -595,6 +680,111 @@ mod tests {
         assert_eq!(g.is_water(f64::NAN, 26.0), Water::Unknown);
         assert_eq!(g.is_water(95.0, 26.0), Water::Unknown);
         assert_eq!(g.is_water(36.0, -181.0), Water::Unknown);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A small v4 graph with the given version, written raw and as zstd.
+    fn graph_files(dir: &std::path::Path, version: &str) -> (PathBuf, PathBuf) {
+        let cell = h3o::LatLng::new(36.5, 28.3)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let mut b = GraphBuilder::with_version(version);
+        b.add_node(u64::from(cell), 255);
+        let bytes = b.build_bytes();
+        let raw = dir.join(format!("{version}.graph"));
+        std::fs::write(&raw, &bytes).unwrap();
+        let zst = dir.join(format!("{version}.graph.zst"));
+        std::fs::write(&zst, zstd::encode_all(&bytes[..], 3).unwrap()).unwrap();
+        (raw, zst)
+    }
+
+    /// Names of the files in `dir`, sorted, so a leftover temporary file shows.
+    fn names(dir: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    fn s(p: &std::path::Path) -> String {
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn install_graph_decompresses_and_opens() {
+        let dir = temp_dir("install");
+        let (_, zst) = graph_files(&dir, "v1");
+        let dest = dir.join("asw.graph");
+        install_graph(s(&zst), s(&dest)).unwrap();
+        assert_eq!(open_graph(s(&dest)).unwrap().version(), "v1");
+        assert_eq!(names(&dir), vec!["asw.graph", "v1.graph", "v1.graph.zst"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn install_graph_over_an_open_graph_keeps_the_old_one_readable() {
+        let dir = temp_dir("install-over");
+        let (_, zst_a) = graph_files(&dir, "a");
+        let (_, zst_b) = graph_files(&dir, "b");
+        let dest = dir.join("asw.graph");
+        install_graph(s(&zst_a), s(&dest)).unwrap();
+        let old = open_graph(s(&dest)).unwrap();
+        install_graph(s(&zst_b), s(&dest)).unwrap();
+        assert_eq!(old.version(), "a", "the open graph keeps its file");
+        assert_eq!(old.is_water(36.5, 28.3), Water::Water);
+        assert_eq!(open_graph(s(&dest)).unwrap().version(), "b");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn install_graph_failures_leave_the_destination_untouched() {
+        let dir = temp_dir("install-bad");
+        let (_, good) = graph_files(&dir, "good");
+        let dest = dir.join("asw.graph");
+        install_graph(s(&good), s(&dest)).unwrap();
+        let before = std::fs::read(&dest).unwrap();
+
+        let not_zstd = dir.join("not-zstd.zst");
+        std::fs::write(&not_zstd, b"this is not a zstd stream").unwrap();
+        let not_graph = dir.join("not-graph.zst");
+        std::fs::write(
+            &not_graph,
+            zstd::encode_all(&b"hello, not a graph"[..], 3).unwrap(),
+        )
+        .unwrap();
+        let truncated = dir.join("truncated.zst");
+        let full = std::fs::read(&good).unwrap();
+        std::fs::write(&truncated, &full[..full.len() / 2]).unwrap();
+
+        for bad in [&not_zstd, &not_graph, &truncated] {
+            match install_graph(s(bad), s(&dest)) {
+                Err(AswError::BadFormat { detail }) => assert!(!detail.is_empty()),
+                other => panic!("{bad:?}: expected BadFormat, got {other:?}"),
+            }
+        }
+        assert_eq!(std::fs::read(&dest).unwrap(), before);
+        assert_eq!(
+            names(&dir),
+            vec![
+                "asw.graph",
+                "good.graph",
+                "good.graph.zst",
+                "not-graph.zst",
+                "not-zstd.zst",
+                "truncated.zst"
+            ],
+            "no temporary file may be left behind"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn install_graph_missing_source_is_not_found() {
+        let dir = temp_dir("install-missing");
+        let err = install_graph(s(&dir.join("absent.zst")), s(&dir.join("asw.graph"))).unwrap_err();
+        assert_eq!(err, AswError::NotFound);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

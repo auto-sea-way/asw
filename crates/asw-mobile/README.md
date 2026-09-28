@@ -3,6 +3,7 @@
 Swift and Kotlin bindings for the auto-sea-way routing graph. Four calls over a
 memory-mapped v4 graph file:
 
+    installGraph(source, destination)
     openGraph(path) -> Graph
     Graph.version() -> String
     Graph.isWater(lat, lon) -> Water (.water | .land | .unknown)
@@ -14,13 +15,25 @@ memory-mapped v4 graph file:
 carrying a `detail` string. A panic inside the graph code surfaces as `Internal`
 (or `.unknown` from `isWater`).
 
-**Replace the graph file only by atomic rename.** The file is memory-mapped.
-Download a new version to a temporary path in the same directory, then
-`rename` it over the old one; an open `Graph` keeps reading the old file until
-it is released, and the next `openGraph` sees the new one. Never truncate,
-overwrite or delete the file in place while a `Graph` holds it: the operating
-system then raises a bus error on the next read, which no library can catch,
-and the app is terminated.
+## Installing and updating the graph
+
+Every release attaches `asw.graph.zst` (about 540 MB for the planet), the
+zstd-compressed graph, and lists its checksum in `SHA256SUMS`. Download it,
+check the checksum, then call:
+
+    installGraph(source: downloadedZstPath, destination: graphPath)
+
+`installGraph` decompresses into a temporary file next to `destination`
+(about 8 MB of memory, not the file size), verifies the zstd checksum and the
+graph header, and only then renames it over `destination` atomically. On
+failure the old file is untouched and nothing is left behind. A `Graph`
+already open on the old file keeps working until released; the next
+`openGraph` sees the new one. Delete the download afterwards.
+
+The file is memory-mapped, so never truncate, overwrite or delete it in place
+while a `Graph` holds it: the operating system raises a bus error on the next
+read, which no library can catch, and the app is terminated. `installGraph`
+is the safe way to replace it.
 
 ## iOS
 
