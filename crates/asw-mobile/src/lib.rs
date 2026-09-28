@@ -1,5 +1,5 @@
 //! Mobile bindings for the auto-sea-way routing graph. Four calls over a
-//! memory-mapped v4 file: `open`, `version`, `is_water`, `route`. Generated
+//! memory-mapped v4 file: `open_graph`, `version`, `is_water`, `route`. Generated
 //! into Swift and Kotlin by UniFFI; panics never cross the boundary.
 
 use asw_core::astar_pool::AstarBuffers;
@@ -104,9 +104,10 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Memory-map a v4 graph file and validate its header. Milliseconds; no
-/// per-node work.
+/// per-node work. Named `open_graph` because `open` needs backticks in both
+/// Swift and Kotlin.
 #[uniffi::export]
-pub fn open(path: String) -> Result<Arc<Graph>, AswError> {
+pub fn open_graph(path: String) -> Result<Arc<Graph>, AswError> {
     let p = Path::new(&path);
     if !p.exists() {
         return Err(AswError::NotFound);
@@ -271,14 +272,14 @@ mod tests {
     #[test]
     fn open_reports_the_header_version() {
         let (dir, path) = fixture_graph_path();
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(g.version(), "test 2026-09-28");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn open_missing_file_is_not_found() {
-        let err = open("/nonexistent/asw.graph".into()).unwrap_err();
+        let err = open_graph("/nonexistent/asw.graph".into()).unwrap_err();
         assert_eq!(err, AswError::NotFound);
     }
 
@@ -290,7 +291,7 @@ mod tests {
         let v3 = dir.join("v3.graph");
         std::fs::write(&v3, b"ASW\x03whatever").unwrap();
         for p in [dir.clone(), empty, v3] {
-            match open(p.to_string_lossy().into_owned()) {
+            match open_graph(p.to_string_lossy().into_owned()) {
                 Err(AswError::BadFormat { message }) => assert!(!message.is_empty()),
                 other => panic!("{p:?}: expected BadFormat, got {other:?}"),
             }
@@ -313,7 +314,7 @@ mod tests {
     #[test]
     fn is_water_marina_behind_mole_is_water() {
         let (dir, path) = fixture_graph_path();
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(
             g.is_water(36.5, 28.0),
             Water::Water,
@@ -326,7 +327,7 @@ mod tests {
     #[test]
     fn is_water_inside_island_is_land() {
         let (dir, path) = fixture_graph_path();
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(g.is_water(36.5, 27.6), Water::Land);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -339,7 +340,7 @@ mod tests {
         let dir = temp_dir("empty");
         let path = dir.join("empty.graph");
         empty.save(&path).unwrap();
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(g.is_water(44.8, 20.5), Water::Land);
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -347,7 +348,7 @@ mod tests {
     #[test]
     fn is_water_panic_becomes_unknown() {
         let (dir, path) = fixture_graph_path();
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         PANIC_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
         assert_eq!(g.is_water(36.5, 28.3), Water::Unknown);
         assert_eq!(
@@ -389,7 +390,7 @@ mod tests {
     #[test]
     fn route_clear_line_of_sight_returns_two_points() {
         let (dir, path) = chain_graph_path(vec![]);
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         let r = g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap();
         assert_eq!(r.coordinates.len(), 2);
         assert_eq!(
@@ -423,7 +424,7 @@ mod tests {
         // back and that a shore buffer is accepted.
         let wall = vec![vec![(27.5, 36.2), (27.5, 37.5)]];
         let (dir, path) = chain_graph_path(wall);
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         let r = g.route(36.0, 26.0, 37.0, 28.0, 0.5).unwrap();
         assert!(r.coordinates.len() >= 2);
         assert!(r.distance_nm > 0.0);
@@ -433,7 +434,7 @@ mod tests {
     #[test]
     fn route_rejects_bad_arguments() {
         let (dir, path) = chain_graph_path(vec![]);
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert!(matches!(
             g.route(36.0, 26.0, 37.0, 28.0, 6.0),
             Err(AswError::InvalidArgument { .. })
@@ -459,7 +460,7 @@ mod tests {
         let dir = temp_dir("noroute");
         let path = dir.join("noroute.graph");
         empty.save(&path).unwrap();
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(
             g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap_err(),
             AswError::NoRoute
@@ -470,7 +471,7 @@ mod tests {
     #[test]
     fn route_recovers_after_a_panic() {
         let (dir, path) = chain_graph_path(vec![]);
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         PANIC_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(
             g.route(36.0, 26.0, 37.0, 28.0, 0.0),
@@ -486,7 +487,7 @@ mod tests {
     #[test]
     fn concurrent_routes_serialise_on_one_buffer_set() {
         let (dir, path) = chain_graph_path(vec![]);
-        let g = open(path.to_string_lossy().into_owned()).unwrap();
+        let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let g = Arc::clone(&g);
