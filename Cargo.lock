@@ -179,7 +179,7 @@ dependencies = [
 
 [[package]]
 name = "asw-build"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "asw-core",
@@ -199,7 +199,7 @@ dependencies = [
 
 [[package]]
 name = "asw-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "asw-build",
@@ -221,7 +221,7 @@ dependencies = [
 
 [[package]]
 name = "asw-cloud"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "asw-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "geo",
@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "asw-mobile"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "asw-core",
  "h3o",
@@ -251,7 +251,7 @@ dependencies = [
 
 [[package]]
 name = "asw-serve"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "asw-core",
  "axum",

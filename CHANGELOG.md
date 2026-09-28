@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-28
+
+The planet graph file is unchanged from 0.7.0 (format v4); the release carries the same `asw.graph`.
+
 ### Added
 
 - `asw-mobile`: Swift and Kotlin bindings (UniFFI) over the v4 graph file with `openGraph`, `version`, `isWater` and `route`, shipped as an iOS xcframework and an Android AAR on every release.
@@ -204,6 +208,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.8.0]: https://github.com/auto-sea-way/asw/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/auto-sea-way/asw/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/auto-sea-way/asw/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/auto-sea-way/asw/compare/v0.5.0...v0.6.0
