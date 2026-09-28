@@ -139,7 +139,10 @@ impl std::fmt::Debug for RoutingGraph {
 
 impl RoutingGraph {
     /// Memory-map a v4 file. `populate` asks the kernel to read the whole
-    /// file in at open (MAP_POPULATE on Linux, MADV_WILLNEED elsewhere).
+    /// file in at open (MAP_POPULATE on Linux, MADV_WILLNEED elsewhere) and
+    /// also runs the monotonicity scans over the two small CSR tables (the
+    /// grid table alone is 26 MB, which a phone opening the file cold must
+    /// not touch; a phone caller contains query-time panics itself).
     pub fn open(path: &Path, populate: bool) -> anyhow::Result<Self> {
         let file = std::fs::File::open(path)?;
         let mut opts = memmap2::MmapOptions::new();
@@ -153,11 +156,11 @@ impl RoutingGraph {
         if populate {
             let _ = mmap.advise(memmap2::Advice::WillNeed);
         }
-        Self::parse(Bytes::Mmap(mmap))
+        Self::parse(Bytes::Mmap(mmap), populate)
     }
 
     pub fn from_bytes(bytes: Vec<u8>) -> anyhow::Result<Self> {
-        Self::parse(Bytes::owned(&bytes))
+        Self::parse(Bytes::owned(&bytes), true)
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -165,7 +168,7 @@ impl RoutingGraph {
         Ok(())
     }
 
-    fn parse(bytes: Bytes) -> anyhow::Result<Self> {
+    fn parse(bytes: Bytes, scan_tables: bool) -> anyhow::Result<Self> {
         let b = bytes.as_slice();
         anyhow::ensure!(
             b.len() >= 4 && &b[..3] == b"ASW",
@@ -229,10 +232,10 @@ impl RoutingGraph {
             num_runs,
             sections,
         };
-        // CSR tables: first entry 0, last entry = target section length. The
-        // two small tables are also checked for monotonicity (a few ms); the
-        // node-sized `offsets` table is not scanned, keeping open O(1) in
-        // the node count as the spec asks.
+        // CSR tables: first entry 0, last entry = target section length. With
+        // `scan_tables` the two small tables are also checked for monotonicity
+        // (a few ms, ~30 MB of pages); the node-sized `offsets` table is never
+        // scanned, keeping open O(1) in the node count as the spec asks.
         let offsets: &[u32] = g.section(SEC_OFFSETS);
         anyhow::ensure!(offsets[0] == 0, "offsets[0] != 0");
         anyhow::ensure!(
@@ -242,7 +245,7 @@ impl RoutingGraph {
         let runs: &[u32] = g.section(SEC_COAST_RUNS);
         anyhow::ensure!(runs[0] == 0, "coast_runs[0] != 0");
         anyhow::ensure!(
-            runs.windows(2).all(|w| w[0] <= w[1]),
+            !scan_tables || runs.windows(2).all(|w| w[0] <= w[1]),
             "coast_runs not monotonic"
         );
         anyhow::ensure!(
@@ -252,7 +255,7 @@ impl RoutingGraph {
         let grid: &[u32] = g.section(SEC_GRID_OFFSETS);
         anyhow::ensure!(grid[0] == 0, "grid_offsets[0] != 0");
         anyhow::ensure!(
-            grid.windows(2).all(|w| w[0] <= w[1]),
+            !scan_tables || grid.windows(2).all(|w| w[0] <= w[1]),
             "grid_offsets not monotonic"
         );
         anyhow::ensure!(
@@ -876,6 +879,26 @@ mod tests {
         b3[o..o + 4].copy_from_slice(&1u32.to_le_bytes());
         assert!(RoutingGraph::from_bytes(b3).is_err(), "coast_runs[0] != 0");
         drop(g);
+    }
+
+    /// `open(path, false)` is the phone path: it must not walk the 26 MB grid
+    /// table (that alone makes 26 MB resident), so the monotonicity scans run
+    /// only with `populate = true` or through `from_bytes`. Query-time panics
+    /// on such a file are the caller's to contain.
+    #[test]
+    fn open_without_populate_skips_the_table_scans() {
+        let mut bytes = square_graph_bytes();
+        let off = u64::from_le_bytes(bytes[88 + 8 * 16..96 + 8 * 16].try_into().unwrap()) as usize;
+        // grid_offsets[1] = 5 while [2] stays 0: non-monotonic, sentinel intact.
+        bytes[off + 4..off + 8].copy_from_slice(&5u32.to_le_bytes());
+        assert!(RoutingGraph::from_bytes(bytes.clone()).is_err());
+        let dir = std::env::temp_dir().join(format!("asw-open-skip-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("g.graph");
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(RoutingGraph::open(&path, true).is_err());
+        assert!(RoutingGraph::open(&path, false).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
