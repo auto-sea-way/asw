@@ -226,6 +226,17 @@ mod tests {
     use asw_core::graph::GraphBuilder;
     use std::path::PathBuf;
 
+    /// A fresh temporary directory per call: pid plus a process-wide counter,
+    /// so parallel tests never share one (a timestamp alone collides on macOS,
+    /// whose clock has microsecond resolution).
+    fn temp_dir(tag: &str) -> PathBuf {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("asw-mobile-{tag}-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     /// One res-5 water node at (36.5, 28.3), a thin mole ring between it and
     /// a berth at (36.5, 28.0), and an island ring around (36.5, 27.6).
     /// Written to a temporary directory as a v4 file.
@@ -251,15 +262,7 @@ mod tests {
                 (27.5, 36.4),
             ],
         ];
-        let dir = std::env::temp_dir().join(format!(
-            "asw-mobile-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("fixture");
         let path = dir.join("fixture.graph");
         b.build().save(&path).unwrap();
         (dir, path)
@@ -333,8 +336,7 @@ mod tests {
         // A graph with no node at all: the snapping ladder finds nothing, so
         // the answer is Land, in bounded time (the res-3 fallback disk).
         let empty = GraphBuilder::default().build();
-        let dir = std::env::temp_dir().join(format!("asw-mobile-empty-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("empty");
         let path = dir.join("empty.graph");
         empty.save(&path).unwrap();
         let g = open(path.to_string_lossy().into_owned()).unwrap();
@@ -378,15 +380,7 @@ mod tests {
             b.add_edge(w[0], w[1]);
         }
         b.coastline_runs = coast;
-        let dir = std::env::temp_dir().join(format!(
-            "asw-mobile-chain-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("chain");
         let path = dir.join("chain.graph");
         b.build().save(&path).unwrap();
         (dir, path)
@@ -462,8 +456,7 @@ mod tests {
             b.coastline_runs = vec![vec![(27.5, 36.2), (27.5, 37.5)]];
             b.build()
         };
-        let dir = std::env::temp_dir().join(format!("asw-mobile-noroute-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("noroute");
         let path = dir.join("noroute.graph");
         empty.save(&path).unwrap();
         let g = open(path.to_string_lossy().into_owned()).unwrap();
