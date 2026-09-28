@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use crate::coast::{CoastlineIndex, CoastlineSections, GRID_CELLS};
+use std::path::Path;
 
 /// Quantization unit for `shore_dist`: 0.02 nm (~37 m) per step.
 pub const SHORE_DIST_UNIT_NM: f64 = 0.02;
@@ -17,38 +17,362 @@ pub fn quantize_shore_dist(nm: f64) -> u8 {
     (nm / SHORE_DIST_UNIT_NM + 1e-9).floor().clamp(0.0, 255.0) as u8
 }
 
-/// File layout: [b"ASW\x03" magic header][zstd-compressed bitcode payload]
-///
-/// Compressed Sparse Row graph for maritime routing.
-/// Nodes are H3 cell indices stored in sorted ascending order.
-/// Edge data is interleaved delta-varint targets + u16 weights.
-#[derive(Debug, Serialize, Deserialize)]
-pub struct RoutingGraph {
-    /// H3 cell index for each node, sorted ascending. Array index = node ID.
-    pub node_h3: Vec<u64>,
-    /// Byte offsets into `edge_data`. Length = num_nodes + 1.
-    /// Invariant: `offsets[num_nodes] == edge_data.len()`
-    pub offsets: Vec<u32>,
-    /// Interleaved per-node: [varint target_delta][u16 weight_le] per edge.
-    /// Targets sorted ascending, stored as deltas.
-    pub edge_data: Vec<u8>,
-    /// Quantized straight-line distance from node center to nearest coastline.
-    /// Unit: SHORE_DIST_UNIT_NM (0.02 nm). 255 = saturated (>= 5.1 nm).
-    /// Rounded down at build time. Length = num_nodes.
-    pub shore_dist: Vec<u8>,
-    pub coastline_coords: Vec<Vec<(f32, f32)>>,
-    pub num_nodes: u32,
-    pub num_edges: u32,
+const _: () = assert!(
+    cfg!(target_endian = "little"),
+    "v4 graph files are little-endian"
+);
+
+const MAGIC: [u8; 4] = *b"ASW\x04";
+const VERSION_OFF: usize = 8; // u8 length + 63 bytes
+const NUM_NODES_OFF: usize = 72;
+const NUM_EDGES_OFF: usize = 76;
+const NUM_RUNS_OFF: usize = 80;
+const TABLE_OFF: usize = 88;
+const SECTION_COUNT: usize = 10;
+const HEADER_LEN: usize = TABLE_OFF + SECTION_COUNT * 16; // 248
+
+const SEC_NODE_H3: usize = 0;
+const SEC_OFFSETS: usize = 1;
+const SEC_EDGE_TARGETS: usize = 2;
+const SEC_SHORE_DIST: usize = 3;
+const SEC_COAST_RUNS: usize = 4;
+const SEC_COAST_BBOX: usize = 5;
+const SEC_COAST_HEADS: usize = 6;
+const SEC_COAST_DELTAS: usize = 7;
+const SEC_GRID_OFFSETS: usize = 8;
+const SEC_GRID_IDS: usize = 9;
+
+/// Integer types that may be viewed directly in the mapped file.
+pub trait Plain: Copy + private::Sealed {}
+mod private {
+    pub trait Sealed {}
+}
+macro_rules! plain {
+    ($($t:ty),*) => { $(impl private::Sealed for $t {} impl Plain for $t {})* };
+}
+plain!(u8, u32, u64, i32, i16);
+
+fn cast_slice<T: Plain>(bytes: &[u8]) -> &[T] {
+    let size = std::mem::size_of::<T>();
+    assert_eq!(
+        bytes.len() % size,
+        0,
+        "section length is not a multiple of the element size"
+    );
+    assert_eq!(
+        bytes.as_ptr() as usize % std::mem::align_of::<T>(),
+        0,
+        "section is not aligned"
+    );
+    // SAFETY: T is a plain integer (sealed), length and alignment checked
+    // above, and the returned slice borrows `bytes`.
+    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, bytes.len() / size) }
 }
 
-/// Iterator over a node's neighbors, decoding interleaved varint+u16 edge data.
+fn bytes_of<T: Plain>(data: &[T]) -> &[u8] {
+    // SAFETY: T is a plain integer with no padding.
+    unsafe { std::slice::from_raw_parts(data.as_ptr() as *const u8, std::mem::size_of_val(data)) }
+}
+
+enum Bytes {
+    Mmap(memmap2::Mmap),
+    /// u64-backed so every 8-aligned section offset stays aligned in memory.
+    Owned {
+        buf: Vec<u64>,
+        len: usize,
+    },
+}
+
+impl Bytes {
+    fn owned(src: &[u8]) -> Self {
+        let mut buf = vec![0u64; src.len().div_ceil(8)];
+        // SAFETY: the u64 buffer is at least src.len() bytes long.
+        let dst = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u8, src.len()) };
+        dst.copy_from_slice(src);
+        Bytes::Owned {
+            buf,
+            len: src.len(),
+        }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Bytes::Mmap(m) => &m[..],
+            Bytes::Owned { buf, len } => &bytes_of(buf)[..*len],
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Section {
+    off: usize,
+    len: usize,
+}
+
+/// File layout: 248-byte header, then ten 8-byte-aligned little-endian
+/// sections (see the v4 design spec). The struct is a view over the bytes;
+/// nothing is decoded at open time.
+///
+/// Nodes are H3 cell indices in strictly ascending order (array index =
+/// node id). Edges are CSR: `offsets` into a varint stream of ascending
+/// target deltas. Weights are recomputed at query time as centre-to-centre
+/// haversine, so nothing per edge is stored but the id.
+pub struct RoutingGraph {
+    bytes: Bytes,
+    version: String,
+    num_nodes: u32,
+    num_edges: u32,
+    num_runs: u32,
+    sections: [Section; SECTION_COUNT],
+}
+
+impl std::fmt::Debug for RoutingGraph {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoutingGraph")
+            .field("version", &self.version)
+            .field("num_nodes", &self.num_nodes)
+            .field("num_edges", &self.num_edges)
+            .field("num_runs", &self.num_runs)
+            .finish()
+    }
+}
+
+impl RoutingGraph {
+    /// Memory-map a v4 file. `populate` asks the kernel to read the whole
+    /// file in at open (MAP_POPULATE on Linux, MADV_WILLNEED elsewhere).
+    pub fn open(path: &Path, populate: bool) -> anyhow::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let mut opts = memmap2::MmapOptions::new();
+        if populate {
+            opts.populate();
+        }
+        // SAFETY: the file is only ever replaced whole by rename; a mapping
+        // of the old inode stays valid until dropped.
+        let mmap = unsafe { opts.map(&file)? };
+        #[cfg(unix)]
+        if populate {
+            let _ = mmap.advise(memmap2::Advice::WillNeed);
+        }
+        Self::parse(Bytes::Mmap(mmap))
+    }
+
+    pub fn from_bytes(bytes: Vec<u8>) -> anyhow::Result<Self> {
+        Self::parse(Bytes::owned(&bytes))
+    }
+
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        std::fs::write(path, self.bytes.as_slice())?;
+        Ok(())
+    }
+
+    fn parse(bytes: Bytes) -> anyhow::Result<Self> {
+        let b = bytes.as_slice();
+        anyhow::ensure!(
+            b.len() >= 4 && &b[..3] == b"ASW",
+            "Not an ASW graph file (expected ASW magic header). Rebuild required."
+        );
+        anyhow::ensure!(
+            b[3] == MAGIC[3],
+            "Unsupported ASW graph version {} (expected 4). Rebuild required.",
+            b[3]
+        );
+        anyhow::ensure!(b.len() >= HEADER_LEN, "graph header truncated");
+        let u32_at = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_le_bytes(b[o..o + 8].try_into().unwrap());
+        let vlen = b[VERSION_OFF] as usize;
+        anyhow::ensure!(vlen <= 63, "graph version string too long");
+        let version = std::str::from_utf8(&b[VERSION_OFF + 1..VERSION_OFF + 1 + vlen])?.to_string();
+        let num_nodes = u32_at(NUM_NODES_OFF);
+        let num_edges = u32_at(NUM_EDGES_OFF);
+        let num_runs = u32_at(NUM_RUNS_OFF);
+        let mut sections = [Section { off: 0, len: 0 }; SECTION_COUNT];
+        for (i, s) in sections.iter_mut().enumerate() {
+            let off = u64_at(TABLE_OFF + i * 16) as usize;
+            let len = u64_at(TABLE_OFF + i * 16 + 8) as usize;
+            anyhow::ensure!(off.is_multiple_of(8), "section {i} is not 8-byte aligned");
+            anyhow::ensure!(
+                off >= HEADER_LEN && off.saturating_add(len) <= b.len(),
+                "section {i} extends beyond end of file"
+            );
+            *s = Section { off, len };
+        }
+        let n = num_nodes as usize;
+        let r = num_runs as usize;
+        let expect = |i: usize, len: usize, what: &str| -> anyhow::Result<()> {
+            anyhow::ensure!(
+                sections[i].len == len,
+                "{what} section length {} != expected {len}",
+                sections[i].len
+            );
+            Ok(())
+        };
+        expect(SEC_NODE_H3, n * 8, "node_h3")?;
+        expect(SEC_OFFSETS, (n + 1) * 4, "offsets")?;
+        expect(SEC_SHORE_DIST, n, "shore_dist")?;
+        expect(SEC_COAST_RUNS, (r + 1) * 4, "coast_runs")?;
+        expect(SEC_COAST_BBOX, r * 16, "coast_bbox")?;
+        expect(SEC_COAST_HEADS, r * 8, "coast_heads")?;
+        expect(SEC_GRID_OFFSETS, (GRID_CELLS + 1) * 4, "grid_offsets")?;
+        anyhow::ensure!(
+            sections[SEC_COAST_DELTAS].len.is_multiple_of(4),
+            "coast_deltas length not a multiple of 4"
+        );
+        anyhow::ensure!(
+            sections[SEC_GRID_IDS].len % 4 == 0,
+            "grid_ids length not a multiple of 4"
+        );
+        let g = Self {
+            bytes,
+            version,
+            num_nodes,
+            num_edges,
+            num_runs,
+            sections,
+        };
+        // CSR tables: first entry 0, last entry = target section length. The
+        // two small tables are also checked for monotonicity (a few ms); the
+        // node-sized `offsets` table is not scanned, keeping open O(1) in
+        // the node count as the spec asks.
+        let offsets: &[u32] = g.section(SEC_OFFSETS);
+        anyhow::ensure!(offsets[0] == 0, "offsets[0] != 0");
+        anyhow::ensure!(
+            offsets[n] as usize == g.sections[SEC_EDGE_TARGETS].len,
+            "offsets sentinel != edge_targets length"
+        );
+        let runs: &[u32] = g.section(SEC_COAST_RUNS);
+        anyhow::ensure!(runs[0] == 0, "coast_runs[0] != 0");
+        anyhow::ensure!(
+            runs.windows(2).all(|w| w[0] <= w[1]),
+            "coast_runs not monotonic"
+        );
+        anyhow::ensure!(
+            runs[r] as usize * 4 == g.sections[SEC_COAST_DELTAS].len,
+            "coast_runs sentinel != coast_deltas length"
+        );
+        let grid: &[u32] = g.section(SEC_GRID_OFFSETS);
+        anyhow::ensure!(grid[0] == 0, "grid_offsets[0] != 0");
+        anyhow::ensure!(
+            grid.windows(2).all(|w| w[0] <= w[1]),
+            "grid_offsets not monotonic"
+        );
+        anyhow::ensure!(
+            grid[GRID_CELLS] as usize * 4 == g.sections[SEC_GRID_IDS].len,
+            "grid_offsets sentinel != grid_ids length"
+        );
+        Ok(g)
+    }
+
+    fn section<T: Plain>(&self, i: usize) -> &[T] {
+        let s = self.sections[i];
+        cast_slice(&self.bytes.as_slice()[s.off..s.off + s.len])
+    }
+
+    pub fn num_nodes(&self) -> u32 {
+        self.num_nodes
+    }
+
+    pub fn num_edges(&self) -> u32 {
+        self.num_edges
+    }
+
+    /// Version string stored in the file header (set by the build).
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn num_coast_runs(&self) -> u32 {
+        self.num_runs
+    }
+
+    /// All node H3 ids, strictly ascending. Index = node id.
+    pub fn node_h3s(&self) -> &[u64] {
+        self.section(SEC_NODE_H3)
+    }
+
+    pub fn node_h3(&self, node: u32) -> u64 {
+        self.node_h3s()[node as usize]
+    }
+
+    /// Quantized distance to shore (SHORE_DIST_UNIT_NM units, 255 = >= 5.1 nm).
+    pub fn shore_dist(&self, node: u32) -> u8 {
+        self.section::<u8>(SEC_SHORE_DIST)[node as usize]
+    }
+
+    /// Binary search for an exact H3 cell index.
+    pub fn h3_lookup(&self, h3: u64) -> Option<u32> {
+        self.node_h3s().binary_search(&h3).ok().map(|i| i as u32)
+    }
+
+    pub fn coastline(&self) -> CoastlineIndex<'_> {
+        CoastlineIndex::from_slices(
+            self.section(SEC_COAST_RUNS),
+            self.section(SEC_COAST_BBOX),
+            self.section(SEC_COAST_HEADS),
+            self.section(SEC_COAST_DELTAS),
+            self.section(SEC_GRID_OFFSETS),
+            self.section(SEC_GRID_IDS),
+        )
+    }
+
+    /// Iterate neighbors of `node` as (target_id, weight_nm) pairs.
+    pub fn neighbors(&self, node: u32) -> NeighborIter<'_> {
+        let offsets: &[u32] = self.section(SEC_OFFSETS);
+        let (start, end) = (
+            offsets[node as usize] as usize,
+            offsets[node as usize + 1] as usize,
+        );
+        let (src_lat, src_lon) = self.node_pos(node);
+        NeighborIter {
+            graph: self,
+            data: &self.section::<u8>(SEC_EDGE_TARGETS)[start..end],
+            pos: 0,
+            prev_target: 0,
+            src_lat,
+            src_lon,
+        }
+    }
+
+    /// Neighbour ids only, no centre decode. A* uses this with its own
+    /// position cache; `neighbors()` computes the weight for everyone else.
+    pub fn neighbor_ids(&self, node: u32) -> impl Iterator<Item = u32> + '_ {
+        let offsets: &[u32] = self.section(SEC_OFFSETS);
+        let (start, end) = (
+            offsets[node as usize] as usize,
+            offsets[node as usize + 1] as usize,
+        );
+        let data = &self.section::<u8>(SEC_EDGE_TARGETS)[start..end];
+        let mut pos = 0usize;
+        let mut prev = 0u32;
+        std::iter::from_fn(move || {
+            if pos >= data.len() {
+                return None;
+            }
+            let (delta, new_pos) = crate::varint::decode(data, pos);
+            pos = new_pos;
+            prev += delta;
+            Some(prev)
+        })
+    }
+
+    /// Decode H3 cell center coordinates to f64 (lat, lng) in degrees.
+    pub fn node_pos(&self, node: u32) -> (f64, f64) {
+        let cell = h3o::CellIndex::try_from(self.node_h3(node)).expect("invalid H3 index");
+        crate::h3::cell_center(cell)
+    }
+}
+
+/// Iterator over a node's neighbors, decoding varint target deltas and
+/// computing each edge's length from the two cell centres.
 pub struct NeighborIter<'a> {
+    graph: &'a RoutingGraph,
     data: &'a [u8],
     pos: usize,
     prev_target: u32,
+    src_lat: f64,
+    src_lon: f64,
 }
 
-impl<'a> Iterator for NeighborIter<'a> {
+impl Iterator for NeighborIter<'_> {
     type Item = (u32, f32);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -59,338 +383,232 @@ impl<'a> Iterator for NeighborIter<'a> {
         self.pos = new_pos;
         let target = self.prev_target + delta;
         self.prev_target = target;
-
-        let weight_raw = u16::from_le_bytes([self.data[self.pos], self.data[self.pos + 1]]);
-        self.pos += 2;
-        let weight_nm = weight_raw as f32 / 100.0;
-
+        // One cell-centre decode per edge. A* does not use this iterator: it
+        // walks `neighbor_ids()` and computes weights from cached centres.
+        let (lat, lon) = self.graph.node_pos(target);
+        let weight_nm = crate::h3::haversine_nm(self.src_lat, self.src_lon, lat, lon) as f32;
         Some((target, weight_nm))
     }
 }
 
+#[derive(Default)]
 pub struct GraphBuilder {
-    /// (h3_index, lat_deg, lng_deg, shore_dist_q) per node.
-    /// lat/lng kept temporarily for edge weight calculation in the build pipeline.
-    nodes: Vec<(u64, f64, f64, u8)>,
-    /// (src, dst, weight_nm)
-    edges: Vec<(u32, u32, f32)>,
-    pub coastline_coords: Vec<Vec<(f32, f32)>>,
-}
-
-impl Default for GraphBuilder {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// (h3_index, shore_dist_q) per node, in the order added (must be
+    /// strictly ascending by H3).
+    nodes: Vec<(u64, u8)>,
+    /// (src, dst)
+    edges: Vec<(u32, u32)>,
+    /// Coastline runs as (lon, lat) degrees.
+    pub coastline_runs: Vec<Vec<(f64, f64)>>,
+    /// Stored in the header; at most 63 bytes.
+    pub version: String,
 }
 
 impl GraphBuilder {
-    pub fn new() -> Self {
+    /// Empty builder whose file will carry `version` in its header.
+    pub fn with_version(version: impl Into<String>) -> Self {
         Self {
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            coastline_coords: Vec::new(),
+            version: version.into(),
+            ..Self::default()
         }
     }
 
     /// Add a node with its quantized shore distance. Returns node ID.
-    pub fn add_node(&mut self, h3_index: u64, lat: f64, lng: f64, shore_dist_q: u8) -> u32 {
+    pub fn add_node(&mut self, h3_index: u64, shore_dist_q: u8) -> u32 {
         let id = self.nodes.len() as u32;
-        self.nodes.push((h3_index, lat, lng, shore_dist_q));
+        self.nodes.push((h3_index, shore_dist_q));
         id
     }
 
-    /// Add a bidirectional edge.
-    pub fn add_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
-        self.edges.push((src, dst, weight_nm));
-        self.edges.push((dst, src, weight_nm));
+    /// Add a bidirectional edge. Weights are not stored: the router computes
+    /// centre-to-centre haversine at query time.
+    pub fn add_edge(&mut self, src: u32, dst: u32) {
+        self.edges.push((src, dst));
+        self.edges.push((dst, src));
     }
 
     /// Add a one-way edge.
-    pub fn add_directed_edge(&mut self, src: u32, dst: u32, weight_nm: f32) {
-        self.edges.push((src, dst, weight_nm));
+    pub fn add_directed_edge(&mut self, src: u32, dst: u32) {
+        self.edges.push((src, dst));
     }
 
-    /// Build the CSR graph.
-    pub fn build(self) -> RoutingGraph {
-        let num_nodes = self.nodes.len() as u32;
-        let num_edges = self.edges.len() as u32;
-
-        let node_h3: Vec<u64> = self.nodes.iter().map(|(h3, _, _, _)| *h3).collect();
-        let shore_dist: Vec<u8> = self.nodes.iter().map(|(_, _, _, q)| *q).collect();
-
-        // Group edges by source, sort targets ascending per source
-        let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); num_nodes as usize];
-        for &(src, dst, w) in &self.edges {
-            adj[src as usize].push((dst, w));
-        }
-        for list in &mut adj {
-            list.sort_by_key(|&(target, _)| target);
-        }
-
-        // Encode edge_data: interleaved varint deltas + u16 LE weights
-        let mut edge_data = Vec::new();
-        let mut offsets = Vec::with_capacity(num_nodes as usize + 1);
-
-        for list in &adj {
-            offsets.push(edge_data.len() as u32);
-            let mut prev_target = 0u32;
-            for &(target, weight_nm) in list {
-                let delta = target - prev_target;
-                crate::varint::encode(delta, &mut edge_data);
-                // Overflow is data corruption, not a quantization rounding artifact:
-                // silently truncating (saturating-cast) a >655.35nm edge down to
-                // 655.35nm would produce a wrong, undetectable distance. Hard-error
-                // in all builds (not just debug) so it can never ship silently.
-                assert!(
-                    weight_nm <= 655.35,
-                    "edge weight {weight_nm} nm exceeds u16 centi-nm range (max 655.35 nm) — \
-                     cannot encode without data corruption"
-                );
-                // Round to centi-nm, but never let a positive-length edge quantize
-                // to 0: adjacent res-13 H3 cells (passage corridors — Panama, Kiel,
-                // Corinth, Welland) are ~0.0033nm apart, which rounds to 0 and makes
-                // A* treat canal transit as a free edge. Clamp to 1 (0.01nm) instead.
-                let mut weight_u16 = (weight_nm * 100.0).round() as u16;
-                if weight_nm > 0.0 {
-                    weight_u16 = weight_u16.max(1);
-                }
-                edge_data.extend_from_slice(&weight_u16.to_le_bytes());
-                prev_target = target;
-            }
-        }
-        offsets.push(edge_data.len() as u32);
-
-        RoutingGraph {
-            node_h3,
-            offsets,
-            edge_data,
-            shore_dist,
-            coastline_coords: self.coastline_coords,
-            num_nodes,
-            num_edges,
-        }
-    }
-}
-
-impl RoutingGraph {
-    const MAGIC: &'static [u8; 4] = b"ASW\x03";
-
-    /// Serialize: write magic header, then bitcode+zstd-19 payload.
-    pub fn save<W: Write>(&self, mut writer: W) -> anyhow::Result<()> {
-        writer.write_all(Self::MAGIC)?;
-        let encoded = bitcode::serialize(self)?;
-        let mut encoder = zstd::Encoder::new(writer, 19)?;
-        encoder.write_all(&encoded)?;
-        encoder.finish()?;
-        Ok(())
-    }
-
-    /// Deserialize: verify magic header, then bitcode+zstd payload.
-    pub fn load<R: Read>(mut reader: R) -> anyhow::Result<Self> {
-        let mut magic = [0u8; 4];
-        reader.read_exact(&mut magic)?;
-        if &magic[..3] != b"ASW" {
-            anyhow::bail!("Not an ASW graph file (expected ASW magic header). Rebuild required.");
-        }
-        if magic[3] != 3 {
-            anyhow::bail!(
-                "Unsupported ASW graph version {} (expected 3). Rebuild required.",
-                magic[3]
-            );
-        }
-        let mut decoder = zstd::Decoder::new(reader)?;
-        let mut buf = Vec::new();
-        decoder.read_to_end(&mut buf)?;
-        let graph: Self = bitcode::deserialize(&buf)?;
-
-        // Post-deserialization validation
-        let n = graph.num_nodes as usize;
-        anyhow::ensure!(
-            graph.node_h3.len() == n,
-            "node_h3 length {} != num_nodes {}",
-            graph.node_h3.len(),
-            n
-        );
-        anyhow::ensure!(
-            graph.shore_dist.len() == n,
-            "shore_dist length {} != num_nodes {}",
-            graph.shore_dist.len(),
-            n
-        );
-        anyhow::ensure!(
-            graph.offsets.len() == n + 1,
-            "offsets length {} != num_nodes + 1 ({})",
-            graph.offsets.len(),
-            n + 1
-        );
-        anyhow::ensure!(
-            graph.offsets[n] as usize == graph.edge_data.len(),
-            "offsets sentinel {} != edge_data.len() {}",
-            graph.offsets[n],
-            graph.edge_data.len()
-        );
-        for i in 1..graph.offsets.len() {
-            anyhow::ensure!(
-                graph.offsets[i] >= graph.offsets[i - 1],
-                "offsets not monotonic at index {}",
-                i
-            );
-        }
-        // Validate H3 indices
-        for (i, &h3) in graph.node_h3.iter().enumerate() {
-            anyhow::ensure!(
-                h3o::CellIndex::try_from(h3).is_ok(),
-                "invalid H3 index at node {}",
-                i
-            );
-        }
-        // Validate strict sorted order
-        for w in graph.node_h3.windows(2) {
-            anyhow::ensure!(
-                w[0] < w[1],
-                "node_h3 not strictly sorted: {} >= {}",
-                w[0],
-                w[1]
-            );
-        }
-
-        Ok(graph)
-    }
-
-    /// Iterate neighbors of `node` as (target_id, weight_nm) pairs.
-    pub fn neighbors(&self, node: u32) -> NeighborIter<'_> {
-        let start = self.offsets[node as usize] as usize;
-        let end = self.offsets[node as usize + 1] as usize;
-        NeighborIter {
-            data: &self.edge_data[start..end],
-            pos: 0,
-            prev_target: 0,
-        }
-    }
-
-    /// Decode H3 cell center coordinates to f64 (lat, lng) in degrees.
-    pub fn node_pos(&self, node: u32) -> (f64, f64) {
-        let h3 = self.node_h3[node as usize];
-        let cell = h3o::CellIndex::try_from(h3).expect("invalid H3 index");
-        let ll = h3o::LatLng::from(cell);
-        (ll.lat(), ll.lng())
-    }
-
-    /// Drop coastline coordinate data to free memory after it has been
-    /// used to build the CoastlineIndex.
-    pub fn drop_coastline_coords(&mut self) {
-        self.coastline_coords = Vec::new();
-    }
-
-    /// Keep only the largest connected component, remapping node IDs.
-    /// Returns self unchanged when the graph is already one component.
-    pub fn prune_to_main_component(self) -> RoutingGraph {
-        let labels = self.component_labels();
+    /// Keep only the largest connected component, renumbering node ids and
+    /// preserving H3 order. Returns self unchanged when already connected.
+    pub fn prune_to_main_component(mut self) -> Self {
+        let n = self.nodes.len();
+        let labels = component_labels(n, &self.edges);
         let mut comp_sizes: std::collections::HashMap<u32, usize> =
             std::collections::HashMap::new();
         for &root in &labels {
             *comp_sizes.entry(root).or_insert(0) += 1;
         }
-        let main_root = comp_sizes
-            .iter()
-            .max_by_key(|(_, count)| **count)
-            .map(|(&root, _)| root)
-            .unwrap_or(0);
-        let main_count = comp_sizes.get(&main_root).copied().unwrap_or(0);
-        let pruned_count = self.num_nodes as usize - main_count;
-
-        if pruned_count == 0 {
+        let Some((&main_root, &main_count)) = comp_sizes.iter().max_by_key(|(_, c)| **c) else {
+            return self;
+        };
+        if main_count == n {
             return self;
         }
         tracing::info!(
             "Pruning {} nodes in {} small components (keeping {} in main component)",
-            pruned_count,
+            n - main_count,
             comp_sizes.len() - 1,
             main_count,
         );
+        let mut old_to_new: Vec<Option<u32>> = vec![None; n];
+        let mut kept = Vec::with_capacity(main_count);
+        for (old, node) in self.nodes.iter().enumerate() {
+            if labels[old] == main_root {
+                old_to_new[old] = Some(kept.len() as u32);
+                kept.push(*node);
+            }
+        }
+        self.edges = self
+            .edges
+            .iter()
+            .filter_map(|&(s, d)| Some((old_to_new[s as usize]?, old_to_new[d as usize]?)))
+            .collect();
+        self.nodes = kept;
+        self
+    }
 
-        let mut old_to_new: Vec<Option<u32>> = vec![None; self.num_nodes as usize];
-        let mut new_builder = GraphBuilder::new();
-        for old_id in 0..self.num_nodes {
-            if labels[old_id as usize] == main_root {
-                let h3 = self.node_h3[old_id as usize];
-                let (lat, lon) = self.node_pos(old_id);
-                let new_id = new_builder.add_node(h3, lat, lon, self.shore_dist[old_id as usize]);
-                old_to_new[old_id as usize] = Some(new_id);
-            }
+    /// Encode the v4 file image. Panics on builder misuse (unsorted or
+    /// invalid H3 ids): the builder is the only writer, so this is the one
+    /// place the invariants are checked.
+    pub fn build_bytes(self) -> Vec<u8> {
+        for w in self.nodes.windows(2) {
+            assert!(
+                w[0].0 < w[1].0,
+                "nodes must be added in strictly ascending H3 order"
+            );
         }
-        for old_src in 0..self.num_nodes {
-            if labels[old_src as usize] != main_root {
-                continue;
-            }
-            let new_src = old_to_new[old_src as usize].unwrap();
-            for (old_dst, weight) in self.neighbors(old_src) {
-                if let Some(new_dst) = old_to_new[old_dst as usize] {
-                    new_builder.add_directed_edge(new_src, new_dst, weight);
-                }
-            }
+        for &(h3, _) in &self.nodes {
+            assert!(
+                h3o::CellIndex::try_from(h3).is_ok(),
+                "invalid H3 index {h3:#x}"
+            );
         }
-        new_builder.coastline_coords = self.coastline_coords;
-        let pruned = new_builder.build();
-        tracing::info!(
-            "Pruned graph: {} nodes, {} edges",
-            pruned.num_nodes,
-            pruned.num_edges
+        assert!(
+            self.version.len() <= 63,
+            "version string longer than 63 bytes"
         );
-        pruned
+        let num_nodes = self.nodes.len() as u32;
+        let node_h3: Vec<u64> = self.nodes.iter().map(|(h3, _)| *h3).collect();
+        let shore_dist: Vec<u8> = self.nodes.iter().map(|(_, q)| *q).collect();
+
+        // Group edges by source, sort and dedup targets per source
+        let mut adj: Vec<Vec<u32>> = vec![Vec::new(); num_nodes as usize];
+        for &(src, dst) in &self.edges {
+            adj[src as usize].push(dst);
+        }
+        let mut edge_targets = Vec::new();
+        let mut offsets = Vec::with_capacity(num_nodes as usize + 1);
+        let mut num_edges = 0u32;
+        for list in &mut adj {
+            list.sort_unstable();
+            list.dedup();
+            offsets.push(edge_targets.len() as u32);
+            let mut prev = 0u32;
+            for &target in list.iter() {
+                crate::varint::encode(target - prev, &mut edge_targets);
+                prev = target;
+                num_edges += 1;
+            }
+        }
+        offsets.push(edge_targets.len() as u32);
+
+        let coast = CoastlineSections::from_runs(&self.coastline_runs);
+
+        let mut out = vec![0u8; HEADER_LEN];
+        let mut table: Vec<(u64, u64)> = Vec::with_capacity(SECTION_COUNT);
+        fn push<T: Plain>(out: &mut Vec<u8>, table: &mut Vec<(u64, u64)>, data: &[T]) {
+            while !out.len().is_multiple_of(8) {
+                out.push(0);
+            }
+            let bytes = bytes_of(data);
+            table.push((out.len() as u64, bytes.len() as u64));
+            out.extend_from_slice(bytes);
+        }
+        push(&mut out, &mut table, &node_h3);
+        push(&mut out, &mut table, &offsets);
+        push(&mut out, &mut table, &edge_targets);
+        push(&mut out, &mut table, &shore_dist);
+        push(&mut out, &mut table, &coast.runs);
+        push(&mut out, &mut table, &coast.bbox);
+        push(&mut out, &mut table, &coast.heads);
+        push(&mut out, &mut table, &coast.deltas);
+        push(&mut out, &mut table, &coast.grid_offsets);
+        push(&mut out, &mut table, &coast.grid_ids);
+        while !out.len().is_multiple_of(8) {
+            out.push(0);
+        }
+
+        out[..4].copy_from_slice(&MAGIC);
+        out[VERSION_OFF] = self.version.len() as u8;
+        out[VERSION_OFF + 1..VERSION_OFF + 1 + self.version.len()]
+            .copy_from_slice(self.version.as_bytes());
+        out[NUM_NODES_OFF..NUM_NODES_OFF + 4].copy_from_slice(&num_nodes.to_le_bytes());
+        out[NUM_EDGES_OFF..NUM_EDGES_OFF + 4].copy_from_slice(&num_edges.to_le_bytes());
+        out[NUM_RUNS_OFF..NUM_RUNS_OFF + 4]
+            .copy_from_slice(&((coast.runs.len() - 1) as u32).to_le_bytes());
+        for (i, (off, len)) in table.iter().enumerate() {
+            out[TABLE_OFF + i * 16..TABLE_OFF + i * 16 + 8].copy_from_slice(&off.to_le_bytes());
+            out[TABLE_OFF + i * 16 + 8..TABLE_OFF + i * 16 + 16]
+                .copy_from_slice(&len.to_le_bytes());
+        }
+        out
     }
 
-    /// Returns a Vec where `result[i]` is the component root for node `i`.
-    /// Uses u32 to halve memory vs usize (40M nodes * 4 bytes = 160 MB).
-    pub fn component_labels(&self) -> Vec<u32> {
-        let n = self.num_nodes as usize;
-        debug_assert!(n <= u32::MAX as usize);
-        let mut parent: Vec<u32> = (0..n as u32).collect();
-        let mut rank = vec![0u8; n];
-
-        fn find(parent: &mut [u32], x: u32) -> u32 {
-            let mut root = x;
-            while parent[root as usize] != root {
-                root = parent[root as usize];
-            }
-            // Path compression
-            let mut cur = x;
-            while cur != root {
-                let next = parent[cur as usize];
-                parent[cur as usize] = root;
-                cur = next;
-            }
-            root
-        }
-
-        fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
-            let ra = find(parent, a);
-            let rb = find(parent, b);
-            if ra == rb {
-                return;
-            }
-            if rank[ra as usize] < rank[rb as usize] {
-                parent[ra as usize] = rb;
-            } else if rank[ra as usize] > rank[rb as usize] {
-                parent[rb as usize] = ra;
-            } else {
-                parent[rb as usize] = ra;
-                rank[ra as usize] += 1;
-            }
-        }
-
-        for node in 0..n {
-            for (neighbor, _) in self.neighbors(node as u32) {
-                union(&mut parent, &mut rank, node as u32, neighbor);
-            }
-        }
-        drop(rank);
-
-        for i in 0..n as u32 {
-            find(&mut parent, i);
-        }
-        parent
+    /// Build an in-memory graph (tests and small regional builds).
+    pub fn build(self) -> RoutingGraph {
+        RoutingGraph::from_bytes(self.build_bytes()).expect("builder wrote an invalid graph image")
     }
+}
+
+/// Union-find component root per node over an edge list.
+fn component_labels(n: usize, edges: &[(u32, u32)]) -> Vec<u32> {
+    debug_assert!(n <= u32::MAX as usize);
+    let mut parent: Vec<u32> = (0..n as u32).collect();
+    let mut rank = vec![0u8; n];
+
+    fn find(parent: &mut [u32], x: u32) -> u32 {
+        let mut root = x;
+        while parent[root as usize] != root {
+            root = parent[root as usize];
+        }
+        // Path compression
+        let mut cur = x;
+        while cur != root {
+            let next = parent[cur as usize];
+            parent[cur as usize] = root;
+            cur = next;
+        }
+        root
+    }
+
+    fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra == rb {
+            return;
+        }
+        if rank[ra as usize] < rank[rb as usize] {
+            parent[ra as usize] = rb;
+        } else if rank[ra as usize] > rank[rb as usize] {
+            parent[rb as usize] = ra;
+        } else {
+            parent[rb as usize] = ra;
+            rank[ra as usize] += 1;
+        }
+    }
+
+    for &(a, b) in edges {
+        union(&mut parent, &mut rank, a, b);
+    }
+    drop(rank);
+    for i in 0..n as u32 {
+        find(&mut parent, i);
+    }
+    parent
 }
 
 #[cfg(test)]
@@ -420,10 +638,10 @@ mod tests {
         ];
         cells.sort_by_key(|(h3, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for (h3, lat, lng) in &cells {
-            ids.push(b.add_node(*h3, *lat, *lng, 255));
+        for (h3, _, _) in &cells {
+            ids.push(b.add_node(*h3, 255));
         }
 
         // Find which sorted index corresponds to which original cell
@@ -439,18 +657,18 @@ mod tests {
         let n2 = idx_of(u64::from(c2));
         let n3 = idx_of(u64::from(c3));
 
-        b.add_edge(n0, n1, 1.0);
-        b.add_edge(n1, n3, 1.0);
-        b.add_edge(n0, n2, 2.0);
-        b.add_edge(n2, n3, 2.0);
+        b.add_edge(n0, n1);
+        b.add_edge(n1, n3);
+        b.add_edge(n0, n2);
+        b.add_edge(n2, n3);
         b.build()
     }
 
     #[test]
     fn graph_builder_counts() {
         let g = square_graph();
-        assert_eq!(g.num_nodes, 4);
-        assert_eq!(g.num_edges, 8); // 4 bidirectional = 8 directed
+        assert_eq!(g.num_nodes(), 4);
+        assert_eq!(g.num_edges(), 8); // 4 bidirectional = 8 directed
     }
 
     #[test]
@@ -465,106 +683,11 @@ mod tests {
     fn graph_node_pos_h3_roundtrip() {
         let g = square_graph();
         // Each node should decode to a valid lat/lng
-        for i in 0..g.num_nodes {
+        for i in 0..g.num_nodes() {
             let (lat, lng) = g.node_pos(i);
             assert!((-90.0..=90.0).contains(&lat), "lat out of range: {}", lat);
             assert!((-180.0..=180.0).contains(&lng), "lng out of range: {}", lng);
         }
-    }
-
-    #[test]
-    fn graph_save_load_roundtrip() {
-        let g = square_graph();
-        let mut buf = Vec::new();
-        g.save(&mut buf).unwrap();
-
-        // Verify magic header
-        assert_eq!(&buf[0..4], b"ASW\x03");
-
-        let loaded = RoutingGraph::load(std::io::Cursor::new(&buf)).unwrap();
-        assert_eq!(loaded.num_nodes, g.num_nodes);
-        assert_eq!(loaded.num_edges, g.num_edges);
-        assert_eq!(loaded.node_h3, g.node_h3);
-        assert_eq!(loaded.offsets, g.offsets);
-        assert_eq!(loaded.edge_data, g.edge_data);
-
-        // Verify routing works after load
-        let neighbors: Vec<(u32, f32)> = loaded.neighbors(0).collect();
-        assert_eq!(neighbors.len(), 2);
-    }
-
-    #[test]
-    fn load_rejects_old_format() {
-        let fake_old = vec![4, 0, 0, 0, 0, 0, 0, 0];
-        let result = RoutingGraph::load(std::io::Cursor::new(&fake_old));
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("ASW"),
-            "Error should mention ASW format: {}",
-            err_msg
-        );
-    }
-
-    #[test]
-    fn neighbor_iter_decodes_edge_data() {
-        let mut edge_data = Vec::new();
-        crate::varint::encode(5, &mut edge_data);
-        edge_data.extend_from_slice(&150u16.to_le_bytes());
-        crate::varint::encode(5, &mut edge_data);
-        edge_data.extend_from_slice(&200u16.to_le_bytes());
-        crate::varint::encode(32, &mut edge_data);
-        edge_data.extend_from_slice(&350u16.to_le_bytes());
-
-        let end = edge_data.len() as u32;
-
-        // Use a real H3 cell for the dummy node
-        let cell = h3o::LatLng::new(0.0, 0.0)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let graph = RoutingGraph {
-            node_h3: vec![u64::from(cell)],
-            offsets: vec![0, end],
-            edge_data,
-            shore_dist: vec![255],
-            coastline_coords: vec![],
-            num_nodes: 1,
-            num_edges: 3,
-        };
-
-        let neighbors: Vec<(u32, f32)> = graph.neighbors(0).collect();
-        assert_eq!(neighbors.len(), 3);
-        assert_eq!(neighbors[0], (5, 1.50));
-        assert_eq!(neighbors[1], (10, 2.00));
-        assert_eq!(neighbors[2], (42, 3.50));
-    }
-
-    #[test]
-    fn node_pos_h3_decode() {
-        let cell = h3o::LatLng::new(36.848, 28.268)
-            .unwrap()
-            .to_cell(h3o::Resolution::Five);
-        let graph = RoutingGraph {
-            node_h3: vec![u64::from(cell)],
-            offsets: vec![0, 0],
-            edge_data: vec![],
-            shore_dist: vec![255],
-            coastline_coords: vec![],
-            num_nodes: 1,
-            num_edges: 0,
-        };
-        let (lat, lng) = graph.node_pos(0);
-        // H3 cell centers are approximate, but should be close to input
-        assert!(
-            (lat - 36.848).abs() < 0.5,
-            "lat {} too far from 36.848",
-            lat
-        );
-        assert!(
-            (lng - 28.268).abs() < 0.5,
-            "lng {} too far from 28.268",
-            lng
-        );
     }
 
     #[test]
@@ -586,10 +709,10 @@ mod tests {
         ];
         cells.sort_by_key(|(h3, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for (h3, lat, lng) in &cells {
-            ids.push(b.add_node(*h3, *lat, *lng, 255));
+        for (h3, _, _) in &cells {
+            ids.push(b.add_node(*h3, 255));
         }
 
         let idx_of = |target_h3: u64| -> u32 {
@@ -603,13 +726,13 @@ mod tests {
         let n1 = idx_of(u64::from(c1));
         let n2 = idx_of(u64::from(c2));
 
-        b.add_edge(n0, n1, 186.0);
-        b.add_edge(n0, n2, 50.0);
+        b.add_edge(n0, n1);
+        b.add_edge(n0, n2);
 
         let g = b.build();
 
-        assert_eq!(g.num_nodes, 3);
-        assert_eq!(g.num_edges, 4);
+        assert_eq!(g.num_nodes(), 3);
+        assert_eq!(g.num_edges(), 4);
 
         let n0_neighbors: Vec<(u32, f32)> = g.neighbors(n0).collect();
         assert_eq!(n0_neighbors.len(), 2);
@@ -617,61 +740,210 @@ mod tests {
         let n1_neighbors: Vec<(u32, f32)> = g.neighbors(n1).collect();
         assert_eq!(n1_neighbors.len(), 1);
         assert_eq!(n1_neighbors[0].0, n0);
-        assert!((n1_neighbors[0].1 - 186.0).abs() < 0.01);
+        let (lat0, lon0) = g.node_pos(n0);
+        let (lat1, lon1) = g.node_pos(n1);
+        let expected = crate::h3::haversine_nm(lat1, lon1, lat0, lon0);
+        assert!((n1_neighbors[0].1 as f64 - expected).abs() < 1e-3);
     }
 
-    /// Regression test for finding #2 (2026-07-06 project review): adjacent
-    /// res-13 H3 cells (used in passage corridors — Panama, Kiel, Corinth,
-    /// Welland) are ~0.0033 nm apart. The old `(weight_nm * 100.0).round() as
-    /// u16` quantization rounded that to 0, making canal transit edges free
-    /// for A*. A quantized weight must never be zero for a positive-length edge.
-    #[test]
-    fn quantized_weight_never_zero_for_tiny_res13_edge() {
-        let center = h3o::LatLng::new(9.08, -79.68) // near the Panama Canal
-            .unwrap()
-            .to_cell(h3o::Resolution::Thirteen);
-        let neighbor = crate::h3::neighbors(center)[0];
-
-        let (lat0, lon0) = crate::h3::cell_center(center);
-        let (lat1, lon1) = crate::h3::cell_center(neighbor);
-        let true_dist_nm = crate::h3::haversine_nm(lat0, lon0, lat1, lon1);
-        assert!(
-            true_dist_nm < 0.005,
-            "expected a sub-0.005nm res-13 edge, got {true_dist_nm} nm"
-        );
-
-        let mut b = GraphBuilder::new();
-        let n0 = b.add_node(u64::from(center), lat0, lon0, 255);
-        let n1 = b.add_node(u64::from(neighbor), lat1, lon1, 255);
-        b.add_edge(n0, n1, true_dist_nm as f32);
-        let g = b.build();
-
-        let neighbors: Vec<(u32, f32)> = g.neighbors(n0.min(n1)).collect();
-        assert_eq!(neighbors.len(), 1);
-        assert!(
-            neighbors[0].1 >= 0.01,
-            "quantized weight {} nm should clamp to >= 0.01 nm (1 centi-nm), not round to 0",
-            neighbors[0].1
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "exceeds u16")]
-    fn build_hard_errors_on_weight_overflowing_u16() {
+    fn square_graph_bytes() -> Vec<u8> {
         let c0 = h3o::LatLng::new(0.0, 0.0)
             .unwrap()
             .to_cell(h3o::Resolution::Five);
         let c1 = h3o::LatLng::new(0.0, 1.0)
             .unwrap()
             .to_cell(h3o::Resolution::Five);
+        let mut cells = [u64::from(c0), u64::from(c1)];
+        cells.sort_unstable();
+        let mut b = GraphBuilder::default();
+        let n0 = b.add_node(cells[0], 255);
+        let n1 = b.add_node(cells[1], 255);
+        b.add_edge(n0, n1);
+        b.build_bytes()
+    }
 
-        let mut b = GraphBuilder::new();
-        let n0 = b.add_node(u64::from(c0), 0.0, 0.0, 255);
-        let n1 = b.add_node(u64::from(c1), 0.0, 1.0, 255);
-        // 655.36 nm exceeds the u16 centi-nm range (max 655.35 nm) — must be
-        // a loud failure, not a silently truncated weight.
-        b.add_edge(n0, n1, 655.36);
-        let _ = b.build();
+    #[test]
+    fn build_bytes_layout_header() {
+        let b = GraphBuilder::with_version("0.7.0 2026-10-03");
+        let bytes = b.build_bytes();
+        assert_eq!(&bytes[0..4], b"ASW\x04");
+        assert_eq!(bytes[8] as usize, "0.7.0 2026-10-03".len());
+        assert_eq!(&bytes[9..25], b"0.7.0 2026-10-03");
+        assert_eq!(bytes.len() % 8, 0);
+        let g = RoutingGraph::from_bytes(bytes).unwrap();
+        assert_eq!(g.version(), "0.7.0 2026-10-03");
+        assert_eq!(g.num_nodes(), 0);
+        assert_eq!(g.coastline().run_count(), 0);
+    }
+
+    #[test]
+    fn save_open_roundtrip_through_mmap() {
+        let g = square_graph();
+        let dir = std::env::temp_dir().join(format!("asw-v4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("square.graph");
+        g.save(&path).unwrap();
+        let loaded = RoutingGraph::open(&path, false).unwrap();
+        assert_eq!(loaded.num_nodes(), g.num_nodes());
+        assert_eq!(loaded.num_edges(), g.num_edges());
+        assert_eq!(loaded.node_h3s(), g.node_h3s());
+        let a: Vec<(u32, f32)> = loaded.neighbors(0).collect();
+        let b: Vec<(u32, f32)> = g.neighbors(0).collect();
+        assert_eq!(a, b);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn coastline_roundtrips_through_the_file() {
+        let b = GraphBuilder {
+            coastline_runs: vec![vec![(28.4, 36.0), (28.4, 37.5)]],
+            ..GraphBuilder::default()
+        };
+        let g = b.build();
+        let coast = g.coastline();
+        assert_eq!(coast.run_count(), 1);
+        assert!(coast.crosses_land(28.3, 36.5, 28.5, 36.5));
+        // The 1.5° step is subdivided into i16-sized collinear steps.
+        let pts: Vec<(f64, f64)> = coast.run_points(0).collect();
+        assert_eq!((pts[0], *pts.last().unwrap()), ((28.4, 36.0), (28.4, 37.5)));
+        assert!(pts.iter().all(|p| p.0 == 28.4));
+    }
+
+    #[test]
+    fn from_bytes_rejects_v3_and_garbage() {
+        let err = RoutingGraph::from_bytes(b"ASW\x03whatever".to_vec()).unwrap_err();
+        assert!(
+            err.to_string().contains("Unsupported ASW graph version 3"),
+            "got: {err}"
+        );
+        assert!(RoutingGraph::from_bytes(vec![4, 0, 0, 0]).is_err());
+        assert!(RoutingGraph::from_bytes(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn from_bytes_rejects_truncated_file() {
+        let bytes = square_graph_bytes();
+        let cut = bytes[..bytes.len() - 8].to_vec();
+        let err = RoutingGraph::from_bytes(cut).unwrap_err();
+        assert!(err.to_string().contains("beyond end of file"), "got: {err}");
+    }
+
+    #[test]
+    fn from_bytes_rejects_misaligned_section() {
+        let mut bytes = square_graph_bytes();
+        // Section 0 offset lives at header byte 88; nudge it by 4.
+        let off = u64::from_le_bytes(bytes[88..96].try_into().unwrap());
+        bytes[88..96].copy_from_slice(&(off + 4).to_le_bytes());
+        let err = RoutingGraph::from_bytes(bytes).unwrap_err();
+        assert!(err.to_string().contains("aligned"), "got: {err}");
+    }
+
+    #[test]
+    fn from_bytes_rejects_wrong_section_length() {
+        let mut bytes = square_graph_bytes();
+        // num_nodes at byte 72: claim one node more than stored.
+        let n = u32::from_le_bytes(bytes[72..76].try_into().unwrap());
+        bytes[72..76].copy_from_slice(&(n + 1).to_le_bytes());
+        assert!(RoutingGraph::from_bytes(bytes).is_err());
+    }
+
+    /// Corrupt-but-well-formed files: section lengths match the counts, but
+    /// a CSR table is not monotonic. Must fail at open, not panic at query.
+    #[test]
+    fn from_bytes_rejects_non_monotonic_csr_tables() {
+        let bytes = square_graph_bytes();
+        let g = RoutingGraph::from_bytes(bytes.clone()).unwrap();
+        let sec = |i: usize| {
+            let off = u64::from_le_bytes(bytes[88 + i * 16..96 + i * 16].try_into().unwrap());
+            off as usize
+        };
+        // offsets[0] must be 0: write 1 into it.
+        let mut b1 = bytes.clone();
+        let o = sec(1);
+        b1[o..o + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert!(RoutingGraph::from_bytes(b1).is_err(), "offsets[0] != 0");
+        // grid_offsets: make cell 1 smaller than cell 0 (non-monotonic).
+        let mut b2 = bytes.clone();
+        let o = sec(8);
+        b2[o..o + 4].copy_from_slice(&5u32.to_le_bytes());
+        assert!(
+            RoutingGraph::from_bytes(b2).is_err(),
+            "grid_offsets not monotonic"
+        );
+        // coast_runs[0] must be 0.
+        let o = sec(4);
+        let mut b3 = bytes.clone();
+        b3[o..o + 4].copy_from_slice(&1u32.to_le_bytes());
+        assert!(RoutingGraph::from_bytes(b3).is_err(), "coast_runs[0] != 0");
+        drop(g);
+    }
+
+    #[test]
+    #[should_panic(expected = "strictly ascending")]
+    fn builder_panics_on_unsorted_nodes() {
+        let c0 = h3o::LatLng::new(0.0, 0.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let c1 = h3o::LatLng::new(1.0, 1.0)
+            .unwrap()
+            .to_cell(h3o::Resolution::Five);
+        let (lo, hi) = (
+            u64::from(c0).min(u64::from(c1)),
+            u64::from(c0).max(u64::from(c1)),
+        );
+        let mut b = GraphBuilder::default();
+        b.add_node(hi, 255);
+        b.add_node(lo, 255);
+        let _ = b.build_bytes();
+    }
+
+    #[test]
+    fn neighbor_weights_are_centre_to_centre_haversine() {
+        let g = square_graph();
+        for n in 0..g.num_nodes() {
+            let (lat, lon) = g.node_pos(n);
+            for (t, w) in g.neighbors(n) {
+                let (tlat, tlon) = g.node_pos(t);
+                let expected = crate::h3::haversine_nm(lat, lon, tlat, tlon);
+                assert!(
+                    (w as f64 - expected).abs() < 1e-3,
+                    "edge {n}->{t}: {w} vs {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn neighbor_ids_match_neighbors_without_decoding() {
+        let g = square_graph();
+        for n in 0..g.num_nodes() {
+            let ids: Vec<u32> = g.neighbor_ids(n).collect();
+            let full: Vec<u32> = g.neighbors(n).map(|(t, _)| t).collect();
+            assert_eq!(ids, full);
+        }
+    }
+
+    #[test]
+    fn res13_edge_weight_is_true_distance() {
+        let center = h3o::LatLng::new(9.08, -79.68)
+            .unwrap()
+            .to_cell(h3o::Resolution::Thirteen);
+        let neighbor = crate::h3::neighbors(center)[0];
+        let (lat0, lon0) = crate::h3::cell_center(center);
+        let (lat1, lon1) = crate::h3::cell_center(neighbor);
+        let true_dist_nm = crate::h3::haversine_nm(lat0, lon0, lat1, lon1);
+        assert!(true_dist_nm < 0.005);
+
+        let mut cells = [u64::from(center), u64::from(neighbor)];
+        cells.sort_unstable();
+        let mut b = GraphBuilder::default();
+        let n0 = b.add_node(cells[0], 255);
+        let n1 = b.add_node(cells[1], 255);
+        b.add_edge(n0, n1);
+        let g = b.build();
+        let (_, w) = g.neighbors(n0).next().unwrap();
+        assert!(w > 0.0, "canal edges must never be free");
+        assert!((w as f64 - true_dist_nm).abs() < 1e-6);
     }
 
     #[test]
@@ -683,16 +955,6 @@ mod tests {
         assert_eq!(quantize_shore_dist(5.1), 255);
         assert_eq!(quantize_shore_dist(99.0), 255); // saturates
         assert_eq!(quantize_shore_dist(-1.0), 0); // clamps
-    }
-
-    #[test]
-    fn load_rejects_v2_files() {
-        let bytes = b"ASW\x02whatever".to_vec();
-        let err = RoutingGraph::load(&bytes[..]).unwrap_err();
-        assert!(
-            err.to_string().contains("Unsupported ASW graph version 2"),
-            "got: {err}"
-        );
     }
 
     #[test]
@@ -711,22 +973,24 @@ mod tests {
             .collect();
         entries.sort_by_key(|(h3, _, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for &(h3, lat, lng, q) in &entries {
-            ids.push(b.add_node(h3, lat, lng, q));
+        for &(h3, _, _, q) in &entries {
+            ids.push(b.add_node(h3, q));
         }
         // Chain the first three entries (by sorted order); leave the last isolated.
-        b.add_edge(ids[0], ids[1], 1.0);
-        b.add_edge(ids[1], ids[2], 1.0);
-        let g = b.build();
-
-        let pruned = g.prune_to_main_component();
-        assert_eq!(pruned.num_nodes, 3);
+        b.add_edge(ids[0], ids[1]);
+        b.add_edge(ids[1], ids[2]);
+        let pruned = b.prune_to_main_component().build();
+        assert_eq!(pruned.num_nodes(), 3);
         // Every surviving node keeps the shore_dist of the entry with its H3 index.
-        for (i, &h3) in pruned.node_h3.iter().enumerate() {
+        for (i, &h3) in pruned.node_h3s().iter().enumerate() {
             let orig = entries.iter().find(|e| e.0 == h3).unwrap();
-            assert_eq!(pruned.shore_dist[i], orig.3, "node {i} shore_dist mismatch");
+            assert_eq!(
+                pruned.shore_dist(i as u32),
+                orig.3,
+                "node {i} shore_dist mismatch"
+            );
         }
     }
 
@@ -746,18 +1010,17 @@ mod tests {
         ];
         cells.sort_by_key(|(h3, _, _, _)| *h3);
 
-        let mut b = GraphBuilder::new();
+        let mut b = GraphBuilder::default();
         let mut ids = Vec::new();
-        for &(h3, lat, lng, q) in &cells {
-            ids.push(b.add_node(h3, lat, lng, q));
+        for &(h3, _, _, q) in &cells {
+            ids.push(b.add_node(h3, q));
         }
-        b.add_edge(ids[0], ids[1], 1.0);
-        let g = b.build();
-
-        let mut buf = Vec::new();
-        g.save(&mut buf).unwrap();
-        let loaded = RoutingGraph::load(&buf[..]).unwrap();
-        assert_eq!(loaded.shore_dist, g.shore_dist);
-        assert_eq!(loaded.shore_dist.len(), loaded.num_nodes as usize);
+        b.add_edge(ids[0], ids[1]);
+        let loaded = RoutingGraph::from_bytes(b.build_bytes()).unwrap();
+        let q: Vec<u8> = (0..loaded.num_nodes())
+            .map(|i| loaded.shore_dist(i))
+            .collect();
+        let expected: Vec<u8> = cells.iter().map(|c| c.3).collect();
+        assert_eq!(q, expected);
     }
 }

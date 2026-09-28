@@ -1,17 +1,12 @@
 [package]
 name = "asw-core"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
 h3o.workspace = true
 geo.workspace = true
-rstar.workspace = true
-rayon.workspace = true
-serde.workspace = true
-bitcode.workspace = true
-ordered-float.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
-zstd.workspace = true
+memmap2.workspace = true

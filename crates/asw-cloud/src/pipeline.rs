@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use tracing::info;
 
@@ -48,52 +47,22 @@ fn remote_hash_path() -> String {
     format!("{}/src.hash", REMOTE_DATA_DIR)
 }
 
-/// Hash over the workspace's Rust source: every `.rs` file under `crates/`,
-/// plus the workspace `Cargo.toml` and `Cargo.lock`, hashed in a fixed
-/// (sorted-path) order so the result doesn't depend on filesystem iteration
-/// order and is stable across runs on unchanged content.
-///
-/// Used to detect a stale compiled binary on a kept build server: after the
-/// v2->v3 graph format bump, a server whose binary merely still answers
-/// `--version` is not proof it was compiled from the current source — only a
-/// byte-for-byte source hash match is.
-///
-/// A cache key, not a security property. ponytail: DefaultHasher is not
-/// guaranteed stable across Rust releases — worst case a toolchain bump
-/// causes one spurious remote rebuild; switch back to a fixed algorithm if
-/// that ever matters.
-fn source_hash(workspace_root: &Path) -> Result<String> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    collect_rs_files(&workspace_root.join("crates"), &mut paths)?;
-    paths.push(workspace_root.join("Cargo.toml"));
-    paths.push(workspace_root.join("Cargo.lock"));
-    paths.sort();
-
-    let mut hasher = DefaultHasher::new();
-    for path in &paths {
-        if let Ok(contents) = std::fs::read(path) {
-            path.to_string_lossy().as_bytes().hash(&mut hasher);
-            contents.hash(&mut hasher);
-        }
-    }
-    Ok(format!("{:016x}", hasher.finish()))
-}
-
-/// Recursively collect every `.rs` file under `dir` into `out`.
-fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir).with_context(|| format!("Failed to read {:?}", dir))? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rs_files(&path, out)?;
-        } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            out.push(path);
-        }
-    }
-    Ok(())
+/// Commit the remote build was (or will be) compiled from. `step_upload_src`
+/// uploads `git archive HEAD`, so the HEAD sha is exactly what identifies the
+/// uploaded source; a dirty working tree changes nothing here (see
+/// `warn_if_dirty` in asw-cli).
+fn head_commit(workspace_root: &Path) -> Result<String> {
+    let out = std::process::Command::new("git")
+        .args(["-C", &workspace_root.to_string_lossy(), "rev-parse", "HEAD"])
+        .output()
+        .context("Failed to run git rev-parse")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git rev-parse HEAD failed in {:?}: {}",
+        workspace_root,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 impl Pipeline {
@@ -108,10 +77,8 @@ impl Pipeline {
             |p| p.step_provision(),
         )?;
 
-        // One probe gates both upload_src and compile: a stale binary that
-        // still answers --version is not proof it matches the current
-        // source, so the two are only "cached" together, when the remote
-        // hash marker matches the local source hash.
+        // One probe gates both upload_src and compile: they are only "cached"
+        // together, when the remote marker matches the local HEAD commit.
         let src_cached = self.remote_src_hash_matches().unwrap_or(false);
         self.run_step(
             1,
@@ -196,10 +163,10 @@ impl Pipeline {
     }
 
     fn ssh_cfg(&self) -> SshConfig {
-        SshConfig::new(
-            self.host.clone().unwrap_or_default(),
-            self.ssh_key_path.clone(),
-        )
+        SshConfig {
+            host: self.host.clone().unwrap_or_default(),
+            key_path: self.ssh_key_path.clone(),
+        }
     }
 
     /// Remote path of the graph file for this run's bbox. Including the
@@ -220,14 +187,11 @@ impl Pipeline {
             .unwrap_or(false)
     }
 
-    /// True only if the remote hash marker (written by `step_compile` after
-    /// a successful build) exists and matches the local source hash. Unlike
-    /// the old "does the remote binary run at all" probe, this can't be
-    /// fooled by a stale binary from before a source/format change — it
-    /// still answers `--version`, but that's not proof it was compiled from
-    /// the current source.
+    /// True only if the remote marker (written by `step_compile` after a
+    /// successful build) exists and matches the local HEAD commit, so a stale
+    /// binary from an older commit is never mistaken for up to date.
     fn remote_src_hash_matches(&self) -> Result<bool> {
-        let local_hash = source_hash(&self.rust_src_dir)?;
+        let local_hash = head_commit(&self.rust_src_dir)?;
         let cfg = self.ssh_cfg();
         let remote_hash = ssh::run_ssh(
             &cfg,
@@ -339,10 +303,9 @@ impl Pipeline {
             ),
         )?;
 
-        // Record the source hash that produced this binary so a later run on
-        // a kept server can tell a stale compile from an up-to-date one
-        // (see `remote_src_hash_matches`).
-        let hash = source_hash(&self.rust_src_dir)?;
+        // Record the commit that produced this binary so a later run on a
+        // kept server can tell a stale compile from an up-to-date one.
+        let hash = head_commit(&self.rust_src_dir)?;
         ssh::run_ssh(
             &cfg,
             &format!(
@@ -548,66 +511,6 @@ mod tests {
         std::fs::write(bbox_sidecar_path(&output_path), bbox_slug(bbox)).unwrap();
 
         assert!(pipeline.local_download_cache_matches());
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    // ── Finding 4: source-hash gates the upload_src/compile cache ──────────
-
-    #[test]
-    fn source_hash_is_stable_across_repeated_calls() {
-        let dir = unique_tmp_dir("hash-stable");
-        std::fs::create_dir_all(dir.join("crates/asw-core/src")).unwrap();
-        std::fs::write(dir.join("crates/asw-core/src/lib.rs"), b"fn a() {}").unwrap();
-        std::fs::write(dir.join("Cargo.toml"), b"[workspace]").unwrap();
-        std::fs::write(dir.join("Cargo.lock"), b"# lock").unwrap();
-
-        let h1 = source_hash(&dir).unwrap();
-        let h2 = source_hash(&dir).unwrap();
-        assert_eq!(h1, h2, "hash must be stable across repeated calls");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn source_hash_changes_when_source_content_changes() {
-        let dir = unique_tmp_dir("hash-changes");
-        std::fs::create_dir_all(dir.join("crates/asw-core/src")).unwrap();
-        std::fs::write(dir.join("crates/asw-core/src/lib.rs"), b"fn a() {}").unwrap();
-        std::fs::write(dir.join("Cargo.toml"), b"[workspace]").unwrap();
-        std::fs::write(dir.join("Cargo.lock"), b"# lock").unwrap();
-
-        let before = source_hash(&dir).unwrap();
-
-        std::fs::write(dir.join("crates/asw-core/src/lib.rs"), b"fn a() { 1 }").unwrap();
-        let after = source_hash(&dir).unwrap();
-
-        assert_ne!(
-            before, after,
-            "hash must change when a source file's content changes"
-        );
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn source_hash_ignores_non_rs_files_outside_cargo_toml_lock() {
-        let dir = unique_tmp_dir("hash-ignores");
-        std::fs::create_dir_all(dir.join("crates/asw-core/src")).unwrap();
-        std::fs::write(dir.join("crates/asw-core/src/lib.rs"), b"fn a() {}").unwrap();
-        std::fs::write(dir.join("Cargo.toml"), b"[workspace]").unwrap();
-        std::fs::write(dir.join("Cargo.lock"), b"# lock").unwrap();
-
-        let before = source_hash(&dir).unwrap();
-
-        // An unrelated file (e.g. a README or asset) must not affect the hash.
-        std::fs::write(dir.join("crates/asw-core/README.md"), b"docs change").unwrap();
-        let after = source_hash(&dir).unwrap();
-
-        assert_eq!(
-            before, after,
-            "non-.rs files (other than Cargo.toml/Cargo.lock) must not affect the hash"
-        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

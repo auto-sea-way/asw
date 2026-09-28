@@ -18,3 +18,6 @@ Thumbs.db
 .superpowers/
 *.zip
 land-polygons-*
+# Local browser-automation output and screenshots
+.playwright-mcp/
+/asw-routes-light.png

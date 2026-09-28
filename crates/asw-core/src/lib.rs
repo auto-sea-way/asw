@@ -1,9 +1,10 @@
 pub mod astar_pool;
-pub mod geo_index;
+pub mod coast;
 pub mod graph;
 pub mod h3;
 pub mod passages;
 pub mod routing;
+pub mod snap;
 pub mod varint;
 
 /// H3 resolution for the coarsest ocean tier
@@ -35,5 +36,5 @@ pub const CASCADE: &[(u8, f64)] = &[
     (9, 0.002),
 ];
 
-/// Max vertices per coastline segment for R-tree indexing
+/// Max vertices per coastline run, so the grid index stays selective
 pub const COASTLINE_SUBDIVIDE_MAX: usize = 256;

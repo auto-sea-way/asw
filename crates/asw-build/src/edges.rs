@@ -1,15 +1,14 @@
+use crate::land_index::LandIndex;
 use anyhow::Result;
-use asw_core::geo_index::LandIndex;
-use asw_core::h3::{cell_center, haversine_nm, neighbors};
+use asw_core::h3::{cell_center, neighbors};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
 use h3o::{CellIndex, Resolution};
-use indicatif::{ProgressBar, ProgressStyle};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use tracing::info;
 
-/// An edge: (source_node_id, target_node_id, cost_nm)
-pub type Edge = (u32, u32, f32);
+/// An edge: (source_node_id, target_node_id). Length is recomputed at query time.
+pub type Edge = (u32, u32);
 
 /// Build all edges: same-resolution + cross-resolution, with land-crossing removal.
 pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result<Vec<Edge>> {
@@ -17,28 +16,20 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
 
     // Step 1: Same-resolution edges (parallel)
     info!("Building same-resolution edges...");
-    let pb = ProgressBar::new(cell_list.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40} {pos}/{len} same-res edges")
-            .unwrap(),
-    );
+    let pb = crate::cells::make_progress(cell_list.len(), "same-res edges");
 
     let same_res_edges: Vec<Edge> = cell_list
         .par_iter()
         .flat_map(|&(cell, src_id)| {
             pb.inc(1);
             let cell_res = cell.resolution();
-            let (src_lat, src_lon) = cell_center(cell);
             let mut edges = Vec::new();
 
             for neighbor in neighbors(cell) {
                 if neighbor.resolution() == cell_res {
                     if let Some(&dst_id) = cells.get(&neighbor) {
                         if src_id < dst_id {
-                            let (dst_lat, dst_lon) = cell_center(neighbor);
-                            let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
-                            edges.push((src_id, dst_id, cost));
+                            edges.push((src_id, dst_id));
                         }
                     }
                 }
@@ -82,14 +73,9 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
             "Building cross-resolution edges: res-{} ↔ res-{}...",
             fine_res, coarse_res
         );
-        let pb = ProgressBar::new(fine_cells.len() as u64);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template(&format!(
-                    "[{{elapsed_precise}}] {{bar:40}} {{pos}}/{{len}} cross-res {}-{}",
-                    fine_res, coarse_res
-                ))
-                .unwrap(),
+        let pb = crate::cells::make_progress(
+            fine_cells.len(),
+            &format!("cross-res {}-{}", fine_res, coarse_res),
         );
 
         let cross_edges: Vec<Edge> = fine_cells
@@ -97,7 +83,6 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
             .flat_map(|&(cell, src_id)| {
                 pb.inc(1);
                 let mut edges = Vec::new();
-                let (src_lat, src_lon) = cell_center(cell);
 
                 if let Some(parent_cell) = cell.parent(coarse_resolution) {
                     // Connect to the parent itself and its neighbors, where
@@ -108,14 +93,12 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
                     {
                         if let Some(&dst_id) = cells.get(&target) {
                             if target.resolution() == coarse_resolution {
-                                let (dst_lat, dst_lon) = cell_center(target);
-                                let cost = haversine_nm(src_lat, src_lon, dst_lat, dst_lon) as f32;
                                 let (a, b) = if src_id < dst_id {
                                     (src_id, dst_id)
                                 } else {
                                     (dst_id, src_id)
                                 };
-                                edges.push((a, b, cost));
+                                edges.push((a, b));
                             }
                         }
                     }
@@ -145,12 +128,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     // Step 3: Land crossing removal (parallel)
     info!("Removing land-crossing edges...");
     let total = all_edges.len();
-    let pb = ProgressBar::new(total as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("[{elapsed_precise}] {bar:40} {pos}/{len} land check")
-            .unwrap(),
-    );
+    let pb = crate::cells::make_progress(total, "land check");
 
     let node_positions: HashMap<u32, (f64, f64)> = cells
         .iter()
@@ -162,14 +140,14 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
 
     let valid_edges: Vec<Edge> = all_edges
         .par_iter()
-        .filter_map(|&(src, dst, cost)| {
+        .filter_map(|&(src, dst)| {
             pb.inc(1);
             let (lat1, lon1) = node_positions[&src];
             let (lat2, lon2) = node_positions[&dst];
             let mid_lat = (lat1 + lat2) / 2.0;
             let mid_lon = wrap_aware_mid_lon(lon1, lon2);
             if water.is_water(mid_lon, mid_lat) {
-                Some((src, dst, cost))
+                Some((src, dst))
             } else {
                 None
             }

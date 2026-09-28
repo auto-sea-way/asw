@@ -33,60 +33,26 @@ pub fn ensure_graph(path: &Path, url: Option<&str>) -> Result<()> {
         .build()
         .context("Failed to build HTTP client")?;
 
-    let resp = client
+    let mut resp = client
         .get(url)
         .send()
-        .context("Failed to start graph download")?;
-
-    if !resp.status().is_success() {
-        bail!("Download failed: HTTP {}", resp.status());
-    }
-
-    let total = resp.content_length();
-    if let Some(size) = total {
+        .context("Failed to start graph download")?
+        .error_for_status()
+        .context("Graph download returned a non-success HTTP status")?;
+    if let Some(size) = resp.content_length() {
         info!("Download size: {:.0} MB", size as f64 / 1_000_000.0);
     }
 
-    let mut reader = resp;
     let mut file = std::fs::File::create(&tmp_path)
         .with_context(|| format!("Failed to create {:?}", tmp_path))?;
-
-    let mut downloaded: u64 = 0;
-    let mut last_logged: u64 = 0;
-    let mut buf = [0u8; 64 * 1024];
-
-    loop {
-        let n = std::io::Read::read(&mut reader, &mut buf).context("Download read error")?;
-        if n == 0 {
-            break;
-        }
-        std::io::Write::write_all(&mut file, &buf[..n]).context("Failed to write graph file")?;
-        downloaded += n as u64;
-
-        if downloaded - last_logged >= 50_000_000 {
-            if let Some(total) = total {
-                info!(
-                    "Downloaded {:.0}/{:.0} MB ({:.0}%)",
-                    downloaded as f64 / 1_000_000.0,
-                    total as f64 / 1_000_000.0,
-                    (downloaded as f64 / total as f64) * 100.0
-                );
-            } else {
-                info!("Downloaded {:.0} MB", downloaded as f64 / 1_000_000.0);
-            }
-            last_logged = downloaded;
-        }
-    }
-
+    let downloaded = std::io::copy(&mut resp, &mut file).context("Failed to write graph file")?;
     drop(file);
 
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path))?;
-
     info!(
         "Graph downloaded: {:.1} MB",
         downloaded as f64 / 1_000_000.0
     );
-
     Ok(())
 }

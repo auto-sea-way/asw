@@ -25,7 +25,8 @@ pub fn cell_boundary(cell: CellIndex) -> Vec<(f64, f64)> {
 /// are "unwrapped" here into a continuous range (adding/subtracting 360 as needed) so
 /// the ring stays compact; its coordinates may then fall slightly outside [-180, 180]
 /// for a transmeridian cell. `LandIndex::intersects_polygon`/`contains_polygon` know
-/// how to query such polygons correctly (see `transmeridian_variants` in geo_index.rs).
+/// how to query such polygons correctly (see `transmeridian_variants` in
+/// asw-build's land_index.rs).
 pub fn cell_polygon(cell: CellIndex) -> geo::Polygon<f64> {
     let boundary = cell.boundary();
     let mut coords: Vec<geo::Coord<f64>> = Vec::with_capacity(boundary.len() + 1);

@@ -9,6 +9,11 @@ use tracing::info;
 
 use crate::shapefile::{polygon_intersects_bbox, Bbox};
 
+/// OSM `water=` tag values kept as canal water. Features without a matching
+/// tag (unnamed ponds, etc.) are excluded to avoid pulling in thousands of
+/// irrelevant water bodies from the regional PBF.
+const WATER_TYPES: &[&str] = &["lock", "reservoir", "lake", "river", "canal"];
+
 /// Extract canal water polygons for all passages that have a `geofabrik_url`.
 pub fn extract_canal_water(
     passages: &[Passage],
@@ -26,10 +31,6 @@ pub fn extract_canal_water(
             Some(url) => url,
             None => continue,
         };
-
-        if passage.water_types.is_empty() {
-            continue;
-        }
 
         // Skip if passage corridor doesn't overlap build bbox
         if let Some(bb) = build_bbox {
@@ -140,8 +141,6 @@ fn extract_single_passage(
     let geojson: geojson::GeoJson = geojson_str.parse().context("Failed to parse GeoJSON")?;
 
     let (min_lon, min_lat, max_lon, max_lat) = passage.corridor;
-    let water_types: std::collections::HashSet<&str> =
-        passage.water_types.iter().copied().collect();
 
     let mut polygons = Vec::new();
 
@@ -152,11 +151,8 @@ fn extract_single_passage(
                 if natural != "water" {
                     continue;
                 }
-                // Require a matching water= tag. Features without a water tag
-                // (unnamed ponds, etc.) are excluded to avoid pulling in thousands
-                // of irrelevant water bodies from the regional PBF.
                 let water_val = props.get("water").and_then(|v| v.as_str()).unwrap_or("");
-                if !water_types.contains(water_val) {
+                if !WATER_TYPES.contains(&water_val) {
                     continue;
                 }
             } else {

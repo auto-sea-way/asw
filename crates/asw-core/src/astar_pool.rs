@@ -1,6 +1,6 @@
-/// Pre-allocated buffers for A* search to avoid per-request allocation.
+/// Reusable buffers for A* search to avoid per-request allocation.
 ///
-/// Per-node state (`g_score`, `came_from`, `closed`, `h_score`) is guarded by
+/// Per-node state (`g_score`, `came_from`, `closed`, `h_score`, `pos`) is guarded by
 /// a generation counter (`gen`/`current_gen`) instead of being eagerly
 /// cleared: a node's entry is only meaningful when `gen[node] ==
 /// current_gen`. `reset()` therefore just bumps `current_gen` (O(1)) rather
@@ -17,17 +17,25 @@ pub struct AstarBuffers {
     /// under the same generation guard as the other fields. Populated lazily
     /// by the caller on first `touch()` of a node.
     pub(crate) h_score: Vec<f32>,
+    /// Cached cell centre `[lat, lon]` per node, filled on first touch
+    /// alongside `h_score`, so edge relaxation never decodes an H3 cell.
+    pub(crate) pos: Vec<[f64; 2]>,
     gen: Vec<u32>,
     current_gen: u32,
 }
 
 impl AstarBuffers {
     pub fn new(num_nodes: usize) -> Self {
+        // All-zero fills: `vec![0; n]` uses calloc, so pages are mapped lazily
+        // and resident memory grows with the search, not the graph. The
+        // initial values are never read: `touch()` initialises a slot on
+        // first use in a generation.
         Self {
-            g_score: vec![f32::MAX; num_nodes],
-            came_from: vec![u32::MAX; num_nodes],
+            g_score: vec![0.0; num_nodes],
+            came_from: vec![0; num_nodes],
             closed: vec![false; num_nodes],
             h_score: vec![0.0; num_nodes],
+            pos: vec![[0.0, 0.0]; num_nodes],
             gen: vec![0; num_nodes],
             // Start at 1 so the all-zero `gen` vec from a fresh allocation is
             // immediately treated as "never touched" (0 != 1).
@@ -50,11 +58,11 @@ impl AstarBuffers {
     /// Ensure `node`'s slot is valid for the current generation. Returns
     /// `true` if this is the first touch this generation (in which case the
     /// caller is responsible for populating any derived per-node state, e.g.
-    /// the cached heuristic in `h_score`) — `g_score`/`came_from`/`closed`
+    /// the cached heuristic in `h_score` and centre in `pos`) — `g_score`/`came_from`/`closed`
     /// are reset to their defaults here unconditionally on first touch.
     ///
     /// Must be called before reading or writing `g_score`, `came_from`,
-    /// `closed`, or `h_score` for a given node in a given generation.
+    /// `closed`, `h_score` or `pos` for a given node in a given generation.
     #[inline]
     pub(crate) fn touch(&mut self, node: u32) -> bool {
         let idx = node as usize;
@@ -85,31 +93,24 @@ impl AstarBuffers {
 /// match the pool's capacity without duplicating the number in two places.
 pub const DEFAULT_POOL_SIZE: usize = 2;
 
-/// Pool of reusable A* buffer sets.
-/// Uses a simple Mutex<Vec> so multiple callers can acquire concurrently
-/// without serializing behind a channel receiver lock.
+/// Pool of reusable A* buffer sets behind a simple Mutex<Vec>.
 ///
-/// The pool is soft-bounded at `capacity`: `acquire()` will still allocate a
-/// fresh buffer set on demand if the pool is temporarily empty (so a caller
-/// is never blocked), but `release()` drops any buffer set that would push
-/// the pool beyond `capacity` instead of retaining it. This caps the pool's
-/// steady-state memory at `capacity` buffer sets even if callers momentarily
-/// over-subscribe it (e.g. a concurrency limiter upstream is misconfigured or
-/// absent) — belt-and-braces alongside whatever concurrency limit the caller
-/// enforces (see `asw-serve::state::ServerState::route_permits`).
+/// `acquire()` allocates a fresh buffer set if the pool is empty (always the
+/// case for the first `size` acquires), so a caller is never blocked; the caller is expected to cap concurrency at `size`
+/// (see `asw-serve::state::ServerState::route_permits`) so that never
+/// happens in steady state.
 pub struct AstarPool {
     buffers: std::sync::Mutex<Vec<AstarBuffers>>,
     num_nodes: usize,
-    capacity: usize,
 }
 
 impl AstarPool {
+    /// Buffer sets are allocated on first `acquire` and kept after
+    /// `release`, so a process that never routes never pays for them.
     pub fn new(num_nodes: usize, size: usize) -> Self {
-        let buffers: Vec<AstarBuffers> = (0..size).map(|_| AstarBuffers::new(num_nodes)).collect();
         Self {
-            buffers: std::sync::Mutex::new(buffers),
+            buffers: std::sync::Mutex::new(Vec::with_capacity(size)),
             num_nodes,
-            capacity: size,
         }
     }
 
@@ -120,25 +121,10 @@ impl AstarPool {
             .unwrap_or_else(|| AstarBuffers::new(self.num_nodes))
     }
 
-    /// Return a buffer set to the pool after resetting it, unless the pool
-    /// already holds `capacity` buffer sets — in which case the returned
-    /// buffer is dropped instead of growing the pool further. This is what
-    /// keeps the pool from ratcheting up to a burst's peak concurrency and
-    /// never shrinking back down.
+    /// Return a buffer set to the pool after resetting it.
     pub fn release(&self, mut buf: AstarBuffers) {
         buf.reset();
-        let mut pool = self.buffers.lock().expect("pool lock poisoned");
-        if pool.len() < self.capacity {
-            pool.push(buf);
-        }
-        // else: pool is already at capacity — drop `buf` here.
-    }
-
-    /// Test-only hook to observe the pool's current length without consuming
-    /// buffers via `acquire()`.
-    #[cfg(test)]
-    pub(crate) fn len_for_test(&self) -> usize {
-        self.buffers.lock().expect("pool lock poisoned").len()
+        self.buffers.lock().expect("pool lock poisoned").push(buf);
     }
 }
 
@@ -213,8 +199,8 @@ mod tests {
         assert!(buf.touch(3));
         buf.g_score[3] = 42.0;
         buf.closed[3] = true;
-        // A node NOT touched under this generation.
-        assert_eq!(buf.g_score[4], f32::MAX);
+        // A node NOT touched under this generation still holds the zero fill.
+        assert_eq!(buf.g_score[4], 0.0);
 
         buf.reset(); // wraps: full clear of `gen`, current_gen restarts at 1
 
@@ -227,6 +213,32 @@ mod tests {
         // A second reset after wraparound should go back to simple bumps.
         buf.reset();
         assert!(buf.touch(3));
+    }
+
+    #[test]
+    fn buffers_carry_a_zero_filled_position_cache() {
+        let buf = AstarBuffers::new(10);
+        assert_eq!(buf.pos.len(), 10);
+        assert!(buf.pos.iter().all(|p| *p == [0.0, 0.0]));
+    }
+
+    #[test]
+    fn buffers_new_is_zero_filled() {
+        // Zero fills go through calloc, so untouched pages are never resident.
+        let buf = AstarBuffers::new(1000);
+        assert!(buf.g_score.iter().all(|&g| g == 0.0));
+        assert!(buf.came_from.iter().all(|&c| c == 0));
+        assert!(buf.gen.iter().all(|&g| g == 0));
+    }
+
+    #[test]
+    fn pool_new_allocates_nothing_until_acquire() {
+        let pool = AstarPool::new(1_000_000, 2);
+        assert_eq!(pool.buffers.lock().unwrap().len(), 0);
+        let buf = pool.acquire();
+        assert_eq!(buf.g_score.len(), 1_000_000);
+        pool.release(buf);
+        assert_eq!(pool.buffers.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -250,31 +262,6 @@ mod tests {
         assert!(buf2.touch(0));
         assert_eq!(buf2.g_score[0], f32::MAX);
         assert!(!buf2.closed[0]);
-    }
-
-    #[test]
-    fn pool_release_beyond_capacity_drops_buffer() {
-        let pool = AstarPool::new(50, 2);
-
-        // Drain the pool, then acquire a third buffer set — since the pool is
-        // empty, `acquire()` allocates a fresh one beyond the configured
-        // capacity (callers must never be blocked by an empty pool).
-        let a = pool.acquire();
-        let b = pool.acquire();
-        let c = pool.acquire();
-        assert_eq!(pool.len_for_test(), 0);
-
-        // Releasing all three: the pool must cap at `capacity` (2), dropping
-        // the third instead of growing unboundedly.
-        pool.release(a);
-        pool.release(b);
-        assert_eq!(pool.len_for_test(), 2);
-        pool.release(c);
-        assert_eq!(
-            pool.len_for_test(),
-            2,
-            "pool must not grow past its configured capacity"
-        );
     }
 
     #[test]

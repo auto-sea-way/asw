@@ -1,4 +1,5 @@
 use anyhow::{bail, Context, Result};
+use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -107,28 +108,16 @@ impl HetznerClient {
         }
     }
 
-    fn get(&self, path: &str) -> reqwest::blocking::RequestBuilder {
+    fn req(&self, method: Method, path: &str) -> reqwest::blocking::RequestBuilder {
         self.http
-            .get(format!("{}{}", API_BASE, path))
-            .bearer_auth(&self.token)
-    }
-
-    fn post(&self, path: &str) -> reqwest::blocking::RequestBuilder {
-        self.http
-            .post(format!("{}{}", API_BASE, path))
-            .bearer_auth(&self.token)
-    }
-
-    fn delete(&self, path: &str) -> reqwest::blocking::RequestBuilder {
-        self.http
-            .delete(format!("{}{}", API_BASE, path))
+            .request(method, format!("{}{}", API_BASE, path))
             .bearer_auth(&self.token)
     }
 
     /// Find a server by name.
     fn find_server(&self, name: &str) -> Result<Option<ServerInfo>> {
         let resp: ServersResponse = self
-            .get(&format!("/servers?name={}", name))
+            .req(Method::GET, &format!("/servers?name={}", name))
             .send()
             .context("Failed to list servers")?
             .error_for_status()
@@ -160,7 +149,7 @@ impl HetznerClient {
             };
 
             let resp = self
-                .post("/servers")
+                .req(Method::POST, "/servers")
                 .json(&body)
                 .send()
                 .context("Failed to create server")?;
@@ -195,7 +184,7 @@ impl HetznerClient {
 
     /// Delete a server by ID.
     fn delete_server(&self, id: u64) -> Result<()> {
-        self.delete(&format!("/servers/{}", id))
+        self.req(Method::DELETE, &format!("/servers/{}", id))
             .send()
             .context("Failed to delete server")?
             .error_for_status()
@@ -212,7 +201,7 @@ impl HetznerClient {
                 bail!("Server did not reach 'running' within {:?}", timeout);
             }
             let resp: ServerResponse = self
-                .get(&format!("/servers/{}", id))
+                .req(Method::GET, &format!("/servers/{}", id))
                 .send()?
                 .error_for_status()?
                 .json()?;
@@ -226,7 +215,11 @@ impl HetznerClient {
 
     /// List all SSH keys in the account.
     fn list_ssh_keys(&self) -> Result<Vec<SshKeyInfo>> {
-        let resp: SshKeysResponse = self.get("/ssh_keys").send()?.error_for_status()?.json()?;
+        let resp: SshKeysResponse = self
+            .req(Method::GET, "/ssh_keys")
+            .send()?
+            .error_for_status()?
+            .json()?;
         Ok(resp.ssh_keys)
     }
 
@@ -237,7 +230,7 @@ impl HetznerClient {
             public_key: pubkey.to_string(),
         };
         let resp = self
-            .post("/ssh_keys")
+            .req(Method::POST, "/ssh_keys")
             .json(&body)
             .send()
             .context("Failed to create SSH key")?;
@@ -271,31 +264,14 @@ impl HetznerClient {
             }
         }
 
-        // Name includes a hash of the key material, so a stale key with the
-        // same comment registered from elsewhere can't collide on name.
-        // ponytail: 16-bit hash suffix — a 1-in-65k name collision fails the
-        // run; widen short_hash if that ever happens.
-        let name = format!(
-            "{}-{}",
-            ssh_key_name(pubkey.split_whitespace().nth(2)),
-            short_hash(&pubkey)
-        );
+        // Name derives from the key material, so a different key registered
+        // from elsewhere can't collide on name.
+        // ponytail: 16-bit hash — a 1-in-65k name collision fails the run;
+        // widen short_hash if that ever happens.
+        let name = format!("asw-{}", short_hash(&pubkey));
         let key = self.create_ssh_key(&name, &pubkey)?;
         info!("Uploaded SSH key: {}", key.name);
         Ok(key.id)
-    }
-}
-
-/// Derive an SSH key display name from the key comment (e.g. `user@host`),
-/// truncated on a char boundary so multi-byte comments (non-ASCII usernames
-/// or hostnames) never panic.
-fn ssh_key_name(comment: Option<&str>) -> String {
-    match comment {
-        Some(c) if !c.is_empty() => {
-            let truncated: String = c.chars().take(16).collect();
-            format!("asw-{}", truncated)
-        }
-        _ => "asw-key".to_string(),
     }
 }
 
@@ -391,7 +367,10 @@ pub fn status(token: &str) -> Result<Option<(u64, String, String)>> {
 
 fn bootstrap(ip: &str, ssh_key_path: &Path) -> Result<()> {
     info!("Bootstrapping server...");
-    let cfg = ssh::SshConfig::new(ip.to_string(), ssh_key_path.to_path_buf());
+    let cfg = ssh::SshConfig {
+        host: ip.to_string(),
+        key_path: ssh_key_path.to_path_buf(),
+    };
 
     let script = format!(
         r#"set -euo pipefail
@@ -408,44 +387,4 @@ echo "Bootstrap complete — ready for asw build"
     ssh::run_ssh_stream(&cfg, &script)?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── Finding 15: char-boundary-safe comment truncation ──────────────────
-
-    #[test]
-    fn ssh_key_name_truncates_ascii_comment() {
-        assert_eq!(
-            ssh_key_name(Some("ivan@buro-macbook")),
-            "asw-ivan@buro-macboo"
-        );
-    }
-
-    #[test]
-    fn ssh_key_name_does_not_panic_on_non_ascii_comment() {
-        // Same shape that panicked against the original byte-index slice:
-        // 15 ASCII bytes followed by a 2-byte UTF-8 character, so a raw
-        // `&s[..16]` lands mid-codepoint. `chars().take(16)` must not panic
-        // and must not lose or corrupt the multi-byte character.
-        let comment = "aaaaaaaaaaaaaaa\u{fc}"; // 15 'a's + 'ü'
-        let name = ssh_key_name(Some(comment));
-        assert_eq!(name, "asw-aaaaaaaaaaaaaaa\u{fc}");
-    }
-
-    #[test]
-    fn ssh_key_name_handles_real_world_non_ascii_hostname() {
-        // ivan@büro-macbook — the exact example from the finding.
-        let name = ssh_key_name(Some("ivan@b\u{fc}ro-macbook"));
-        // Must not panic; truncates by char count, not byte count.
-        assert_eq!(name.chars().count(), 4 + 16); // "asw-" + 16 chars
-    }
-
-    #[test]
-    fn ssh_key_name_falls_back_when_no_comment() {
-        assert_eq!(ssh_key_name(None), "asw-key");
-        assert_eq!(ssh_key_name(Some("")), "asw-key");
-    }
 }

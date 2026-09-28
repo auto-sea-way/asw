@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
-use asw_core::geo_index::CoastlineIndex;
 use asw_core::graph::GraphBuilder;
-use asw_core::h3::cell_center;
 use asw_core::passages::PASSAGES;
 use h3o::CellIndex;
 use std::path::Path;
@@ -33,26 +31,23 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     // Step 2: Extract coastline from post-subtraction land (includes canal waterway boundaries)
     info!("Extracting coastline segments...");
     let land_polygons = land.polygons();
-    let (coastline_segments, mut coastline_coords) =
-        crate::coastline::extract_coastline(&land_polygons);
-    let coastline_index = CoastlineIndex::new(coastline_segments);
-    info!("Coastline: {} segments", coastline_index.segment_count());
+    let mut coastline_runs = crate::coastline::extract_coastline(&land_polygons);
+    let full_sections = asw_core::coast::CoastlineSections::from_runs(&coastline_runs);
+    let coastline_index = full_sections.index();
+    info!("Coastline: {} runs", coastline_index.run_count());
 
     // Clip stored coastline coords to bbox (for GeoJSON export)
     if let Some((min_lon, min_lat, max_lon, max_lat)) = bbox {
-        let before = coastline_coords.len();
-        coastline_coords.retain(|seg| {
+        let before = coastline_runs.len();
+        coastline_runs.retain(|seg| {
             seg.iter().any(|&(lon, lat)| {
-                (lon as f64) >= min_lon
-                    && (lon as f64) <= max_lon
-                    && (lat as f64) >= min_lat
-                    && (lat as f64) <= max_lat
+                lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
             })
         });
         info!(
             "Clipped coastline to bbox: {} → {} segments",
             before,
-            coastline_coords.len()
+            coastline_runs.len()
         );
     }
 
@@ -65,7 +60,11 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     info!("Built {} edges", edges.len());
 
     // Step 6: Build graph
-    let mut builder = GraphBuilder::new();
+    let mut builder = GraphBuilder::with_version(format!(
+        "{} {}",
+        env!("CARGO_PKG_VERSION"),
+        time::OffsetDateTime::now_utc().date()
+    ));
 
     // Sort cells by H3 index for spatial ordering (better compression)
     let mut sorted_cells: Vec<(CellIndex, u32)> = cells.iter().map(|(&c, &id)| (c, id)).collect();
@@ -78,38 +77,30 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     // Build node ID remapping: old_id -> new_id
     let mut id_remap = vec![0u32; sorted_cells.len()];
     for (i, (cell, old_id)) in sorted_cells.iter().enumerate() {
-        let (lat, lng) = cell_center(*cell);
-        let new_id = builder.add_node(u64::from(*cell), lat, lng, shore_dist[i]);
+        let new_id = builder.add_node(u64::from(*cell), shore_dist[i]);
         id_remap[*old_id as usize] = new_id;
     }
 
     // Add edges with remapped IDs
-    for &(src, dst, cost) in &edges {
-        builder.add_edge(id_remap[src as usize], id_remap[dst as usize], cost);
+    for &(src, dst) in &edges {
+        builder.add_edge(id_remap[src as usize], id_remap[dst as usize]);
     }
 
     // Store coastline
-    builder.coastline_coords = coastline_coords;
+    builder.coastline_runs = coastline_runs;
 
-    // Step 7: Build and validate
-    let graph = builder.build();
-    info!(
-        "Graph: {} nodes, {} edges",
-        graph.num_nodes, graph.num_edges
-    );
-
-    // Prune: keep only the largest connected component
-    let graph = graph.prune_to_main_component();
-    info!(
-        "Final graph: {} nodes, {} edges",
-        graph.num_nodes, graph.num_edges
-    );
-
-    // Serialize
+    // Step 7: Prune to the largest connected component, then write the v4 image
+    let builder = builder.prune_to_main_component();
     info!("Saving graph to {:?}...", output_path);
-    let file = std::fs::File::create(output_path).context("Failed to create output file")?;
-    let writer = std::io::BufWriter::new(file);
-    graph.save(writer)?;
+    std::fs::write(output_path, builder.build_bytes()).context("Failed to write graph")?;
+    let graph = asw_core::graph::RoutingGraph::open(output_path, false)
+        .context("Written graph does not open")?;
+    info!(
+        "Final graph: {} nodes, {} edges, version {}",
+        graph.num_nodes(),
+        graph.num_edges(),
+        graph.version()
+    );
 
     let file_size = std::fs::metadata(output_path)?.len();
     info!("Graph saved: {} MB", file_size / 1_000_000);

@@ -1,5 +1,6 @@
+use crate::land_index::LandIndex;
 use anyhow::Result;
-use asw_core::geo_index::{CoastlineIndex, LandIndex};
+use asw_core::coast::CoastlineIndex;
 use asw_core::h3::{cell_boundary, cell_center, cell_polygon};
 use asw_core::passages::{Passage, ZONE_RESOLUTION};
 use asw_core::{CASCADE, H3_RES_BASE, H3_RES_LEAF};
@@ -7,6 +8,7 @@ use geo::LineString;
 use h3o::geom::{ContainmentMode, TilerBuilder};
 use h3o::{CellIndex, Resolution};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::iter::Either;
 use rayon::prelude::*;
 use std::collections::HashMap;
 use tracing::info;
@@ -26,23 +28,6 @@ fn in_passage_corridor(cell: CellIndex, corridors: &[(f64, f64, f64, f64)]) -> b
         })
 }
 
-fn tier_name(res: u8) -> &'static str {
-    match res {
-        3 => "ocean",
-        4 => "deep-mid",
-        5 => "mid",
-        6 => "near-mid",
-        7 => "coastal",
-        8 => "near-coast",
-        9 => "near-shore",
-        10 => "shoreline",
-        11 => "passage-11",
-        12 => "passage-12",
-        13 => "passage-13",
-        _ => "unknown",
-    }
-}
-
 /// Generate all navigable H3 cells via adaptive multi-resolution cascade
 /// (res-3 ocean through res-10 shoreline), with extended refinement into
 /// passage zones at even higher resolutions (up to res-13).
@@ -54,7 +39,7 @@ fn tier_name(res: u8) -> &'static str {
 /// Returns a map of `CellIndex` to sequential `node_id` (starting from 0).
 pub fn generate_cells(
     land: &LandIndex,
-    coastline: &CoastlineIndex,
+    coastline: &CoastlineIndex<'_>,
     bbox: Option<Bbox>,
     passages: &[Passage],
 ) -> Result<HashMap<CellIndex, u32>> {
@@ -101,7 +86,6 @@ pub fn generate_cells(
 
     // Step 3: Cascade — for each tier, classify keep/refine, then expand refinements
     let mut cell_map = HashMap::new();
-    let mut node_id = 0u32;
     let mut tier_counts: Vec<(u8, usize)> = Vec::new();
 
     for &(res, threshold) in CASCADE {
@@ -127,19 +111,12 @@ pub fn generate_cells(
                 };
                 (cell, keep)
             })
-            .partition_map(|(cell, keep)| {
-                if keep {
-                    rayon::iter::Either::Left(cell)
-                } else {
-                    rayon::iter::Either::Right(cell)
-                }
-            });
+            .partition_map(|(cell, keep)| split(cell, keep));
         pb.finish_and_clear();
         info!(
-            "{} res-{} cells kept ({}), {} will refine to res-{}",
+            "{} res-{} cells kept, {} will refine to res-{}",
             keep.len(),
             res,
-            tier_name(res),
             refine.len(),
             next_res
         );
@@ -147,7 +124,7 @@ pub fn generate_cells(
         // Kept cells are confirmed pure water — add directly to cell_map
         let before = cell_map.len();
         for cell in keep {
-            insert_cell(&mut cell_map, &mut node_id, cell);
+            insert_cell(&mut cell_map, cell);
         }
         tier_counts.push((res, cell_map.len() - before));
 
@@ -197,47 +174,23 @@ pub fn generate_cells(
 
     // Step 4a: Normal leaf cells — group by parent for hierarchical elimination
     let leaf_res_minus_1 = Resolution::try_from(H3_RES_LEAF - 1).expect("invalid resolution");
-    let mut by_parent: HashMap<CellIndex, Vec<CellIndex>> =
-        HashMap::with_capacity(normal_candidates.len() / 7);
-    for &cell in &normal_candidates {
-        let parent = cell.parent(leaf_res_minus_1).expect("parent");
-        by_parent.entry(parent).or_default().push(cell);
-    }
+    let normal_count = normal_candidates.len();
     let pb = make_progress(
-        normal_candidates.len(),
+        normal_count,
         &format!("filtering res-{} leaf cells", H3_RES_LEAF),
     );
-    let pure_leaves: Vec<CellIndex> = by_parent
-        .into_par_iter()
-        .flat_map(|(parent, leaf_cells)| {
-            let parent_poly = cell_polygon(parent);
-            if !land.intersects_polygon(&parent_poly) {
-                pb.inc(leaf_cells.len() as u64);
-                return leaf_cells;
-            }
-            // Test each leaf individually — skip contains_polygon parent shortcut
-            // because H3 children can protrude beyond parent into land.
-            leaf_cells
-                .iter()
-                .filter(|&&cell| {
-                    pb.inc(1);
-                    !land.intersects_polygon(&cell_polygon(cell))
-                })
-                .copied()
-                .collect()
-        })
-        .collect();
+    let (pure_leaves, _) = classify_by_parent(normal_candidates, leaf_res_minus_1, land, &pb);
     pb.finish_and_clear();
     info!(
         "{} res-{} pure water leaf cells (from {} candidates)",
         pure_leaves.len(),
         H3_RES_LEAF,
-        normal_candidates.len()
+        normal_count
     );
 
     let before = cell_map.len();
     for cell in pure_leaves {
-        insert_cell(&mut cell_map, &mut node_id, cell);
+        insert_cell(&mut cell_map, cell);
     }
     tier_counts.push((H3_RES_LEAF, cell_map.len() - before));
 
@@ -259,62 +212,18 @@ pub fn generate_cells(
                 leaf_res
             );
 
-            // Same parent-grouping strategy as normal leaf filter (above), but
-            // land-intersecting cells are refined further instead of dropped.
-            let mut by_parent: HashMap<CellIndex, Vec<CellIndex>> =
-                HashMap::with_capacity(current.len() / 7);
-            for &cell in &current {
-                let parent = cell.parent(leaf_res_minus_1).expect("parent");
-                by_parent.entry(parent).or_default().push(cell);
-            }
-
+            // Same parent-grouping strategy as the normal leaf filter, but
+            // land-intersecting cells are refined further instead of dropped:
+            // in passage zones, narrow waterways are smaller than cells at this
+            // resolution and only become visible at res-12/13.
             let pb = make_progress(current.len(), &format!("zone filter res-{}", H3_RES_LEAF));
-
-            // Split into pure water (keep at leaf resolution) and land-intersecting (refine further).
-            // In passage zones, never drop "all land" cells — narrow waterways
-            // are smaller than cells at this resolution and only become visible
-            // at high resolutions (res-12/13).
-            let classified: Vec<(CellIndex, bool)> = by_parent
-                .into_par_iter()
-                .flat_map(|(parent, leaf_cells)| {
-                    let parent_poly = cell_polygon(parent);
-                    if !land.intersects_polygon(&parent_poly) {
-                        pb.inc(leaf_cells.len() as u64);
-                        // All water — keep at this resolution
-                        return leaf_cells
-                            .into_iter()
-                            .map(|c| (c, true))
-                            .collect::<Vec<_>>();
-                    }
-                    // Test individually — keep pure water, refine everything else
-                    // (including "all land" cells that may contain narrow waterways)
-                    leaf_cells
-                        .into_iter()
-                        .map(|cell| {
-                            pb.inc(1);
-                            let poly = cell_polygon(cell);
-                            let is_pure = !land.intersects_polygon(&poly);
-                            (cell, is_pure)
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect();
+            let (pure, straddle) = classify_by_parent(current, leaf_res_minus_1, land, &pb);
             pb.finish_and_clear();
-
-            let mut pure = Vec::new();
-            let mut straddle = Vec::new();
-            for (cell, is_pure) in classified {
-                if is_pure {
-                    pure.push(cell);
-                } else {
-                    straddle.push(cell);
-                }
-            }
 
             // Add pure water cells at leaf resolution
             let before = cell_map.len();
             for cell in &pure {
-                insert_cell(&mut cell_map, &mut node_id, *cell);
+                insert_cell(&mut cell_map, *cell);
             }
             let added_at_9 = cell_map.len() - before;
             if added_at_9 > 0 {
@@ -352,36 +261,17 @@ pub fn generate_cells(
                         &format!("zone classifying res-{}", next_res),
                     );
                     // In passage zones, never drop "all land" cells — refine them
-                    let (pure, straddle): (Vec<CellIndex>, Vec<CellIndex>) = expanded
-                        .par_iter()
-                        .map(|&cell| {
-                            pb.inc(1);
-                            let poly = cell_polygon(cell);
-                            let is_pure = !land.intersects_polygon(&poly);
-                            (cell, is_pure)
-                        })
-                        .partition_map(|(cell, is_pure)| {
-                            if is_pure {
-                                rayon::iter::Either::Left(cell)
-                            } else {
-                                rayon::iter::Either::Right(cell)
-                            }
-                        });
+                    let (pure, straddle) = classify(&expanded, land, &pb);
                     pb.finish_and_clear();
 
                     let before = cell_map.len();
                     for cell in &pure {
-                        insert_cell(&mut cell_map, &mut node_id, *cell);
+                        insert_cell(&mut cell_map, *cell);
                     }
                     let added = cell_map.len() - before;
                     if added > 0 {
                         tier_counts.push((next_res, added));
-                        info!(
-                            "{} zone cells kept at res-{} ({})",
-                            added,
-                            next_res,
-                            tier_name(next_res)
-                        );
+                        info!("{} zone cells kept at res-{}", added, next_res);
                     }
 
                     current = straddle;
@@ -396,27 +286,19 @@ pub fn generate_cells(
                         expanded.len(),
                         &format!("zone leaf filter res-{}", next_res),
                     );
-                    let pure: Vec<CellIndex> = expanded
-                        .par_iter()
-                        .filter(|&&cell| {
-                            pb.inc(1);
-                            !land.intersects_polygon(&cell_polygon(cell))
-                        })
-                        .copied()
-                        .collect();
+                    let (pure, _) = classify(&expanded, land, &pb);
                     pb.finish_and_clear();
 
                     let before = cell_map.len();
                     for cell in &pure {
-                        insert_cell(&mut cell_map, &mut node_id, *cell);
+                        insert_cell(&mut cell_map, *cell);
                     }
                     let added = cell_map.len() - before;
                     tier_counts.push((next_res, added));
                     info!(
-                        "{} zone cells at res-{} ({}) from {} candidates",
+                        "{} zone cells at res-{} from {} candidates",
                         added,
                         next_res,
-                        tier_name(next_res),
                         expanded.len()
                     );
                 }
@@ -427,7 +309,7 @@ pub fn generate_cells(
     let summary: Vec<String> = tier_counts
         .iter()
         .filter(|(_, count)| *count > 0)
-        .map(|(res, count)| format!("{} from {} tier (res-{})", count, tier_name(*res), res))
+        .map(|(res, count)| format!("{} at res-{}", count, res))
         .collect();
 
     info!("Total: {} nodes ({})", cell_map.len(), summary.join(", "));
@@ -503,12 +385,63 @@ fn build_zone_lookup(passages: &[Passage], bbox: Option<Bbox>) -> Result<HashMap
 }
 
 /// Insert a cell into the map, assigning the next available node ID.
-fn insert_cell(cell_map: &mut HashMap<CellIndex, u32>, node_id: &mut u32, cell: CellIndex) {
-    cell_map.entry(cell).or_insert_with(|| {
-        let id = *node_id;
-        *node_id += 1;
-        id
-    });
+fn insert_cell(cell_map: &mut HashMap<CellIndex, u32>, cell: CellIndex) {
+    let id = cell_map.len() as u32;
+    cell_map.entry(cell).or_insert(id);
+}
+
+fn split(cell: CellIndex, pure: bool) -> Either<CellIndex, CellIndex> {
+    if pure {
+        Either::Left(cell)
+    } else {
+        Either::Right(cell)
+    }
+}
+
+/// Split cells into (pure water, land-intersecting), ticking `pb` per cell.
+fn classify(
+    cells: &[CellIndex],
+    land: &LandIndex,
+    pb: &ProgressBar,
+) -> (Vec<CellIndex>, Vec<CellIndex>) {
+    cells
+        .par_iter()
+        .map(|&cell| {
+            pb.inc(1);
+            (cell, !land.intersects_polygon(&cell_polygon(cell)))
+        })
+        .partition_map(|(cell, pure)| split(cell, pure))
+}
+
+/// Same as `classify`, grouped by `parent_res` ancestor so an all-water parent
+/// settles its children with one test. Children are still tested individually
+/// when the parent touches land (H3 children can protrude beyond the parent).
+fn classify_by_parent(
+    cells: Vec<CellIndex>,
+    parent_res: Resolution,
+    land: &LandIndex,
+    pb: &ProgressBar,
+) -> (Vec<CellIndex>, Vec<CellIndex>) {
+    let mut by_parent: HashMap<CellIndex, Vec<CellIndex>> = HashMap::with_capacity(cells.len() / 7);
+    for cell in cells {
+        let parent = cell.parent(parent_res).expect("parent");
+        by_parent.entry(parent).or_default().push(cell);
+    }
+    by_parent
+        .into_par_iter()
+        .flat_map(|(parent, kids)| {
+            if !land.intersects_polygon(&cell_polygon(parent)) {
+                pb.inc(kids.len() as u64);
+                return kids.into_iter().map(|c| (c, true)).collect::<Vec<_>>();
+            }
+            kids.into_iter()
+                .map(|c| {
+                    pb.inc(1);
+                    (c, !land.intersects_polygon(&cell_polygon(c)))
+                })
+                .collect()
+        })
+        .partition_map(|(cell, pure)| split(cell, pure))
 }
 
 /// Approximate circumradius (center-to-vertex) in degrees for each H3 resolution.
@@ -525,7 +458,7 @@ fn cell_radius_deg(cell: CellIndex) -> f64 {
 }
 
 /// Minimum distance (degrees) from any point of a cell (center + 6 vertices) to the coastline.
-fn cell_min_coast_dist(cell: CellIndex, coastline: &CoastlineIndex, threshold_deg: f64) -> f64 {
+fn cell_min_coast_dist(cell: CellIndex, coastline: &CoastlineIndex<'_>, threshold_deg: f64) -> f64 {
     let search_radius = threshold_deg + cell_radius_deg(cell);
     let (lat, lon) = cell_center(cell);
     let center_dist = coastline.min_distance_deg(lon, lat, search_radius);
@@ -536,7 +469,7 @@ fn cell_min_coast_dist(cell: CellIndex, coastline: &CoastlineIndex, threshold_de
         })
 }
 
-fn make_progress(len: usize, label: &str) -> ProgressBar {
+pub(crate) fn make_progress(len: usize, label: &str) -> ProgressBar {
     let pb = ProgressBar::new(len as u64);
     pb.set_style(
         ProgressStyle::default_bar()
@@ -595,7 +528,6 @@ mod tests {
             corridor: (0.0, 0.0, 1.0, 1.0),
             leaf_resolution: 12,
             geofabrik_url: None,
-            water_types: &[],
         }];
 
         let zone_lookup = build_zone_lookup(&passages, None).expect("build_zone_lookup");

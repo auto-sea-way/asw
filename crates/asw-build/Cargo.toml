@@ -1,6 +1,6 @@
 [package]
 name = "asw-build"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 
@@ -15,6 +15,7 @@ serde.workspace = true
 tracing.workspace = true
 indicatif.workspace = true
 anyhow.workspace = true
-shapefile = "0.9"
+shapefile = { version = "0.9", features = ["geo-types"] }
 reqwest = { version = "0.13", features = ["blocking"] }
+time = { version = "0.3", features = ["formatting"] }
 zip = "8"
