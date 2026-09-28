@@ -6,6 +6,7 @@ members = [
     "crates/asw-serve",
     "crates/asw-cloud",
     "crates/asw-cli",
+    "crates/asw-mobile",
 ]
 
 [workspace.dependencies]
@@ -21,6 +22,7 @@ indicatif = "0.18"
 geojson = "1.0"
 anyhow = "1"
 memmap2 = "0.9"
+uniffi = "0.32"
 
 [profile.release]
 opt-level = 3

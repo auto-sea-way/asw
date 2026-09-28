@@ -21,3 +21,7 @@ land-polygons-*
 # Local browser-automation output and screenshots
 .playwright-mcp/
 /asw-routes-light.png
+
+# asw-mobile Android wrapper build output
+crates/asw-mobile/android/build/
+crates/asw-mobile/android/.gradle/

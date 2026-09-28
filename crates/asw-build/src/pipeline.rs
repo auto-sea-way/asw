@@ -93,7 +93,9 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     let builder = builder.prune_to_main_component();
     info!("Saving graph to {:?}...", output_path);
     std::fs::write(output_path, builder.build_bytes()).context("Failed to write graph")?;
-    let graph = asw_core::graph::RoutingGraph::open(output_path, false)
+    // populate = true also runs the CSR table scans: the build's self-check
+    // must catch a builder regression here, not on a phone.
+    let graph = asw_core::graph::RoutingGraph::open(output_path, true)
         .context("Written graph does not open")?;
     info!(
         "Final graph: {} nodes, {} edges, version {}",

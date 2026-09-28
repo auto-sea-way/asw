@@ -1,0 +1,21 @@
+[package]
+name = "asw-mobile"
+version = "0.8.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Mobile bindings (Swift, Kotlin) for the auto-sea-way routing graph"
+
+[lib]
+name = "asw_mobile"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+[dependencies]
+asw-core = { path = "../asw-core" }
+uniffi = { workspace = true, features = ["cli"] }
+
+[dev-dependencies]
+h3o.workspace = true
