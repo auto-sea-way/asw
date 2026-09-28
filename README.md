@@ -152,6 +152,13 @@ The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet fil
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
+### Mobile bindings
+
+Each release also attaches `AswMobile-<version>.zip` (iOS xcframework and Swift
+source) and `asw-mobile-<version>.aar` (Android, arm64-v8a): the same graph file,
+opened on the phone through `openGraph`, `version`, `isWater` and `route`. See
+[crates/asw-mobile/README.md](crates/asw-mobile/README.md).
+
 ### Pre-built Binaries
 
 Download from [GitHub Releases](https://github.com/auto-sea-way/asw/releases):

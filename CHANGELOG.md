@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `asw-mobile`: Swift and Kotlin bindings (UniFFI) over the v4 graph file with `openGraph`, `version`, `isWater` and `route`, shipped as an iOS xcframework and an Android AAR on every release.
+
+### Changed
+
+- `RoutingGraph::open(path, false)` skips the monotonicity scans over the coastline and grid tables, so a phone opens the planet file with a few pages resident; the server (`populate = true`) still scans.
+
 ## [0.7.0] - 2026-09-28
 
 ### Changed

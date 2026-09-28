@@ -38,8 +38,9 @@ this repo, the on-device smoke test. Those belong to the consuming app.
 Module names: Swift `AswMobile`, Kotlin package `org.autoseaway.mobile`.
 
 ```
-open(path: String) -> Result<Graph, AswError>
+open_graph(path: String) -> Result<Graph, AswError>
     Memory-map the file and validate the header. Milliseconds, a few pages.
+    (Named open_graph: `open` needs backticks in both Swift and Kotlin.)
 
 Graph.version() -> String
     The version string stored in the file header, e.g. "0.7.0 2026-09-27".
@@ -60,8 +61,10 @@ Coordinate { lat: f64, lon: f64 }
     requested points, distance_nm counts water segments only, land_legs are indices of
     segments that cross land.
 
-AswError { NotFound, BadFormat(message), InvalidArgument(message), NoRoute,
-           Internal(message) }
+AswError { NotFound, BadFormat(detail), InvalidArgument(detail), NoRoute,
+           Internal(detail) }
+    (`detail`, not `message`: the generated Kotlin exception would clash with
+    Throwable.message.)
 ```
 
 `Graph` is a UniFFI object: reference counted, `Send + Sync`, holding the mapped
@@ -84,7 +87,9 @@ message. `route`: a shore buffer outside 0 to 5 nm or a non-finite coordinate is
 ## 5. Memory and threading
 
 - `open` reads the header, the section table and the three CSR sentinels: O(1) in the
-  node count, well under 10 ms on a phone from flash.
+  node count, well under 10 ms on a phone from flash. `RoutingGraph::open(path, false)`
+  skips the monotonicity scans over the coastline and grid tables (26 MB of pages);
+  the server, with `populate = true`, keeps them.
 - `is_water` touches the node index (binary search over the sorted ids, a few pages),
   one or a few 0.1° grid cells and the coastline runs they list: tens of kilobytes
   resident per call.
