@@ -61,14 +61,18 @@ pub struct Route {
     pub land_legs: Vec<u32>,
 }
 
-/// Test-only one-shot switch that makes the next `is_water` or `route` panic,
-/// proving the panic never crosses the boundary.
+// Test-only one-shot switches that make the next `is_water` or `route` on
+// this thread panic, proving the panic never crosses the boundary.
+// Thread-local, so parallel tests cannot consume each other's panic.
 #[cfg(test)]
-static PANIC_NEXT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+thread_local! {
+    static PANIC_NEXT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static PANIC_AFTER_SEARCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
 #[cfg(test)]
 fn maybe_panic() {
-    if PANIC_NEXT.swap(false, std::sync::atomic::Ordering::SeqCst) {
+    if PANIC_NEXT.with(|c| c.replace(false)) {
         panic!("forced panic for the boundary test");
     }
 }
@@ -76,15 +80,11 @@ fn maybe_panic() {
 #[cfg(not(test))]
 fn maybe_panic() {}
 
-/// Test-only switch that panics after the search has stamped the A* buffers
-/// and before they are reset: the window a mid-route panic leaves behind.
-#[cfg(test)]
-static PANIC_AFTER_SEARCH: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
+/// Panics after the search has stamped the A* buffers: the window a
+/// mid-route panic leaves behind.
 #[cfg(test)]
 fn maybe_panic_after_search() {
-    if PANIC_AFTER_SEARCH.swap(false, std::sync::atomic::Ordering::SeqCst) {
+    if PANIC_AFTER_SEARCH.with(|c| c.replace(false)) {
         panic!("forced panic after the search");
     }
 }
@@ -389,7 +389,7 @@ mod tests {
     fn is_water_panic_becomes_unknown() {
         let (dir, path) = fixture_graph_path();
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
-        PANIC_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
+        PANIC_NEXT.with(|c| c.set(true));
         assert_eq!(g.is_water(36.5, 28.3), Water::Unknown);
         assert_eq!(
             g.is_water(36.5, 28.3),
@@ -512,7 +512,7 @@ mod tests {
     fn route_recovers_after_a_panic() {
         let (dir, path) = chain_graph_path(vec![]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
-        PANIC_NEXT.store(true, std::sync::atomic::Ordering::SeqCst);
+        PANIC_NEXT.with(|c| c.set(true));
         assert!(matches!(
             g.route(36.0, 26.0, 37.0, 28.0, 0.0),
             Err(AswError::Internal { .. })
@@ -548,7 +548,7 @@ mod tests {
         let (dir, path) = chain_graph_path(vec![vec![(27.5, 36.2), (27.5, 37.5)]]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         let first = g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap();
-        PANIC_AFTER_SEARCH.store(true, std::sync::atomic::Ordering::SeqCst);
+        PANIC_AFTER_SEARCH.with(|c| c.set(true));
         assert!(matches!(
             g.route(36.0, 26.0, 37.0, 28.0, 0.0),
             Err(AswError::Internal { .. })
