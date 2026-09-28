@@ -1,0 +1,8 @@
+[bindings.swift]
+module_name = "AswMobile"
+ffi_module_name = "AswMobileFFI"
+cdylib_name = "asw_mobile"
+
+[bindings.kotlin]
+package_name = "org.autoseaway.mobile"
+cdylib_name = "asw_mobile"
