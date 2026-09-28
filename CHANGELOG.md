@@ -7,12 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-28
+
 ### Changed
 
 - **BREAKING:** graph format v3 → v4. The file is now flat and memory-mapped: the server opens the planet in seconds instead of 60-90 s, and resident memory drops from ~4.1 GiB to the working set. Edge weights are no longer stored (recomputed from cell centres, so distances move in the second decimal); the coastline lives in the file as delta-coded microdegree runs with a 0.1° grid index instead of an R-tree built at load. Planet file: 1.44 GB. v3 files are rejected; the planet graph must be rebuilt.
 - `nearest_node` moved from asw-serve into asw-core; `LandIndex` moved from asw-core into asw-build. asw-core no longer depends on `bitcode`, `zstd`, `serde`, `rstar` or `rayon`.
 - `/info` reports `graph_version`, the version string stored in the graph header.
 - Documentation: the shoreline leaf resolution is res-10 (it has been since the res-9 → res-10 refinement tier), not res-9.
+- `asw cloud build` caches the remote compile by `git rev-parse HEAD` instead of a hash of the working tree (the upload is `git archive HEAD` anyway)
+- Server readiness uses `std::sync::OnceLock` instead of an async `RwLock<Option<_>>`
+- Shapefile rings convert through the `shapefile` crate's `geo-types` support; zip extraction uses `ZipArchive::extract_unwrapped_root_dir`; graph download streams with `std::io::copy` (no 50 MB progress lines)
+- Cell classification, progress bars, API error responses, SSH/scp process spawning, Hetzner requests and bench result structs each share one helper instead of repeated copies
+- Bench timestamps use the `time` crate instead of hand-rolled calendar math; bench timings are sorted once per route instead of on every stat call
+- Hand-rolled bounding-box code replaced with geo's `BoundingRect` (load/build time only; the hot-path point-to-segment distance stays hand-rolled — geo's `hypot`-based version measured +9-30% p50 on short-route benches)
 
 ### Added
 
@@ -34,15 +42,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `asw-cli/src/srcdir.rs`: `asw cloud build --src` now simply defaults to the current directory
   - `docs/superpowers/` and `docs/reviews/` (history keeps them)
   - Dependency `ordered-float`: A* orders its heap on `f32::to_bits`, valid because f-scores are never negative
-
-### Changed
-
-- `asw cloud build` caches the remote compile by `git rev-parse HEAD` instead of a hash of the working tree (the upload is `git archive HEAD` anyway)
-- Server readiness uses `std::sync::OnceLock` instead of an async `RwLock<Option<_>>`
-- Shapefile rings convert through the `shapefile` crate's `geo-types` support; zip extraction uses `ZipArchive::extract_unwrapped_root_dir`; graph download streams with `std::io::copy` (no 50 MB progress lines)
-- Cell classification, progress bars, API error responses, SSH/scp process spawning, Hetzner requests and bench result structs each share one helper instead of repeated copies
-- Bench timestamps use the `time` crate instead of hand-rolled calendar math; bench timings are sorted once per route instead of on every stat call
-- Hand-rolled bounding-box code replaced with geo's `BoundingRect` (load/build time only; the hot-path point-to-segment distance stays hand-rolled — geo's `hypot`-based version measured +9-30% p50 on short-route benches)
 
 ## [0.6.1] - 2026-07-08
 
@@ -197,6 +196,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.7.0]: https://github.com/auto-sea-way/asw/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/auto-sea-way/asw/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/auto-sea-way/asw/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/auto-sea-way/asw/compare/v0.4.0...v0.5.0
