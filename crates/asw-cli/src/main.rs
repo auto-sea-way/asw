@@ -475,7 +475,9 @@ fn export_geojson(
 ) -> Result<()> {
     info!("Loading graph from {:?}...", graph_path);
     let graph =
-        asw_core::graph::RoutingGraph::open(graph_path, false).context("Failed to open graph")?;
+        // populate = true also runs the coastline and grid table checks, so a
+        // corrupt file fails here instead of panicking in the export loop.
+        asw_core::graph::RoutingGraph::open(graph_path, true).context("Failed to open graph")?;
 
     info!(
         "Graph: {} nodes, {} edges",
@@ -594,4 +596,44 @@ fn export_geojson(
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A graph whose `coast_runs` table is non-monotonic but whose section
+    /// lengths and sentinels are intact: `asw geojson --coastline` must
+    /// report a clean open error, not panic while slicing the runs.
+    #[test]
+    fn geojson_rejects_a_corrupt_coastline_table_at_open() {
+        let mut b = asw_core::graph::GraphBuilder::default();
+        b.coastline_runs = vec![
+            vec![(28.0, 36.0), (28.01, 36.0)],
+            vec![(28.1, 36.0), (28.11, 36.0)],
+        ];
+        let mut bytes = b.build_bytes();
+        // Section 4 is coast_runs: [0, a, b]. Set the middle entry above the
+        // sentinel so the table is non-monotonic but still passes the
+        // first-entry and sentinel checks.
+        let off = u64::from_le_bytes(bytes[88 + 4 * 16..96 + 4 * 16].try_into().unwrap()) as usize;
+        let sentinel = u32::from_le_bytes(bytes[off + 8..off + 12].try_into().unwrap());
+        bytes[off + 4..off + 8].copy_from_slice(&(sentinel + 5).to_le_bytes());
+
+        let dir = std::env::temp_dir().join(format!("asw-cli-geojson-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let graph = dir.join("corrupt.graph");
+        std::fs::write(&graph, &bytes).unwrap();
+        let out = dir.join("out.geojson");
+
+        let result = std::panic::catch_unwind(|| export_geojson(&graph, &out, true, None));
+        std::fs::remove_dir_all(&dir).unwrap();
+        let err = result
+            .expect("export_geojson must not panic on a corrupt file")
+            .expect_err("a corrupt coastline table must be rejected");
+        assert!(
+            format!("{err:#}").contains("coast_runs not monotonic"),
+            "{err:#}"
+        );
+    }
 }

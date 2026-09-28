@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `RoutingGraph::open(path, false)` skips the monotonicity scans over the coastline and grid tables, so a phone opens the planet file with a few pages resident; the server (`populate = true`) still scans.
+- `RoutingGraph::open(path, false)` skips the monotonicity scans over the coastline and grid tables, so a phone opens the planet file with a few pages resident; the server, the build self-check and `asw geojson` open with `populate = true` and still scan.
 
 ## [0.7.0] - 2026-09-28
 

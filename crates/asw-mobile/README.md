@@ -12,7 +12,15 @@ memory-mapped v4 graph file:
 `landLegs` (indices of segments that cross land). Errors are `AswError`:
 `NotFound`, `BadFormat`, `InvalidArgument`, `NoRoute`, `Internal`, the last four
 carrying a `detail` string. A panic inside the graph code surfaces as `Internal`
-(or `.unknown` from `isWater`); the library never aborts the host app.
+(or `.unknown` from `isWater`).
+
+**Replace the graph file only by atomic rename.** The file is memory-mapped.
+Download a new version to a temporary path in the same directory, then
+`rename` it over the old one; an open `Graph` keeps reading the old file until
+it is released, and the next `openGraph` sees the new one. Never truncate,
+overwrite or delete the file in place while a `Graph` holds it: the operating
+system then raises a bus error on the next read, which no library can catch,
+and the app is terminated.
 
 ## iOS
 

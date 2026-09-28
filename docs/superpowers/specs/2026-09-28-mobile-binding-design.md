@@ -48,8 +48,9 @@ Graph.version() -> String
 Graph.is_water(lat: f64, lon: f64) -> Water
     Water | Land | Unknown. Snap to the nearest water node and count coastline
     crossings on the way to the point (asw_core::routing::is_water). No node within
-    the snapping ladder is Land. Unknown only when the call panics or the mapping is
-    gone (section 4).
+    the snapping ladder is Land. Unknown when the coordinates are invalid or the
+    call panics (section 4). A file changed in place under the mapping raises a bus
+    error that nothing can catch; the app must replace the file by atomic rename.
 
 Graph.route(from_lat, from_lon, to_lat, to_lon: f64, shore_buffer_nm: f64)
     -> Result<Route, AswError>

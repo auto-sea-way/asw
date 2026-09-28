@@ -34,8 +34,9 @@ impl std::fmt::Display for AswError {
 
 impl std::error::Error for AswError {}
 
-/// Answer of `Graph::is_water`. `Unknown` only when the call could not be
-/// evaluated (a panic inside the graph code or a vanished mapping).
+/// Answer of `Graph::is_water`. `Unknown` when the call could not be
+/// evaluated: invalid coordinates or a panic inside the graph code. A file
+/// changed in place under the mapping is not covered (see the crate README).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum Water {
     Water,
