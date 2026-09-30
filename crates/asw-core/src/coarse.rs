@@ -16,6 +16,13 @@ pub const REGION_RES: u64 = 3;
 /// the final distance within ±0.2 % of the full search on the planet.
 pub const CORRIDOR_RINGS: usize = 1;
 
+/// Shorter great-circle distances skip the corridor: the full search takes a
+/// few ms there, less than the coarse search costs (planet bench: no gain at
+/// 534 nm, 1.5x at 1,265 nm).
+// ponytail: fixed threshold; a short great circle can still hide a long
+// detour (both sides of an isthmus), which then runs the full search as v4 did.
+pub const CORRIDOR_MIN_NM: f64 = 500.0;
+
 /// Region of an H3 cell: its res-3 parent, or the cell itself when it is
 /// res 3 or coarser. Plain bit operations: set the resolution field to 3 and
 /// the digits of resolutions 4..15 to 7 ("unused").

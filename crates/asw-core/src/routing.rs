@@ -28,7 +28,7 @@ pub struct RouteResult {
 /// is relaxed afterwards. A node the search must not use (closed Arctic
 /// area, or outside `corridor`) is marked closed right here, so it is never
 /// expanded and the test runs once per node, not once per edge.
-#[inline]
+#[inline(always)]
 fn touch_and_cache_h(
     buffers: &mut crate::astar_pool::AstarBuffers,
     node: u32,
@@ -472,7 +472,10 @@ pub fn compute_route(
     let shore = shore_buffer_q(shore_buffer_nm);
     // Long routes: fine A* inside the corridor along the coarse path. No
     // corridor (short route) or nothing found inside it: search everything.
-    let corridor = crate::coarse::corridor(graph, start, goal, arctic);
+    let corridor = (haversine_nm(from_lat, from_lon, to_lat, to_lon)
+        >= crate::coarse::CORRIDOR_MIN_NM)
+        .then(|| crate::coarse::corridor(graph, start, goal, arctic))
+        .flatten();
     let found = corridor.as_deref().and_then(|c| {
         let r = astar(graph, start, goal, buffers, shore, arctic, Some(c));
         buffers.reset();
