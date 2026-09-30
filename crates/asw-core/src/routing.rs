@@ -25,19 +25,30 @@ pub struct RouteResult {
 /// goal_lon)` on first touch this generation. `g_score`/`came_from`/`closed` are reset to their
 /// defaults by `touch()` itself; the heuristic decode (H3 -> lat/lng + trig)
 /// only happens once per node per search, no matter how many times the node
-/// is relaxed afterwards.
+/// is relaxed afterwards. A node the search must not use (closed Arctic
+/// area, or outside `corridor`) is marked closed right here, so it is never
+/// expanded and the test runs once per node, not once per edge.
 #[inline]
 fn touch_and_cache_h(
     buffers: &mut crate::astar_pool::AstarBuffers,
     node: u32,
     graph: &RoutingGraph,
-    goal_lat: f64,
-    goal_lon: f64,
+    (goal_lat, goal_lon): (f64, f64),
+    arctic: bool,
+    corridor: Option<&[u64]>,
 ) {
     if buffers.touch(node) {
         let (nlat, nlon) = graph.node_pos(node);
         buffers.pos[node as usize] = [nlat, nlon];
         buffers.h_score[node as usize] = haversine_nm(nlat, nlon, goal_lat, goal_lon) as f32;
+        if blocked(nlat, nlon, arctic)
+            || corridor.is_some_and(|c| {
+                c.binary_search(&crate::coarse::region_of(graph.node_h3(node)))
+                    .is_err()
+            })
+        {
+            buffers.closed[node as usize] = true;
+        }
     }
 }
 
@@ -94,7 +105,7 @@ const ARCTIC_PASSAGES: [(f64, f64, f64, f64); 2] = [
 ];
 
 /// Is the point in the ice cap, or in a closed Arctic passage?
-fn blocked(lat: f64, lon: f64, arctic: bool) -> bool {
+pub(crate) fn blocked(lat: f64, lon: f64, arctic: bool) -> bool {
     lat > ICE_CAP_LAT
         || (!arctic
             && ARCTIC_PASSAGES
@@ -139,7 +150,8 @@ fn segment_blocked(lon1: f64, lat1: f64, lon2: f64, lat2: f64, arctic: bool) -> 
 
 /// A* pathfinding with haversine heuristic. `shore` is the clearance from
 /// `shore_buffer_q`, or None for no penalty. Never enters the ice cap, nor a
-/// seasonal Arctic passage unless `arctic` is set.
+/// seasonal Arctic passage unless `arctic` is set. With `corridor` (sorted
+/// region ids from `coarse::corridor`) it only expands nodes in those regions.
 pub fn astar(
     graph: &RoutingGraph,
     start: u32,
@@ -147,6 +159,7 @@ pub fn astar(
     buffers: &mut crate::astar_pool::AstarBuffers,
     shore: Option<u8>,
     arctic: bool,
+    corridor: Option<&[u64]>,
 ) -> Option<(Vec<u32>, f64)> {
     // Priority queue: (f_score bits, node_id).
     // ponytail: f >= 0 always (g and haversine h are non-negative), so the
@@ -154,9 +167,9 @@ pub fn astar(
     // ordered-float if a negative or NaN score ever becomes possible.
     let mut open: BinaryHeap<Reverse<(u32, u32)>> = BinaryHeap::new();
 
-    let (goal_lat, goal_lon) = graph.node_pos(goal);
+    let goal_pos = graph.node_pos(goal);
 
-    touch_and_cache_h(buffers, start, graph, goal_lat, goal_lon);
+    touch_and_cache_h(buffers, start, graph, goal_pos, arctic, corridor);
     buffers.g_score[start as usize] = 0.0;
     let h_start = buffers.h_score[start as usize];
     open.push(Reverse((h_start.to_bits(), start)));
@@ -175,7 +188,7 @@ pub fn astar(
             return Some((path, total_dist));
         }
 
-        touch_and_cache_h(buffers, current, graph, goal_lat, goal_lon);
+        touch_and_cache_h(buffers, current, graph, goal_pos, arctic, corridor);
         if buffers.closed[current as usize] {
             continue;
         }
@@ -185,16 +198,13 @@ pub fn astar(
         let [clat, clon] = buffers.pos[current as usize];
 
         for neighbor in graph.neighbor_ids(current) {
-            touch_and_cache_h(buffers, neighbor, graph, goal_lat, goal_lon);
+            touch_and_cache_h(buffers, neighbor, graph, goal_pos, arctic, corridor);
             if buffers.closed[neighbor as usize] {
                 continue;
             }
             // Edge length from the cached centres: one haversine per
             // relaxation, no H3 decode (the file stores no weights).
             let [nlat, nlon] = buffers.pos[neighbor as usize];
-            if blocked(nlat, nlon, arctic) {
-                continue;
-            }
             let weight = haversine_nm(clat, clon, nlat, nlon) as f32;
             let weight = match shore {
                 Some(q) => weight * shore_factor(graph.shore_dist(neighbor), q),
@@ -460,7 +470,18 @@ pub fn compute_route(
     }
 
     let shore = shore_buffer_q(shore_buffer_nm);
-    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, shore, arctic)?;
+    // Long routes: fine A* inside the corridor along the coarse path. No
+    // corridor (short route) or nothing found inside it: search everything.
+    let corridor = crate::coarse::corridor(graph, start, goal, arctic);
+    let found = corridor.as_deref().and_then(|c| {
+        let r = astar(graph, start, goal, buffers, shore, arctic, Some(c));
+        buffers.reset();
+        r
+    });
+    let (raw_path, _distance_nm) = match found {
+        Some(r) => r,
+        None => astar(graph, start, goal, buffers, shore, arctic, None)?,
+    };
     let raw_hops = raw_path.len();
 
     // Stitch the true endpoints onto the node path so the route starts and
@@ -577,7 +598,7 @@ mod tests {
     fn astar_shortest_path() {
         let (g, node_a, node_d) = diamond_graph();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let result = astar(&g, node_a, node_d, &mut buffers, None, false);
+        let result = astar(&g, node_a, node_d, &mut buffers, None, false, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert!((cost - path_len(&g, &path)).abs() < 1e-3, "cost was {cost}");
@@ -590,7 +611,7 @@ mod tests {
     fn astar_same_node() {
         let (g, node_a, _) = diamond_graph();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let result = astar(&g, node_a, node_a, &mut buffers, None, false);
+        let result = astar(&g, node_a, node_a, &mut buffers, None, false, None);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert_eq!(path, vec![node_a]);
@@ -609,20 +630,20 @@ mod tests {
         let mut reused = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // First search touches (and closes) every node in the tiny diamond graph.
-        let first =
-            astar(&g, node_a, node_d, &mut reused, None, false).expect("first search finds a path");
+        let first = astar(&g, node_a, node_d, &mut reused, None, false, None)
+            .expect("first search finds a path");
 
         // Simulate AstarPool::release() + acquire(): O(1) generation bump, no
         // full-graph clear.
         reused.reset();
 
         // Second search on the same (now stale-but-reset) buffers.
-        let second = astar(&g, node_a, node_d, &mut reused, None, false)
+        let second = astar(&g, node_a, node_d, &mut reused, None, false, None)
             .expect("second search finds a path");
 
         // Baseline: identical query on completely fresh buffers.
         let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let baseline = astar(&g, node_a, node_d, &mut fresh, None, false)
+        let baseline = astar(&g, node_a, node_d, &mut fresh, None, false, None)
             .expect("baseline search finds a path");
 
         assert_eq!(
@@ -651,15 +672,16 @@ mod tests {
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // First: forward search closes/stamps every node on the A->D path.
-        let _ = astar(&g, node_a, node_d, &mut buffers, None, false).expect("path exists");
+        let _ = astar(&g, node_a, node_d, &mut buffers, None, false, None).expect("path exists");
 
         buffers.reset();
 
         // Second: reverse search (D -> A) on the same, now-stale buffers.
         let reused_result =
-            astar(&g, node_d, node_a, &mut buffers, None, false).expect("path exists");
+            astar(&g, node_d, node_a, &mut buffers, None, false, None).expect("path exists");
         let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let fresh_result = astar(&g, node_d, node_a, &mut fresh, None, false).expect("path exists");
+        let fresh_result =
+            astar(&g, node_d, node_a, &mut fresh, None, false, None).expect("path exists");
 
         assert_eq!(reused_result.0, fresh_result.0);
         assert!((reused_result.1 - fresh_result.1).abs() < 1e-6);
@@ -681,7 +703,7 @@ mod tests {
         }
         let g = b.build();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let result = astar(&g, 0, 1, &mut buffers, None, false);
+        let result = astar(&g, 0, 1, &mut buffers, None, false, None);
         assert!(result.is_none());
     }
 
@@ -741,14 +763,14 @@ mod tests {
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // Without penalty: short near-shore corridor via A.
-        let (path, cost) = astar(&g, s, goal, &mut buffers, None, false).unwrap();
+        let (path, cost) = astar(&g, s, goal, &mut buffers, None, false, None).unwrap();
         assert_eq!(path, vec![s, a, goal]);
         assert!((cost - path_len(&g, &path)).abs() < 1e-3);
 
         // With a 0.1 nm buffer: edge S->A costs 16x -> offshore wins.
         buffers.reset();
         let shore = shore_buffer_q(0.1);
-        let (path, cost) = astar(&g, s, goal, &mut buffers, shore, false).unwrap();
+        let (path, cost) = astar(&g, s, goal, &mut buffers, shore, false, None).unwrap();
         assert_eq!(path, vec![s, b_node, goal]);
         assert!(cost > path_len(&g, &path) - 1e-3);
     }
@@ -758,8 +780,17 @@ mod tests {
         let (g, node_a, node_d) = diamond_graph(); // all nodes shore_dist=255
         let mut b1 = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let mut b2 = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let plain = astar(&g, node_a, node_d, &mut b1, None, false).unwrap();
-        let with = astar(&g, node_a, node_d, &mut b2, shore_buffer_q(0.2), false).unwrap();
+        let plain = astar(&g, node_a, node_d, &mut b1, None, false, None).unwrap();
+        let with = astar(
+            &g,
+            node_a,
+            node_d,
+            &mut b2,
+            shore_buffer_q(0.2),
+            false,
+            None,
+        )
+        .unwrap();
         assert_eq!(plain.0, with.0);
         assert!((plain.1 - with.1).abs() < 1e-6);
     }
@@ -1417,7 +1448,7 @@ mod tests {
         let (g, [a, _, c, d]) =
             two_corner_graph([(75.0, 0.0), (88.0, 90.0), (60.0, 90.0), (75.0, 180.0)]);
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let (path, _) = astar(&g, a, d, &mut buffers, None, true).unwrap();
+        let (path, _) = astar(&g, a, d, &mut buffers, None, true, None).unwrap();
         assert_eq!(path, vec![a, c, d], "arctic=true must not open the ice cap");
     }
 
@@ -1427,10 +1458,10 @@ mod tests {
         let (g, [a, b, c, d]) =
             two_corner_graph([(74.0, -80.0), (74.5, -97.0), (55.0, -100.0), (74.0, -125.0)]);
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let (closed, _) = astar(&g, a, d, &mut buffers, None, false).unwrap();
+        let (closed, _) = astar(&g, a, d, &mut buffers, None, false, None).unwrap();
         assert_eq!(closed, vec![a, c, d]);
         buffers.reset();
-        let (open, _) = astar(&g, a, d, &mut buffers, None, true).unwrap();
+        let (open, _) = astar(&g, a, d, &mut buffers, None, true, None).unwrap();
         assert_eq!(open, vec![a, b, d]);
     }
 

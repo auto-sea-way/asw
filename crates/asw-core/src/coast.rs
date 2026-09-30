@@ -32,7 +32,7 @@ fn grid_row(lat: f64) -> usize {
 /// coastline edges are subdivided into collinear steps at build time.
 const MAX_DELTA: i64 = i16::MAX as i64;
 
-/// The coastline sections exactly as written to a v4 graph file.
+/// The coastline sections exactly as written to a v4/v5 graph file.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CoastlineSections {
     /// Delta index where run `i` starts. Length = run count + 1. Run `i`

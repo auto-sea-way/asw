@@ -52,8 +52,22 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     }
 
     // Step 3: Generate cells (main cascade res-3 through res-10, extended in passage zones)
-    let cells = crate::cells::generate_cells(&land, &coastline_index, bbox, PASSAGES)?;
+    let mut cells = crate::cells::generate_cells(&land, &coastline_index, bbox, PASSAGES)?;
     info!("Generated {} navigable cells", cells.len());
+
+    // Step 4: Drop the ice cap. The router never enters it, so its cells
+    // are dead weight. Ids are renumbered densely: build_edges and the remap
+    // below index by them.
+    let before = cells.len();
+    cells.retain(|&c, _| asw_core::h3::cell_center(c).0 <= asw_core::routing::ICE_CAP_LAT);
+    for (i, id) in cells.values_mut().enumerate() {
+        *id = i as u32;
+    }
+    info!(
+        "Dropped {} cells north of {} N",
+        before - cells.len(),
+        asw_core::routing::ICE_CAP_LAT
+    );
 
     // Step 5: Build edges (auto-detects max resolution from cells)
     let edges = crate::edges::build_edges(&cells, &land)?;
@@ -89,7 +103,7 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     // Store coastline
     builder.coastline_runs = coastline_runs;
 
-    // Step 7: Prune to the largest connected component, then write the v4 image
+    // Step 7: Prune to the largest connected component, then write the v5 image
     let builder = builder.prune_to_main_component();
     info!("Saving graph to {:?}...", output_path);
     std::fs::write(output_path, builder.build_bytes()).context("Failed to write graph")?;

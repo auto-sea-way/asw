@@ -1,7 +1,7 @@
 # asw-mobile
 
 Swift and Kotlin bindings for the auto-sea-way routing graph. Four calls over a
-memory-mapped v4 graph file:
+memory-mapped v5 graph file:
 
     installGraph(source, destination)
     openGraph(path) -> Graph
