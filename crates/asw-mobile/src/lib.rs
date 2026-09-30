@@ -278,7 +278,10 @@ impl Graph {
     }
 
     /// Route between two points with an optional shore clearance in
-    /// nautical miles (0 to 5). Blocking; routes serialise on one buffer set.
+    /// nautical miles (0 to 5). `arctic` opens the seasonal Arctic passages;
+    /// the ice cap north of 80N is always closed. Blocking; routes serialise
+    /// on one buffer set.
+    #[uniffi::method(default(arctic = false))]
     pub fn route(
         &self,
         from_lat: f64,
@@ -286,6 +289,7 @@ impl Graph {
         to_lat: f64,
         to_lon: f64,
         shore_buffer_nm: f64,
+        arctic: bool,
     ) -> Result<Route, AswError> {
         for (name, lat, lon) in [("from", from_lat, from_lon), ("to", to_lat, to_lon)] {
             if !valid_point(lat, lon) {
@@ -325,6 +329,7 @@ impl Graph {
                 &knn,
                 buffers,
                 shore_buffer_nm,
+                arctic,
             );
             maybe_panic_after_search();
             result
@@ -517,7 +522,7 @@ mod tests {
     fn route_clear_line_of_sight_returns_two_points() {
         let (dir, path) = chain_graph_path(vec![]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
-        let r = g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap();
+        let r = g.route(36.0, 26.0, 37.0, 28.0, 0.0, false).unwrap();
         assert_eq!(r.coordinates.len(), 2);
         assert_eq!(
             r.coordinates[0],
@@ -551,7 +556,7 @@ mod tests {
         let wall = vec![vec![(27.5, 36.2), (27.5, 37.5)]];
         let (dir, path) = chain_graph_path(wall);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
-        let r = g.route(36.0, 26.0, 37.0, 28.0, 0.5).unwrap();
+        let r = g.route(36.0, 26.0, 37.0, 28.0, 0.5, false).unwrap();
         assert!(r.coordinates.len() >= 2);
         assert!(r.distance_nm > 0.0);
         std::fs::remove_dir_all(dir).unwrap();
@@ -562,15 +567,15 @@ mod tests {
         let (dir, path) = chain_graph_path(vec![]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert!(matches!(
-            g.route(36.0, 26.0, 37.0, 28.0, 6.0),
+            g.route(36.0, 26.0, 37.0, 28.0, 6.0, false),
             Err(AswError::InvalidArgument { .. })
         ));
         assert!(matches!(
-            g.route(f64::NAN, 26.0, 37.0, 28.0, 0.0),
+            g.route(f64::NAN, 26.0, 37.0, 28.0, 0.0, false),
             Err(AswError::InvalidArgument { .. })
         ));
         assert!(matches!(
-            g.route(36.0, 26.0, 37.0, 28.0, -0.1),
+            g.route(36.0, 26.0, 37.0, 28.0, -0.1, false),
             Err(AswError::InvalidArgument { .. })
         ));
         std::fs::remove_dir_all(dir).unwrap();
@@ -588,7 +593,7 @@ mod tests {
         empty.save(&path).unwrap();
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert_eq!(
-            g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap_err(),
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0, false).unwrap_err(),
             AswError::NoRoute
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -600,11 +605,11 @@ mod tests {
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         PANIC_NEXT.with(|c| c.set(true));
         assert!(matches!(
-            g.route(36.0, 26.0, 37.0, 28.0, 0.0),
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0, false),
             Err(AswError::Internal { .. })
         ));
         assert!(
-            g.route(36.0, 26.0, 37.0, 28.0, 0.0).is_ok(),
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0, false).is_ok(),
             "mutex must not stay poisoned"
         );
         std::fs::remove_dir_all(dir).unwrap();
@@ -618,7 +623,9 @@ mod tests {
             .map(|_| {
                 let g = Arc::clone(&g);
                 std::thread::spawn(move || {
-                    g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap().distance_nm
+                    g.route(36.0, 26.0, 37.0, 28.0, 0.0, false)
+                        .unwrap()
+                        .distance_nm
                 })
             })
             .collect();
@@ -633,14 +640,14 @@ mod tests {
         // must not leave closed flags and heuristics live for the next route.
         let (dir, path) = chain_graph_path(vec![vec![(27.5, 36.2), (27.5, 37.5)]]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
-        let first = g.route(36.0, 26.0, 37.0, 28.0, 0.0).unwrap();
+        let first = g.route(36.0, 26.0, 37.0, 28.0, 0.0, false).unwrap();
         PANIC_AFTER_SEARCH.with(|c| c.set(true));
         assert!(matches!(
-            g.route(36.0, 26.0, 37.0, 28.0, 0.0),
+            g.route(36.0, 26.0, 37.0, 28.0, 0.0, false),
             Err(AswError::Internal { .. })
         ));
         let again = g
-            .route(36.0, 26.0, 37.0, 28.0, 0.0)
+            .route(36.0, 26.0, 37.0, 28.0, 0.0, false)
             .expect("stale search state must not turn a valid route into NoRoute");
         assert_eq!(again, first);
         std::fs::remove_dir_all(dir).unwrap();
@@ -670,11 +677,11 @@ mod tests {
         let (dir, path) = chain_graph_path(vec![]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         assert!(matches!(
-            g.route(200.0, 0.0, 201.0, 0.0, 0.0),
+            g.route(200.0, 0.0, 201.0, 0.0, 0.0, false),
             Err(AswError::InvalidArgument { .. })
         ));
         assert!(matches!(
-            g.route(36.0, 26.0, 37.0, 181.0, 0.0),
+            g.route(36.0, 26.0, 37.0, 181.0, 0.0, false),
             Err(AswError::InvalidArgument { .. })
         ));
         assert_eq!(g.is_water(f64::NAN, 26.0), Water::Unknown);

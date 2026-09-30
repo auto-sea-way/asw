@@ -73,14 +73,80 @@ fn shore_factor(d: u8, buffer_q: u8) -> f32 {
     }
 }
 
+/// North of this latitude the sea is permanent pack ice: never routable.
+/// The graph is built from land polygons only, so without this the Arctic
+/// Ocean is open water and Asia-Europe routes go over the pole.
+// ponytail: a fixed latitude and two boxes stand in for real ice data. Swap
+// in a sea-ice mask (e.g. NSIDC median September extent) if routes near the
+// ice edge ever matter.
+pub const ICE_CAP_LAT: f64 = 80.0;
+
+/// Seasonal Arctic passages, closed unless the request sets `arctic`:
+/// (min_lon, min_lat, max_lon, max_lat). Each box runs from the mainland
+/// coast up to the ice cap, cutting the transit in the middle, so ports on
+/// either side stay reachable from their own ocean.
+const ARCTIC_PASSAGES: [(f64, f64, f64, f64); 2] = [
+    // Northern Sea Route: Vilkitsky Strait and Severnaya Zemlya.
+    (94.0, 75.5, 112.0, ICE_CAP_LAT),
+    // Northwest Passage: across the Canadian Arctic Archipelago, from
+    // Boothia to Queen Maud Gulf (Cambridge Bay stays outside).
+    (-104.5, 67.0, -92.0, ICE_CAP_LAT),
+];
+
+/// Is the point in the ice cap, or in a closed Arctic passage?
+fn blocked(lat: f64, lon: f64, arctic: bool) -> bool {
+    lat > ICE_CAP_LAT
+        || (!arctic
+            && ARCTIC_PASSAGES
+                .iter()
+                .any(|b| lon >= b.0 && lon <= b.2 && lat >= b.1 && lat <= b.3))
+}
+
+/// Does the planar lon/lat segment (the same geometry `crosses_land` tests)
+/// enter the ice cap or a closed Arctic passage?
+fn segment_blocked(lon1: f64, lat1: f64, lon2: f64, lat2: f64, arctic: bool) -> bool {
+    if lat1.max(lat2) > ICE_CAP_LAT {
+        return true;
+    }
+    // A segment across the antimeridian is split into two pieces hugging
+    // lon ±180, far from both boxes.
+    if arctic || (lon1 - lon2).abs() > 180.0 {
+        return false;
+    }
+    ARCTIC_PASSAGES.iter().any(|&(x0, y0, x1, y1)| {
+        // Liang-Barsky: clip the segment's parameter range to the box.
+        let (dx, dy) = (lon2 - lon1, lat2 - lat1);
+        let (mut t0, mut t1) = (0.0f64, 1.0f64);
+        for (p, q) in [
+            (-dx, lon1 - x0),
+            (dx, x1 - lon1),
+            (-dy, lat1 - y0),
+            (dy, y1 - lat1),
+        ] {
+            if p == 0.0 {
+                if q < 0.0 {
+                    return false;
+                }
+            } else if p < 0.0 {
+                t0 = t0.max(q / p);
+            } else {
+                t1 = t1.min(q / p);
+            }
+        }
+        t0 <= t1
+    })
+}
+
 /// A* pathfinding with haversine heuristic. `shore` is the clearance from
-/// `shore_buffer_q`, or None for no penalty.
+/// `shore_buffer_q`, or None for no penalty. Never enters the ice cap, nor a
+/// seasonal Arctic passage unless `arctic` is set.
 pub fn astar(
     graph: &RoutingGraph,
     start: u32,
     goal: u32,
     buffers: &mut crate::astar_pool::AstarBuffers,
     shore: Option<u8>,
+    arctic: bool,
 ) -> Option<(Vec<u32>, f64)> {
     // Priority queue: (f_score bits, node_id).
     // ponytail: f >= 0 always (g and haversine h are non-negative), so the
@@ -126,6 +192,9 @@ pub fn astar(
             // Edge length from the cached centres: one haversine per
             // relaxation, no H3 decode (the file stores no weights).
             let [nlat, nlon] = buffers.pos[neighbor as usize];
+            if blocked(nlat, nlon, arctic) {
+                continue;
+            }
             let weight = haversine_nm(clat, clon, nlat, nlon) as f32;
             let weight = match shore {
                 Some(q) => weight * shore_factor(graph.shore_dist(neighbor), q),
@@ -170,12 +239,14 @@ pub struct SmoothResult {
 /// only consulted when `shore_buffer_nm > 0`. Returns strictly increasing
 /// indices into `coords`, always keeping the first and last. When even the
 /// next hop is blocked (e.g. a pin on land), the blocked segment is kept and
-/// smoothing continues from that point.
+/// smoothing continues from that point. A shortcut into the ice cap or a
+/// closed Arctic passage (see `astar`) counts as blocked.
 pub fn smooth_indices(
     coords: &[[f64; 2]],
     shore_dist: &[u8],
     coastline: &CoastlineIndex<'_>,
     shore_buffer_nm: f64,
+    arctic: bool,
 ) -> SmoothResult {
     if coords.len() <= 2 {
         return SmoothResult {
@@ -199,7 +270,9 @@ pub fn smooth_indices(
 
         let clear = |j: usize| -> bool {
             let [t_lon, t_lat] = coords[j];
-            if coastline.crosses_land(c_lon, c_lat, t_lon, t_lat) {
+            if segment_blocked(c_lon, c_lat, t_lon, t_lat, arctic)
+                || coastline.crosses_land(c_lon, c_lat, t_lon, t_lat)
+            {
                 return false;
             }
             if use_buffer {
@@ -305,8 +378,11 @@ fn direct_line_ok(
     to_lat: f64,
     to_lon: f64,
     shore_buffer_nm: f64,
+    arctic: bool,
 ) -> bool {
-    if coastline.crosses_land(from_lon, from_lat, to_lon, to_lat) {
+    if segment_blocked(from_lon, from_lat, to_lon, to_lat, arctic)
+        || coastline.crosses_land(from_lon, from_lat, to_lon, to_lat)
+    {
         return false;
     }
     if shore_buffer_nm <= 0.0 {
@@ -335,7 +411,8 @@ pub fn is_water(graph: &RoutingGraph, lat: f64, lon: f64) -> bool {
 }
 
 /// Compute a full route: direct-line shortcut → snap → A* → stitch true
-/// endpoints → smooth → build result.
+/// endpoints → smooth → build result. `arctic` opens the seasonal Arctic
+/// passages; the ice cap stays closed either way.
 #[allow(clippy::too_many_arguments)]
 pub fn compute_route(
     graph: &RoutingGraph,
@@ -347,6 +424,7 @@ pub fn compute_route(
     node_knn: &dyn Fn(f64, f64) -> Option<(u32, f64)>,
     buffers: &mut crate::astar_pool::AstarBuffers,
     shore_buffer_nm: f64,
+    arctic: bool,
 ) -> Option<RouteResult> {
     // Direct-line shortcut: if the straight line between the requested
     // points is usable, no graph search is needed. This also covers points
@@ -359,6 +437,7 @@ pub fn compute_route(
         to_lat,
         to_lon,
         shore_buffer_nm,
+        arctic,
     ) {
         return Some(RouteResult {
             distance_nm: haversine_nm(from_lat, from_lon, to_lat, to_lon),
@@ -371,9 +450,17 @@ pub fn compute_route(
 
     let (start, _) = node_knn(from_lat, from_lon)?;
     let (goal, _) = node_knn(to_lat, to_lon)?;
+    // An endpoint in a closed area has no route; say so now instead of
+    // letting A* exhaust the whole graph first.
+    for n in [start, goal] {
+        let (lat, lon) = graph.node_pos(n);
+        if blocked(lat, lon, arctic) {
+            return None;
+        }
+    }
 
     let shore = shore_buffer_q(shore_buffer_nm);
-    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, shore)?;
+    let (raw_path, _distance_nm) = astar(graph, start, goal, buffers, shore, arctic)?;
     let raw_hops = raw_path.len();
 
     // Stitch the true endpoints onto the node path so the route starts and
@@ -406,7 +493,7 @@ pub fn compute_route(
     coords.push([to_lon, to_lat]);
     shore_dist.push(pin_q(to_lon, to_lat));
 
-    let sm = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm);
+    let sm = smooth_indices(&coords, &shore_dist, coastline, shore_buffer_nm, arctic);
     let smoothed: Vec<[f64; 2]> = sm.kept.into_iter().map(|i| coords[i]).collect();
     let smooth_hops = smoothed.len();
     let land_legs = sm.land_segs;
@@ -490,7 +577,7 @@ mod tests {
     fn astar_shortest_path() {
         let (g, node_a, node_d) = diamond_graph();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let result = astar(&g, node_a, node_d, &mut buffers, None);
+        let result = astar(&g, node_a, node_d, &mut buffers, None, false);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert!((cost - path_len(&g, &path)).abs() < 1e-3, "cost was {cost}");
@@ -503,7 +590,7 @@ mod tests {
     fn astar_same_node() {
         let (g, node_a, _) = diamond_graph();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let result = astar(&g, node_a, node_a, &mut buffers, None);
+        let result = astar(&g, node_a, node_a, &mut buffers, None, false);
         assert!(result.is_some());
         let (path, cost) = result.unwrap();
         assert_eq!(path, vec![node_a]);
@@ -523,20 +610,20 @@ mod tests {
 
         // First search touches (and closes) every node in the tiny diamond graph.
         let first =
-            astar(&g, node_a, node_d, &mut reused, None).expect("first search finds a path");
+            astar(&g, node_a, node_d, &mut reused, None, false).expect("first search finds a path");
 
         // Simulate AstarPool::release() + acquire(): O(1) generation bump, no
         // full-graph clear.
         reused.reset();
 
         // Second search on the same (now stale-but-reset) buffers.
-        let second =
-            astar(&g, node_a, node_d, &mut reused, None).expect("second search finds a path");
+        let second = astar(&g, node_a, node_d, &mut reused, None, false)
+            .expect("second search finds a path");
 
         // Baseline: identical query on completely fresh buffers.
         let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let baseline =
-            astar(&g, node_a, node_d, &mut fresh, None).expect("baseline search finds a path");
+        let baseline = astar(&g, node_a, node_d, &mut fresh, None, false)
+            .expect("baseline search finds a path");
 
         assert_eq!(
             second.0, baseline.0,
@@ -564,14 +651,15 @@ mod tests {
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // First: forward search closes/stamps every node on the A->D path.
-        let _ = astar(&g, node_a, node_d, &mut buffers, None).expect("path exists");
+        let _ = astar(&g, node_a, node_d, &mut buffers, None, false).expect("path exists");
 
         buffers.reset();
 
         // Second: reverse search (D -> A) on the same, now-stale buffers.
-        let reused_result = astar(&g, node_d, node_a, &mut buffers, None).expect("path exists");
+        let reused_result =
+            astar(&g, node_d, node_a, &mut buffers, None, false).expect("path exists");
         let mut fresh = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let fresh_result = astar(&g, node_d, node_a, &mut fresh, None).expect("path exists");
+        let fresh_result = astar(&g, node_d, node_a, &mut fresh, None, false).expect("path exists");
 
         assert_eq!(reused_result.0, fresh_result.0);
         assert!((reused_result.1 - fresh_result.1).abs() < 1e-6);
@@ -593,7 +681,7 @@ mod tests {
         }
         let g = b.build();
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let result = astar(&g, 0, 1, &mut buffers, None);
+        let result = astar(&g, 0, 1, &mut buffers, None, false);
         assert!(result.is_none());
     }
 
@@ -653,14 +741,14 @@ mod tests {
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
 
         // Without penalty: short near-shore corridor via A.
-        let (path, cost) = astar(&g, s, goal, &mut buffers, None).unwrap();
+        let (path, cost) = astar(&g, s, goal, &mut buffers, None, false).unwrap();
         assert_eq!(path, vec![s, a, goal]);
         assert!((cost - path_len(&g, &path)).abs() < 1e-3);
 
         // With a 0.1 nm buffer: edge S->A costs 16x -> offshore wins.
         buffers.reset();
         let shore = shore_buffer_q(0.1);
-        let (path, cost) = astar(&g, s, goal, &mut buffers, shore).unwrap();
+        let (path, cost) = astar(&g, s, goal, &mut buffers, shore, false).unwrap();
         assert_eq!(path, vec![s, b_node, goal]);
         assert!(cost > path_len(&g, &path) - 1e-3);
     }
@@ -670,8 +758,8 @@ mod tests {
         let (g, node_a, node_d) = diamond_graph(); // all nodes shore_dist=255
         let mut b1 = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
         let mut b2 = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let plain = astar(&g, node_a, node_d, &mut b1, None).unwrap();
-        let with = astar(&g, node_a, node_d, &mut b2, shore_buffer_q(0.2)).unwrap();
+        let plain = astar(&g, node_a, node_d, &mut b1, None, false).unwrap();
+        let with = astar(&g, node_a, node_d, &mut b2, shore_buffer_q(0.2), false).unwrap();
         assert_eq!(plain.0, with.0);
         assert!((plain.1 - with.1).abs() < 1e-6);
     }
@@ -698,7 +786,7 @@ mod tests {
         let sections = crate::coast::CoastlineSections::from_runs(&[]);
         let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.3, 0.1], [0.6, -0.1], [1.0, 0.0]];
-        let out = smooth_indices(&coords, &[255; 4], &coastline, 0.0);
+        let out = smooth_indices(&coords, &[255; 4], &coastline, 0.0, false);
         assert_eq!(out.kept, vec![0, 3]);
         assert!(out.land_segs.is_empty());
     }
@@ -710,7 +798,7 @@ mod tests {
         let sections = wall(0.5, -1.0, 1.0);
         let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.2, 0.5], [0.5, 1.5], [0.8, 0.5], [1.0, 0.0]];
-        let out = smooth_indices(&coords, &[255; 5], &coastline, 0.0);
+        let out = smooth_indices(&coords, &[255; 5], &coastline, 0.0, false);
         assert_eq!(out.kept, vec![0, 2, 4]);
         assert!(out.land_segs.is_empty());
     }
@@ -720,7 +808,7 @@ mod tests {
         let sections = wall(0.5, -1.0, 1.0);
         let coastline = sections.index();
         let coords = [[0.0, 0.0], [1.0, 0.0]];
-        let out = smooth_indices(&coords, &[255; 2], &coastline, 0.0);
+        let out = smooth_indices(&coords, &[255; 2], &coastline, 0.0, false);
         assert_eq!(out.kept, vec![0, 1]);
         assert!(out.land_segs.is_empty());
     }
@@ -733,7 +821,7 @@ mod tests {
         let sections = island_around_origin();
         let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.5, 0.0], [1.0, 0.0]];
-        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0, false);
         assert_eq!(*out.kept.first().unwrap(), 0);
         assert_eq!(*out.kept.last().unwrap(), 2);
         // The forced first segment crosses the ring: it must be flagged.
@@ -748,7 +836,7 @@ mod tests {
         let sections = wall(28.0, 36.3, 36.7);
         let coastline = sections.index();
         let coords = [[28.02, 36.4], [28.02, 36.5], [28.02, 36.6]];
-        let out = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 2.0, false);
         assert_eq!(out.kept, vec![0, 1, 2]);
         assert!(
             out.land_segs.is_empty(),
@@ -763,7 +851,7 @@ mod tests {
         let sections = wall(0.5, -1.0, 1.0);
         let coastline = sections.index();
         let coords = [[0.0, 0.0], [0.3, 0.0], [0.8, 0.0]];
-        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0);
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0, false);
         assert_eq!(out.kept, vec![0, 1, 2]);
         assert_eq!(out.land_segs, vec![1]);
     }
@@ -775,9 +863,9 @@ mod tests {
         let sections = wall(28.0, 36.45, 36.55);
         let coastline = sections.index();
         let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
-        let loose = smooth_indices(&coords, &[255; 3], &coastline, 2.0);
+        let loose = smooth_indices(&coords, &[255; 3], &coastline, 2.0, false);
         assert_eq!(loose.kept, vec![0, 2]);
-        let strict = smooth_indices(&coords, &[255; 3], &coastline, 3.0);
+        let strict = smooth_indices(&coords, &[255; 3], &coastline, 3.0, false);
         assert_eq!(
             strict.kept,
             vec![0, 1, 2],
@@ -793,7 +881,7 @@ mod tests {
         let sections = wall(28.0, 36.45, 36.55);
         let coastline = sections.index();
         let coords = [[28.05, 36.3], [28.15, 36.5], [28.05, 36.7]];
-        let out = smooth_indices(&coords, &[20, 255, 20], &coastline, 3.0);
+        let out = smooth_indices(&coords, &[20, 255, 20], &coastline, 3.0, false);
         assert_eq!(out.kept, vec![0, 2]);
         assert!(out.land_segs.is_empty());
     }
@@ -834,7 +922,19 @@ mod tests {
         // knn returning None proves the shortcut runs BEFORE snapping.
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
-        let r = compute_route(&g, 0.0, 0.0, 0.3, 0.2, &coastline, &knn, &mut buffers, 0.0).unwrap();
+        let r = compute_route(
+            &g,
+            0.0,
+            0.0,
+            0.3,
+            0.2,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        )
+        .unwrap();
         assert_eq!(r.coordinates, vec![[0.0, 0.0], [0.2, 0.3]]);
         assert!((r.distance_nm - haversine_nm(0.0, 0.0, 0.3, 0.2)).abs() < 1e-9);
         assert_eq!(r.raw_hops, 2);
@@ -848,7 +948,19 @@ mod tests {
         let g = GraphBuilder::default().build();
         let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
         let mut buffers = crate::astar_pool::AstarBuffers::new(1);
-        let r = compute_route(&g, 0.5, 0.5, 0.5, 0.5, &coastline, &knn, &mut buffers, 0.0).unwrap();
+        let r = compute_route(
+            &g,
+            0.5,
+            0.5,
+            0.5,
+            0.5,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        )
+        .unwrap();
         assert!(r.distance_nm.abs() < 1e-9);
         assert_eq!(r.coordinates.len(), 2);
     }
@@ -874,6 +986,7 @@ mod tests {
             &knn,
             &mut buffers,
             2.0,
+            false,
         );
         assert!(loose.is_some_and(|r| r.coordinates.len() == 2));
 
@@ -889,6 +1002,7 @@ mod tests {
             &knn,
             &mut buffers,
             3.0,
+            false,
         );
         assert!(strict.is_none());
     }
@@ -913,6 +1027,7 @@ mod tests {
             &knn,
             &mut buffers,
             3.0,
+            false,
         );
         assert!(
             r.is_some_and(|r| r.coordinates.len() == 2),
@@ -932,8 +1047,19 @@ mod tests {
             Some(if lon < 0.5 { (s, 0.0) } else { (goal, 0.0) })
         };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let r =
-            compute_route(&g, 0.0, -0.1, 0.0, 1.1, &coastline, &knn, &mut buffers, 0.0).unwrap();
+        let r = compute_route(
+            &g,
+            0.0,
+            -0.1,
+            0.0,
+            1.1,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        )
+        .unwrap();
 
         assert_eq!(r.coordinates.first().unwrap(), &[-0.1, 0.0]);
         assert_eq!(r.coordinates.last().unwrap(), &[1.1, 0.0]);
@@ -963,7 +1089,19 @@ mod tests {
         let n = ids[0];
         let knn = move |_: f64, _: f64| -> Option<(u32, f64)> { Some((n, 0.0)) };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let r = compute_route(&g, 0.0, 0.4, 0.0, 0.6, &coastline, &knn, &mut buffers, 0.0).unwrap();
+        let r = compute_route(
+            &g,
+            0.0,
+            0.4,
+            0.0,
+            0.6,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        )
+        .unwrap();
 
         // node_pos decodes the H3 cell center, not the coordinates passed to
         // add_node — compute the expected legs from the actual node position.
@@ -992,8 +1130,19 @@ mod tests {
             Some(if lon < 1.0 { (s, 0.0) } else { (goal, 0.0) })
         };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let r = compute_route(&g, 0.0, 0.0, 0.0, 2.2, &coastline, &knn, &mut buffers, 0.0)
-            .expect("land pin must still produce a route");
+        let r = compute_route(
+            &g,
+            0.0,
+            0.0,
+            0.0,
+            2.2,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        )
+        .expect("land pin must still produce a route");
         assert_eq!(r.coordinates.first().unwrap(), &[0.0, 0.0]);
         assert_eq!(r.coordinates.last().unwrap(), &[2.2, 0.0]);
         assert!(r.distance_nm > 0.0);
@@ -1058,6 +1207,7 @@ mod tests {
             &knn,
             &mut buffers,
             0.0,
+            false,
         )
         .expect("route must exist despite land pin");
 
@@ -1133,6 +1283,7 @@ mod tests {
             &knn,
             &mut buffers,
             0.0,
+            false,
         )
         .expect("route must exist: both pins snap to the same node");
 
@@ -1160,7 +1311,19 @@ mod tests {
             }
         };
         let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
-        let r = compute_route(&g, alat, alon, dlat, dlon, &coast, &knn, &mut buffers, 0.0).unwrap();
+        let r = compute_route(
+            &g,
+            alat,
+            alon,
+            dlat,
+            dlon,
+            &coast,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        )
+        .unwrap();
         assert!(r.land_legs.is_empty());
         let full: f64 = r
             .coordinates
@@ -1218,5 +1381,132 @@ mod tests {
     fn is_water_without_any_node_is_land() {
         let g = GraphBuilder::default().build();
         assert!(!is_water(&g, 36.5, 28.0));
+    }
+
+    /// Diamond A-B-D / A-C-D where B is the shorter corner. Returns the
+    /// graph and the ids of A, B, C, D.
+    fn two_corner_graph(corners: [(f64, f64); 4]) -> (RoutingGraph, [u32; 4]) {
+        let mut cells: Vec<(u64, usize)> = corners
+            .iter()
+            .enumerate()
+            .map(|(i, &(lat, lon))| {
+                let cell = h3o::LatLng::new(lat, lon)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Five);
+                (u64::from(cell), i)
+            })
+            .collect();
+        cells.sort_by_key(|&(h3, _)| h3);
+        let mut b = GraphBuilder::default();
+        let mut ids = [0u32; 4];
+        for &(h3, i) in &cells {
+            ids[i] = b.add_node(h3, 255);
+        }
+        let [a, bb, c, d] = ids;
+        b.add_edge(a, bb);
+        b.add_edge(bb, d);
+        b.add_edge(a, c);
+        b.add_edge(c, d);
+        (b.build(), ids)
+    }
+
+    #[test]
+    fn astar_never_crosses_the_ice_cap() {
+        // A and D on opposite sides of the Arctic; B next to the pole is the
+        // short way, C at 60N the long way round.
+        let (g, [a, _, c, d]) =
+            two_corner_graph([(75.0, 0.0), (88.0, 90.0), (60.0, 90.0), (75.0, 180.0)]);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
+        let (path, _) = astar(&g, a, d, &mut buffers, None, true).unwrap();
+        assert_eq!(path, vec![a, c, d], "arctic=true must not open the ice cap");
+    }
+
+    #[test]
+    fn astar_takes_northwest_passage_only_when_asked() {
+        // B sits in Barrow Strait (inside the NWP box), C far south.
+        let (g, [a, b, c, d]) =
+            two_corner_graph([(74.0, -80.0), (74.5, -97.0), (55.0, -100.0), (74.0, -125.0)]);
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
+        let (closed, _) = astar(&g, a, d, &mut buffers, None, false).unwrap();
+        assert_eq!(closed, vec![a, c, d]);
+        buffers.reset();
+        let (open, _) = astar(&g, a, d, &mut buffers, None, true).unwrap();
+        assert_eq!(open, vec![a, b, d]);
+    }
+
+    #[test]
+    fn shortcut_declined_through_closed_passage() {
+        // Open water (no coastline) straight through Parry Channel.
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coastline = sections.index();
+        let g = GraphBuilder::default().build();
+        let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(1);
+        let (fl, fo, tl, to) = (74.0, -80.0, 74.0, -125.0);
+        let closed = compute_route(
+            &g,
+            fl,
+            fo,
+            tl,
+            to,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+        );
+        assert!(closed.is_none(), "direct line must not cut through the NWP");
+        let open = compute_route(
+            &g,
+            fl,
+            fo,
+            tl,
+            to,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            true,
+        );
+        assert!(open.is_some_and(|r| r.coordinates.len() == 2));
+    }
+
+    #[test]
+    fn smoothing_keeps_corner_around_closed_passage() {
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coastline = sections.index();
+        // Detour south of the NWP box; the first-to-last line crosses it.
+        let coords = [[-80.0, 74.0], [-98.0, 60.0], [-125.0, 74.0]];
+        let closed = smooth_indices(&coords, &[255; 3], &coastline, 0.0, false);
+        assert_eq!(closed.kept, vec![0, 1, 2]);
+        let open = smooth_indices(&coords, &[255; 3], &coastline, 0.0, true);
+        assert_eq!(open.kept, vec![0, 2]);
+    }
+
+    #[test]
+    fn segment_blocked_edges() {
+        assert!(
+            segment_blocked(0.0, 79.0, 10.0, 81.0, true),
+            "enters the ice cap"
+        );
+        assert!(
+            !segment_blocked(0.0, 79.0, 60.0, 79.0, false),
+            "stays under the cap"
+        );
+        assert!(
+            segment_blocked(-80.0, 74.0, -125.0, 74.0, false),
+            "crosses NWP box"
+        );
+        assert!(!segment_blocked(-80.0, 74.0, -125.0, 74.0, true));
+        assert!(
+            segment_blocked(90.0, 77.0, 115.0, 77.0, false),
+            "crosses NSR box"
+        );
+        assert!(
+            !segment_blocked(-80.0, 60.0, -125.0, 60.0, false),
+            "south of both"
+        );
+        // Antimeridian-crossing segments are nowhere near either box.
+        assert!(!segment_blocked(179.0, 70.0, -179.0, 70.0, false));
     }
 }

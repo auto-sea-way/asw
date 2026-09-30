@@ -22,6 +22,8 @@ struct RouteQuery {
     to: String,
     /// Minimum distance from shore in nautical miles (0..=5.0, default 0).
     shore_buffer: Option<f64>,
+    /// Open the seasonal Arctic passages (default false).
+    arctic: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -101,6 +103,8 @@ async fn route_handler(
         ));
     }
 
+    let arctic = params.arctic.unwrap_or(false);
+
     // Bound concurrent A* computations to the buffer pool's capacity before
     // handing off to the blocking pool: without this, `spawn_blocking` can
     // spin up to Tokio's 512-thread blocking pool, and each thread beyond the
@@ -136,6 +140,7 @@ async fn route_handler(
             &knn,
             &mut buffers,
             shore_buffer_nm,
+            arctic,
         );
         app.astar_pool.release(buffers);
         result
