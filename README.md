@@ -50,7 +50,8 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
-6. **Serialize** graph to a flat memory-mapped binary file (format v4: sorted H3 ids, varint edge targets, per-node shore distance, delta-coded coastline runs with a 0.1° grid index; no stored weights, no compression)
+6. **Summarise** the graph as a coarse graph: one node per connected piece of water inside each res-3 region (about 41k nodes). A long route first finds its way on this coarse graph, and the fine search then stays inside a corridor around that path
+7. **Serialize** graph to a flat memory-mapped binary file (format v5: sorted H3 ids, varint edge targets, per-node shore distance, delta-coded coastline runs with a 0.1° grid index, the coarse graph; no stored weights, no compression)
 
 ## Comparison with Alternatives
 

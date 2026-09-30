@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING:** graph format v4 → v5. The file adds a coarse graph (one node per connected piece of water inside each res-3 H3 region, about 41k nodes and 2 MB on the planet). Long routes first run A* on the coarse graph and then limit the fine search to a corridor around that path, falling back to the full search when the corridor has no route. v4 files are rejected; the planet graph must be downloaded again or rebuilt. Spec: `docs/superpowers/specs/2026-09-30-graph-format-v5-corridor-design.md`.
+- The build drops cells north of 80°N, which the router never enters. `is_water` there now returns false.
+
 ### Fixed
 
 - Routes no longer cross the Arctic ice cap. The graph is built from land polygons only, so the Arctic Ocean counted as open water and Shanghai to Rotterdam went over the North Pole (7,124 nm). The router now never enters the sea north of 80°N, and it closes the Northern Sea Route and the Northwest Passage by default. Shanghai to Rotterdam now goes via Suez (10,380 nm).
