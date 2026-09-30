@@ -19,17 +19,17 @@ pub fn quantize_shore_dist(nm: f64) -> u8 {
 
 const _: () = assert!(
     cfg!(target_endian = "little"),
-    "v4 graph files are little-endian"
+    "graph files are little-endian"
 );
 
-const MAGIC: [u8; 4] = *b"ASW\x04";
+const MAGIC: [u8; 4] = *b"ASW\x05";
 const VERSION_OFF: usize = 8; // u8 length + 63 bytes
 const NUM_NODES_OFF: usize = 72;
 const NUM_EDGES_OFF: usize = 76;
 const NUM_RUNS_OFF: usize = 80;
 const TABLE_OFF: usize = 88;
-const SECTION_COUNT: usize = 10;
-const HEADER_LEN: usize = TABLE_OFF + SECTION_COUNT * 16; // 248
+const SECTION_COUNT: usize = 16;
+const HEADER_LEN: usize = TABLE_OFF + SECTION_COUNT * 16; // 344
 
 const SEC_NODE_H3: usize = 0;
 const SEC_OFFSETS: usize = 1;
@@ -41,6 +41,12 @@ const SEC_COAST_HEADS: usize = 6;
 const SEC_COAST_DELTAS: usize = 7;
 const SEC_GRID_OFFSETS: usize = 8;
 const SEC_GRID_IDS: usize = 9;
+const SEC_COARSE_REGION: usize = 10;
+const SEC_COARSE_REP: usize = 11;
+const SEC_COARSE_SIZE: usize = 12;
+const SEC_COARSE_POS: usize = 13;
+const SEC_COARSE_OFFSETS: usize = 14;
+const SEC_COARSE_TARGETS: usize = 15;
 
 /// Integer types that may be viewed directly in the mapped file.
 pub trait Plain: Copy + private::Sealed {}
@@ -109,8 +115,9 @@ struct Section {
     len: usize,
 }
 
-/// File layout: 248-byte header, then ten 8-byte-aligned little-endian
-/// sections (see the v4 design spec). The struct is a view over the bytes;
+/// File layout: 344-byte header, then sixteen 8-byte-aligned little-endian
+/// sections: the v4 ten plus the coarse graph (see the v4 and v5 design
+/// specs). The struct is a view over the bytes;
 /// nothing is decoded at open time.
 ///
 /// Nodes are H3 cell indices in strictly ascending order (array index =
@@ -138,7 +145,7 @@ impl std::fmt::Debug for RoutingGraph {
 }
 
 impl RoutingGraph {
-    /// Memory-map a v4 file. `populate` asks the kernel to read the whole
+    /// Memory-map a v5 file. `populate` asks the kernel to read the whole
     /// file in at open (MAP_POPULATE on Linux, MADV_WILLNEED elsewhere) and
     /// also runs the monotonicity scans over the two small CSR tables (the
     /// grid table alone is 26 MB, which a phone opening the file cold must
@@ -176,7 +183,7 @@ impl RoutingGraph {
         );
         anyhow::ensure!(
             b[3] == MAGIC[3],
-            "Unsupported ASW graph version {} (expected 4). Rebuild required.",
+            "Unsupported ASW graph version {} (expected 5). Rebuild required.",
             b[3]
         );
         anyhow::ensure!(b.len() >= HEADER_LEN, "graph header truncated");
@@ -224,6 +231,19 @@ impl RoutingGraph {
             sections[SEC_GRID_IDS].len % 4 == 0,
             "grid_ids length not a multiple of 4"
         );
+        anyhow::ensure!(
+            sections[SEC_COARSE_REGION].len.is_multiple_of(8),
+            "coarse_region length not a multiple of 8"
+        );
+        let nc = sections[SEC_COARSE_REGION].len / 8;
+        expect(SEC_COARSE_REP, nc * 4, "coarse_rep")?;
+        expect(SEC_COARSE_SIZE, nc * 4, "coarse_size")?;
+        expect(SEC_COARSE_POS, nc * 8, "coarse_pos")?;
+        expect(SEC_COARSE_OFFSETS, (nc + 1) * 4, "coarse_offsets")?;
+        anyhow::ensure!(
+            sections[SEC_COARSE_TARGETS].len.is_multiple_of(4),
+            "coarse_targets length not a multiple of 4"
+        );
         let g = Self {
             bytes,
             version,
@@ -261,6 +281,16 @@ impl RoutingGraph {
         anyhow::ensure!(
             grid[GRID_CELLS] as usize * 4 == g.sections[SEC_GRID_IDS].len,
             "grid_offsets sentinel != grid_ids length"
+        );
+        let coarse: &[u32] = g.section(SEC_COARSE_OFFSETS);
+        anyhow::ensure!(coarse[0] == 0, "coarse_offsets[0] != 0");
+        anyhow::ensure!(
+            coarse[nc] as usize * 4 == g.sections[SEC_COARSE_TARGETS].len,
+            "coarse_offsets sentinel != coarse_targets length"
+        );
+        anyhow::ensure!(
+            !scan_tables || coarse.windows(2).all(|w| w[0] <= w[1]),
+            "coarse_offsets not monotonic"
         );
         Ok(g)
     }
@@ -355,6 +385,43 @@ impl RoutingGraph {
             prev += delta;
             Some(prev)
         })
+    }
+
+    /// Number of coarse nodes (connected pieces of water per res-3 region).
+    pub fn num_coarse(&self) -> u32 {
+        (self.sections[SEC_COARSE_REGION].len / 8) as u32
+    }
+
+    /// Region id per coarse node, non-decreasing.
+    pub fn coarse_regions(&self) -> &[u64] {
+        self.section(SEC_COARSE_REGION)
+    }
+
+    /// Smallest member node id per coarse node.
+    pub fn coarse_reps(&self) -> &[u32] {
+        self.section(SEC_COARSE_REP)
+    }
+
+    /// Member node count per coarse node.
+    pub fn coarse_sizes(&self) -> &[u32] {
+        self.section(SEC_COARSE_SIZE)
+    }
+
+    /// Centroid of a coarse node as (lat, lon) degrees.
+    pub fn coarse_pos(&self, c: u32) -> (f64, f64) {
+        let p: &[i32] = self.section(SEC_COARSE_POS);
+        let i = c as usize * 2;
+        (p[i] as f64 * 1e-6, p[i + 1] as f64 * 1e-6)
+    }
+
+    /// Coarse neighbour ids of a coarse node, ascending.
+    pub fn coarse_neighbors(&self, c: u32) -> &[u32] {
+        let offsets: &[u32] = self.section(SEC_COARSE_OFFSETS);
+        let (a, b) = (
+            offsets[c as usize] as usize,
+            offsets[c as usize + 1] as usize,
+        );
+        &self.section::<u32>(SEC_COARSE_TARGETS)[a..b]
     }
 
     /// Decode H3 cell center coordinates to f64 (lat, lng) in degrees.
@@ -474,7 +541,7 @@ impl GraphBuilder {
         self
     }
 
-    /// Encode the v4 file image. Panics on builder misuse (unsorted or
+    /// Encode the v5 file image. Panics on builder misuse (unsorted or
     /// invalid H3 ids): the builder is the only writer, so this is the one
     /// place the invariants are checked.
     pub fn build_bytes(self) -> Vec<u8> {
@@ -519,6 +586,8 @@ impl GraphBuilder {
         }
         offsets.push(edge_targets.len() as u32);
 
+        let coarse = crate::coarse::CoarseSections::build(&node_h3, &adj);
+        drop(adj);
         let coast = CoastlineSections::from_runs(&self.coastline_runs);
 
         let mut out = vec![0u8; HEADER_LEN];
@@ -541,6 +610,12 @@ impl GraphBuilder {
         push(&mut out, &mut table, &coast.deltas);
         push(&mut out, &mut table, &coast.grid_offsets);
         push(&mut out, &mut table, &coast.grid_ids);
+        push(&mut out, &mut table, &coarse.region);
+        push(&mut out, &mut table, &coarse.rep);
+        push(&mut out, &mut table, &coarse.size);
+        push(&mut out, &mut table, &coarse.pos);
+        push(&mut out, &mut table, &coarse.offsets);
+        push(&mut out, &mut table, &coarse.targets);
         while !out.len().is_multiple_of(8) {
             out.push(0);
         }
@@ -567,51 +642,58 @@ impl GraphBuilder {
     }
 }
 
-/// Union-find component root per node over an edge list.
-fn component_labels(n: usize, edges: &[(u32, u32)]) -> Vec<u32> {
-    debug_assert!(n <= u32::MAX as usize);
-    let mut parent: Vec<u32> = (0..n as u32).collect();
-    let mut rank = vec![0u8; n];
+/// Union-find with path compression and union by rank.
+pub(crate) struct UnionFind {
+    parent: Vec<u32>,
+    rank: Vec<u8>,
+}
 
-    fn find(parent: &mut [u32], x: u32) -> u32 {
-        let mut root = x;
-        while parent[root as usize] != root {
-            root = parent[root as usize];
+impl UnionFind {
+    pub fn new(n: usize) -> Self {
+        debug_assert!(n <= u32::MAX as usize);
+        Self {
+            parent: (0..n as u32).collect(),
+            rank: vec![0; n],
         }
-        // Path compression
+    }
+
+    pub fn find(&mut self, x: u32) -> u32 {
+        let mut root = x;
+        while self.parent[root as usize] != root {
+            root = self.parent[root as usize];
+        }
         let mut cur = x;
         while cur != root {
-            let next = parent[cur as usize];
-            parent[cur as usize] = root;
+            let next = self.parent[cur as usize];
+            self.parent[cur as usize] = root;
             cur = next;
         }
         root
     }
 
-    fn union(parent: &mut [u32], rank: &mut [u8], a: u32, b: u32) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
+    pub fn union(&mut self, a: u32, b: u32) {
+        let (ra, rb) = (self.find(a), self.find(b));
         if ra == rb {
             return;
         }
-        if rank[ra as usize] < rank[rb as usize] {
-            parent[ra as usize] = rb;
-        } else if rank[ra as usize] > rank[rb as usize] {
-            parent[rb as usize] = ra;
-        } else {
-            parent[rb as usize] = ra;
-            rank[ra as usize] += 1;
+        match self.rank[ra as usize].cmp(&self.rank[rb as usize]) {
+            std::cmp::Ordering::Less => self.parent[ra as usize] = rb,
+            std::cmp::Ordering::Greater => self.parent[rb as usize] = ra,
+            std::cmp::Ordering::Equal => {
+                self.parent[rb as usize] = ra;
+                self.rank[ra as usize] += 1;
+            }
         }
     }
+}
 
+/// Union-find component root per node over an edge list.
+fn component_labels(n: usize, edges: &[(u32, u32)]) -> Vec<u32> {
+    let mut uf = UnionFind::new(n);
     for &(a, b) in edges {
-        union(&mut parent, &mut rank, a, b);
+        uf.union(a, b);
     }
-    drop(rank);
-    for i in 0..n as u32 {
-        find(&mut parent, i);
-    }
-    parent
+    (0..n as u32).map(|i| uf.find(i)).collect()
 }
 
 #[cfg(test)]
@@ -769,7 +851,7 @@ mod tests {
     fn build_bytes_layout_header() {
         let b = GraphBuilder::with_version("0.7.0 2026-10-03");
         let bytes = b.build_bytes();
-        assert_eq!(&bytes[0..4], b"ASW\x04");
+        assert_eq!(&bytes[0..4], b"ASW\x05");
         assert_eq!(bytes[8] as usize, "0.7.0 2026-10-03".len());
         assert_eq!(&bytes[9..25], b"0.7.0 2026-10-03");
         assert_eq!(bytes.len() % 8, 0);
@@ -782,7 +864,7 @@ mod tests {
     #[test]
     fn save_open_roundtrip_through_mmap() {
         let g = square_graph();
-        let dir = std::env::temp_dir().join(format!("asw-v4-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("asw-v5-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("square.graph");
         g.save(&path).unwrap();

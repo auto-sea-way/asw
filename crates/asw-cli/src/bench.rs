@@ -9,7 +9,7 @@ use std::time::Instant;
 use tracing::info;
 
 /// Number of sailing routes (first N in ROUTES array). The rest are passage transits.
-const NUM_SAILING_ROUTES: usize = 10;
+const NUM_SAILING_ROUTES: usize = 13;
 
 /// Hardcoded real-world sailing routes: (name, from_lat, from_lon, to_lat, to_lon)
 const ROUTES: &[(&str, f64, f64, f64, f64)] = &[
@@ -26,6 +26,10 @@ const ROUTES: &[(&str, f64, f64, f64, f64)] = &[
     ("Tasman Sea", -33.86, 151.28, -36.83, 174.78),
     ("South Atlantic", -33.92, 18.43, -22.91, -43.16),
     ("North Atlantic", 40.65, -74.03, 50.89, -1.39),
+    // Ocean crossings around continents (the great circle crosses land)
+    ("Rotterdam-Singapore", 51.95, 4.05, 1.26, 103.80),
+    ("Shanghai-Rotterdam", 31.20, 122.00, 51.95, 4.05),
+    ("Tokyo-Seattle", 35.30, 139.80, 47.60, -122.40),
     // Passage transits (short routes forcing passage edges)
     ("Suez Canal", 29.50, 32.85, 31.50, 32.00),
     ("Panama Canal", 8.80, -79.45, 9.40, -80.05),

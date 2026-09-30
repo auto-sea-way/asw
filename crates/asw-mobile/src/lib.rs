@@ -1,5 +1,5 @@
 //! Mobile bindings for the auto-sea-way routing graph. Four calls over a
-//! memory-mapped v4 file: `open_graph`, `version`, `is_water`, `route`. Generated
+//! memory-mapped v5 file: `open_graph`, `version`, `is_water`, `route`. Generated
 //! into Swift and Kotlin by UniFFI; panics never cross the boundary.
 
 use asw_core::astar_pool::AstarBuffers;
@@ -129,7 +129,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Memory-map a v4 graph file and validate its header. Milliseconds; no
+/// Memory-map a v5 graph file and validate its header. Milliseconds; no
 /// per-node work. Named `open_graph` because `open` needs backticks in both
 /// Swift and Kotlin.
 #[uniffi::export]
@@ -184,7 +184,7 @@ impl Drop for TempFile {
 
 /// Install a zstd-compressed graph file (the release's `asw.graph.zst`) at
 /// `destination`: decompress into a temporary file next to it, check that
-/// it is a usable v4 graph, then rename it over `destination` atomically.
+/// it is a usable v5 graph, then rename it over `destination` atomically.
 /// On any failure the destination is untouched and nothing is left behind.
 /// A `Graph` already open on the old file keeps working until released.
 #[uniffi::export]
@@ -243,7 +243,7 @@ fn install_graph_inner(source: &str, destination: &str) -> Result<(), AswError> 
     out.sync_all().map_err(internal)?;
     drop(out);
 
-    // Header check: the decompressed file must be a v4 graph this build reads.
+    // Header check: the decompressed file must be a v5 graph this build reads.
     RoutingGraph::open(&tmp.path, false).map_err(|e| AswError::BadFormat {
         detail: format!("{e:#}"),
     })?;
@@ -374,7 +374,7 @@ mod tests {
 
     /// One res-5 water node at (36.5, 28.3), a thin mole ring between it and
     /// a berth at (36.5, 28.0), and an island ring around (36.5, 27.6).
-    /// Written to a temporary directory as a v4 file.
+    /// Written to a temporary directory as a v5 file.
     pub(crate) fn fixture_graph_path() -> (PathBuf, PathBuf) {
         let cell = h3o::LatLng::new(36.5, 28.3)
             .unwrap()
@@ -690,7 +690,7 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// A small v4 graph with the given version, written raw and as zstd.
+    /// A small v5 graph with the given version, written raw and as zstd.
     fn graph_files(dir: &std::path::Path, version: &str) -> (PathBuf, PathBuf) {
         let cell = h3o::LatLng::new(36.5, 28.3)
             .unwrap()

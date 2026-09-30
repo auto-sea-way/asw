@@ -27,7 +27,7 @@ You run it yourself: one binary and one graph file. Routing happens on your own 
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (a few seconds while the graph file is mapped and read in), then query a route:
@@ -50,7 +50,8 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
-6. **Serialize** graph to a flat memory-mapped binary file (format v4: sorted H3 ids, varint edge targets, per-node shore distance, delta-coded coastline runs with a 0.1° grid index; no stored weights, no compression)
+6. **Summarise** the graph as a coarse graph: one node per connected piece of water inside each res-3 region (about 41k nodes). A long route first finds its way on this coarse graph, and the fine search then stays inside a corridor around that path
+7. **Serialize** graph to a flat memory-mapped binary file (format v5: sorted H3 ids, varint edge targets, per-node shore distance, delta-coded coastline runs with a 0.1° grid index, the coarse graph; no stored weights, no compression)
 
 ## Comparison with Alternatives
 
@@ -69,39 +70,42 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 ## Routing Benchmarks
 
-20 routes, 50 iterations each. Graph v4 format (memory-mapped). Graphs built with v3 or earlier must be rebuilt — older files are rejected at load time.
+23 routes, 50 iterations each, on the planet graph (format v5, memory-mapped). Graphs in an older format must be rebuilt: older files are rejected at load time.
 
-Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded).
+Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded). Routes longer than 500 nm first find their way on the coarse graph and then search only a corridor around it; the three ocean crossings went from 0.7–4.5 s to 0.4–1.2 s with it.
 
 ### Sailing Routes
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 205us | 224us | 34>4 |
-| Aegean Hop | 25.3nm | 684us | 799us | 50>6 |
-| Strait of Gibraltar | 29.4nm | 655us | 681us | 64>5 |
-| Baltic Crossing | 42.0nm | 1.2ms | 1.3ms | 54>5 |
+| English Channel | 22.1nm | 205us | 217us | 34>4 |
+| Aegean Hop | 25.3nm | 687us | 783us | 50>6 |
+| Strait of Gibraltar | 29.4nm | 658us | 758us | 64>5 |
+| Baltic Crossing | 42.0nm | 1.2ms | 1.4ms | 54>5 |
 | Balearic Sea | 127.6nm | 1.9ms | 1.9ms | 113>7 |
-| Florida Strait | 89.0nm | 388us | 393us | 22>4 |
-| Malacca Route | 534.5nm | 33.7ms | 34.5ms | 455>20 |
-| Tasman Sea | 1265.1nm | 49.6ms | 53.6ms | 337>16 |
-| South Atlantic | 3272.4nm | 28.6ms | 28.9ms | 149>8 |
-| North Atlantic | 3040.6nm | 576.7ms | 586.8ms | 399>16 |
+| Florida Strait | 89.0nm | 389us | 414us | 22>4 |
+| Malacca Route | 534.5nm | 34.5ms | 35.1ms | 455>20 |
+| Tasman Sea | 1265.1nm | 32.8ms | 33.4ms | 337>16 |
+| South Atlantic | 3272.4nm | 24.1ms | 24.3ms | 149>8 |
+| North Atlantic | 3040.6nm | 287.8ms | 289.3ms | 399>16 |
+| Rotterdam-Singapore | 8245.7nm | 807.2ms | 808.9ms | 3162>61 |
+| Shanghai-Rotterdam | 10366.9nm | 1.19s | 1.19s | 4287>105 |
+| Tokyo-Seattle | 4286.7nm | 421.7ms | 423.1ms | 1630>47 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
 | Suez Canal | 141.2nm | 11.7ms | 11.8ms | 1124>28 |
-| Panama Canal | 53.2nm | 64.0ms | 64.5ms | 1101>64 |
-| Kiel Canal | 84.2nm | 37.9ms | 38.5ms | 1880>60 |
+| Panama Canal | 53.2nm | 64.3ms | 64.9ms | 1101>64 |
+| Kiel Canal | 84.2nm | 38.0ms | 39.1ms | 1880>60 |
 | Corinth Canal | 6.4nm | 1.4ms | 1.4ms | 362>8 |
 | Bosphorus | 32.7nm | 1.4ms | 1.5ms | 147>9 |
 | Dardanelles | 45.1nm | 1.2ms | 1.2ms | 138>6 |
 | Malacca Strait | 28.8nm | 1.5ms | 1.5ms | 104>8 |
-| Singapore Strait | 27.1nm | 862us | 879us | 52>5 |
-| Messina Strait | 16.0nm | 496us | 512us | 75>6 |
-| Dover Strait | 18.4nm | 364us | 369us | 17>5 |
+| Singapore Strait | 27.1nm | 861us | 894us | 52>5 |
+| Messina Strait | 16.0nm | 497us | 522us | 75>6 |
+| Dover Strait | 18.4nm | 364us | 389us | 17>5 |
 
 ## API Endpoints
 
@@ -130,23 +134,23 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.8.1` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.8.1-full` | Full image — graph file included (~1.5 GB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.9.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.9.0-full` | Full image — graph file included (~1.5 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~1.5 GB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.8.1/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.9.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.8.1
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0
 ```
 
 The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
@@ -180,11 +184,11 @@ Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in about 4.5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 39,430,248 |
-| Edges | 299,637,784 |
-| Graph file size | 1,437 MB (v4, uncompressed, memory-mapped) |
+| Nodes | 38,886,917 |
+| Edges | 295,481,392 |
+| Graph file size | 1,425 MB (v5, uncompressed, memory-mapped) |
 | Connectivity | 100% (single connected component after build-time pruning) |
-| Server memory (RSS) | 1.38 GB after open, 1.43 GB after a transoceanic route mix |
+| Server memory (RSS) | 1.38 GB after open, 1.43 GB after a transoceanic route mix (measured on the v4 file, 12 MB larger) |
 | Server memory (total) | plan for ~2.5 GB |
 | Minimum instance | 4 GB RAM, no swap needed |
 

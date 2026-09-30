@@ -1,4 +1,5 @@
 pub mod astar_pool;
+pub mod coarse;
 pub mod coast;
 pub mod graph;
 pub mod h3;

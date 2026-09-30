@@ -48,9 +48,10 @@ Rust workspace with 5 crates:
 - Hierarchical cell elimination: test parent cell before expanding children
 - Land polygons loaded without bbox filter — R-tree handles spatial queries efficiently
 - Critical narrow passages (Suez, Panama, etc.) use resolution cascade corridors
-- Graph format v4: flat little-endian sections, memory-mapped (`memmap2`), sorted `u64` node ids for O(log n) lookup, per-node `shore_dist: u8` (quantized distance-to-shore, 0.02 nm units, saturating at 5.1 nm), coastline runs as an i32 microdegree head plus i16 deltas per point, with a 0.1° grid index, edge weights recomputed as centre-to-centre haversine (nothing stored per edge but the target id). Spec: `docs/superpowers/specs/2026-09-27-graph-format-v4-design.md`
+- Graph format v5: flat little-endian sections, memory-mapped (`memmap2`), sorted `u64` node ids for O(log n) lookup, per-node `shore_dist: u8` (quantized distance-to-shore, 0.02 nm units, saturating at 5.1 nm), coastline runs as an i32 microdegree head plus i16 deltas per point, with a 0.1° grid index, edge weights recomputed as centre-to-centre haversine (nothing stored per edge but the target id), plus a coarse graph (one node per connected water piece per res-3 region) for corridor search on long routes. No cells north of 80°N. Specs: `docs/superpowers/specs/2026-09-27-graph-format-v4-design.md` (base) and `docs/superpowers/specs/2026-09-30-graph-format-v5-corridor-design.md` (coarse graph)
 - Nearest-node snapping via H3 binary search (no R-tree) — sorted node_h3 vec is both coordinate store and spatial index
 - Query-time endpoint stitching: routes start/end at the exact requested coordinates; clear line-of-sight pairs short-circuit to a direct great-circle leg without a graph search (shore-buffer aware; no graph densification needed for deep water)
+- Arctic: never routes north of 80°N; Northern Sea Route and Northwest Passage closed unless `arctic=true`
 - A* buffer pool (2 buffer sets, zero-filled, allocated on first use and reused) eliminates per-request allocation spikes
 - Cloud builds: shell out to system `ssh`/`scp` for streaming output
 - Hetzner API via reqwest (blocking), no SDK dependency
