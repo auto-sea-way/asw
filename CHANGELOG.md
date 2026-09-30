@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **BREAKING:** graph format v4 → v5. The file adds a coarse graph (one node per connected piece of water inside each res-3 H3 region, about 41k nodes and 2 MB on the planet). Long routes first run A* on the coarse graph and then limit the fine search to a corridor around that path, falling back to the full search when the corridor has no route. v4 files are rejected; the planet graph must be downloaded again or rebuilt. Spec: `docs/superpowers/specs/2026-09-30-graph-format-v5-corridor-design.md`.
-- The build drops cells north of 80°N, which the router never enters. `is_water` there now returns false.
+- **BREAKING:** graph format v4 → v5. The file adds a coarse graph (one node per connected piece of water inside each res-3 H3 region, about 41k nodes and 2 MB on the planet). Routes longer than 500 nm first run A* on the coarse graph and then limit the fine search to a corridor around that path, falling back to the full search when the corridor has no route. Planet, same machine: Rotterdam to Singapore 4.5 s → 0.81 s, Shanghai to Rotterdam 8.5 s → 1.19 s (with the Arctic fix), North Atlantic 579 → 286 ms; routes under 500 nm are unchanged. Distances stay within 0.4 %. v4 files are rejected; the planet graph must be downloaded again or rebuilt. Spec: `docs/superpowers/specs/2026-09-30-graph-format-v5-corridor-design.md`.
+- The build drops cells north of 80°N, which the router never enters (543k nodes, 12 MB). `is_water` there now returns false.
+- `asw bench` has three ocean crossings around continents (Rotterdam–Singapore, Shanghai–Rotterdam, Tokyo–Seattle).
 
 ### Fixed
 

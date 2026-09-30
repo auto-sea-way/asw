@@ -1,7 +1,7 @@
 # Graph format v5 — coarse graph and corridor search
 
 - **Date:** 2026-09-30
-- **Status:** approved approach, implementation in progress
+- **Status:** implemented; planet v5 built 2026-09-30 (38,886,917 nodes, 1,425 MB)
 - **Driver:** long routes take seconds. Rotterdam to Singapore settles 8.9M of the
   39.4M planet nodes (4.4 s), Shanghai to Rotterdam 16.6M (8 s). Phones are slower still.
 
@@ -90,3 +90,22 @@ in snapping range, and the ice cap is not navigable water.
 - Per-node landmark data, contraction hierarchies.
 - Clipping the coastline sections at 80° N (1.5 MB; they keep `is_water` and crossing
   tests exact near the cap).
+
+## 7. Results (planet v5, same Mac, same graph data as a v4 file for `main`)
+
+| Route | main | v5 | Distance |
+|---|---|---|---|
+| Rotterdam–Singapore | 4.50 s | 0.81 s | 8,242.6 → 8,245.7 nm |
+| Shanghai–Rotterdam | 8.54 s (full search, Arctic closed) | 1.19 s | 10,379.5 → 10,366.9 nm |
+| Tokyo–Seattle | 699 ms | 419 ms | 4,269.0 → 4,286.7 nm |
+| North Atlantic | 579 ms | 286 ms | same |
+| Tasman Sea | 49.6 ms | 33.0 ms | same |
+| Routes under 500 nm | | ±1 % | same |
+
+Two findings from tuning:
+
+- Below 500 nm the coarse search cost more than it saved (Corinth 1.4 → 2.9 ms), so
+  those routes skip it (`CORRIDOR_MIN_NM`).
+- Passing the corridor into `touch_and_cache_h` stopped it from being inlined and made
+  every search 5–7 % slower. `#[inline(always)]` removed that; measured by running
+  `main` on the v5 data converted to a v4 file, so graph data was ruled out.
