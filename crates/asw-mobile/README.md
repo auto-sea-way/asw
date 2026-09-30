@@ -7,9 +7,10 @@ memory-mapped v4 graph file:
     openGraph(path) -> Graph
     Graph.version() -> String
     Graph.isWater(lat, lon) -> Water (.water | .land | .unknown)
-    Graph.route(fromLat, fromLon, toLat, toLon, shoreBufferNm) -> Route
+    Graph.route(fromLat, fromLon, toLat, toLon, shoreBufferNm, arctic = false) -> Route
 
-`Route` has `coordinates` (latitude, longitude), `distanceNm` (water only) and
+`arctic` opens the Northern Sea Route and the Northwest Passage; the sea north
+of 80°N is always closed. `Route` has `coordinates` (latitude, longitude), `distanceNm` (water only) and
 `landLegs` (indices of segments that cross land). Errors are `AswError`:
 `NotFound`, `BadFormat`, `InvalidArgument`, `NoRoute`, `Internal`, the last four
 carrying a `detail` string. A panic inside the graph code surfaces as `Internal`
