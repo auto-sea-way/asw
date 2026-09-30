@@ -165,8 +165,8 @@ jobs:
       - name: Verify graph format version
         run: |
           MAGIC=$(head -c 4 asw.graph | xxd -p)
-          if [ "$MAGIC" != "41535704" ]; then
-            echo "::error::graph artifact is not format v4 — rebuild and republish the graph before releasing"
+          if [ "$MAGIC" != "41535705" ]; then
+            echo "::error::graph artifact is not format v5 — rebuild and republish the graph before releasing"
             exit 1
           fi
 
