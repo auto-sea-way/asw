@@ -1,7 +1,7 @@
 //! Land polygon R-tree used only at build time.
 
 use geo::algorithm::bool_ops::BooleanOps;
-use geo::{BoundingRect, Contains, Coord, Intersects, LineString, MultiPolygon, Point, Polygon};
+use geo::{BoundingRect, Contains, Coord, Intersects, LineString, MultiPolygon, Polygon};
 use rayon::prelude::*;
 use rstar::{Envelope, RTree, RTreeObject, AABB};
 use tracing::info;
@@ -43,18 +43,6 @@ impl LandIndex {
     pub fn new(polygons: Vec<LandPolygon>) -> Self {
         let tree = RTree::bulk_load(polygons);
         Self { tree }
-    }
-
-    /// Check if a point (lon, lat) is in water (i.e. NOT inside any land polygon).
-    pub fn is_water(&self, lon: f64, lat: f64) -> bool {
-        let point = Point::new(lon, lat);
-        let envelope = AABB::from_corners([lon, lat], [lon, lat]);
-        for lp in self.tree.locate_in_envelope_intersecting(envelope) {
-            if lp.polygon.contains(&point) {
-                return false;
-            }
-        }
-        true
     }
 
     /// Check if any land polygon intersects the given polygon.

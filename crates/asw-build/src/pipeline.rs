@@ -70,7 +70,7 @@ pub fn run(shp_path: &Path, bbox: Option<Bbox>, output_path: &Path) -> Result<()
     );
 
     // Step 5: Build edges (auto-detects max resolution from cells)
-    let edges = crate::edges::build_edges(&cells, &land)?;
+    let edges = crate::edges::build_edges(&cells, &coastline_index)?;
     info!("Built {} edges", edges.len());
 
     // Step 6: Build graph

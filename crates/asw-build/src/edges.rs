@@ -1,5 +1,5 @@
-use crate::land_index::LandIndex;
 use anyhow::Result;
+use asw_core::coast::CoastlineIndex;
 use asw_core::h3::{cell_center, neighbors};
 use asw_core::{H3_RES_BASE, H3_RES_LEAF};
 use h3o::{CellIndex, Resolution};
@@ -11,7 +11,10 @@ use tracing::info;
 pub type Edge = (u32, u32);
 
 /// Build all edges: same-resolution + cross-resolution, with land-crossing removal.
-pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result<Vec<Edge>> {
+pub fn build_edges(
+    cells: &HashMap<CellIndex, u32>,
+    coastline: &CoastlineIndex<'_>,
+) -> Result<Vec<Edge>> {
     let cell_list: Vec<(CellIndex, u32)> = cells.iter().map(|(&c, &id)| (c, id)).collect();
 
     // Step 1: Same-resolution edges (parallel)
@@ -125,7 +128,10 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     all_edges.dedup_by_key(|e| (e.0, e.1));
     info!("{} edges after deduplication", all_edges.len());
 
-    // Step 3: Land crossing removal (parallel)
+    // Step 3: Land crossing removal (parallel). The segment between the two
+    // cell centres must not cross the coastline. This is the same test the
+    // router applies when it smooths a path, so a graph edge is never
+    // reported as a land leg.
     info!("Removing land-crossing edges...");
     let total = all_edges.len();
     let pb = crate::cells::make_progress(total, "land check");
@@ -144,13 +150,7 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
             pb.inc(1);
             let (lat1, lon1) = node_positions[&src];
             let (lat2, lon2) = node_positions[&dst];
-            let mid_lat = (lat1 + lat2) / 2.0;
-            let mid_lon = wrap_aware_mid_lon(lon1, lon2);
-            if water.is_water(mid_lon, mid_lat) {
-                Some((src, dst))
-            } else {
-                None
-            }
+            (!coastline.crosses_land(lon1, lat1, lon2, lat2)).then_some((src, dst))
         })
         .collect();
     pb.finish_and_clear();
@@ -165,50 +165,28 @@ pub fn build_edges(cells: &HashMap<CellIndex, u32>, water: &LandIndex) -> Result
     Ok(valid_edges)
 }
 
-/// Wrap-aware longitude midpoint. Averaging raw longitudes breaks down for an edge
-/// crossing the antimeridian (e.g. 179.95 and -179.95 average to ~0, the opposite side
-/// of the planet). When the two longitudes are more than 180 degrees apart, shift the
-/// negative one into a continuous frame before averaging, then re-normalize into
-/// [-180, 180].
-fn wrap_aware_mid_lon(lon1: f64, lon2: f64) -> f64 {
-    if (lon1 - lon2).abs() > 180.0 {
-        let (a, b) = if lon1 < 0.0 {
-            (lon1 + 360.0, lon2)
-        } else {
-            (lon1, lon2 + 360.0)
-        };
-        let mid = (a + b) / 2.0;
-        ((mid + 540.0) % 360.0) - 180.0
-    } else {
-        (lon1 + lon2) / 2.0
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asw_core::coast::CoastlineSections;
 
     #[test]
-    fn wrap_aware_mid_lon_handles_antimeridian() {
-        let mid = wrap_aware_mid_lon(179.95, -179.95);
-        assert!(
-            (mid.abs() - 180.0).abs() < 1.0,
-            "expected midpoint near +/-180 (the seam), got {mid}"
-        );
-    }
+    fn edge_across_a_thin_wall_is_removed() {
+        let a = h3o::LatLng::new(36.5, 28.0)
+            .unwrap()
+            .to_cell(Resolution::Ten);
+        let b = neighbors(a)[0];
+        let cells = HashMap::from([(a, 0), (b, 1)]);
+        let ((alat, alon), (blat, blon)) = (cell_center(a), cell_center(b));
+        // A wall through the midpoint, at right angles to the edge.
+        let (mlat, mlon) = ((alat + blat) / 2.0, (alon + blon) / 2.0);
+        let (dlat, dlon) = (blat - alat, blon - alon);
+        let wall = vec![(mlon - dlat, mlat + dlon), (mlon + dlat, mlat - dlon)];
+        let far = vec![(29.0, 37.0), (29.1, 37.0)];
 
-    #[test]
-    fn wrap_aware_mid_lon_handles_antimeridian_other_order() {
-        let mid = wrap_aware_mid_lon(-179.95, 179.95);
-        assert!(
-            (mid.abs() - 180.0).abs() < 1.0,
-            "expected midpoint near +/-180 (the seam), got {mid}"
-        );
-    }
-
-    #[test]
-    fn wrap_aware_mid_lon_normal_case_unaffected() {
-        let mid = wrap_aware_mid_lon(10.0, 20.0);
-        assert!((mid - 15.0).abs() < 1e-9);
+        let open = CoastlineSections::from_runs(&[far]);
+        assert_eq!(build_edges(&cells, &open.index()).unwrap().len(), 1);
+        let walled = CoastlineSections::from_runs(&[wall]);
+        assert!(build_edges(&cells, &walled.index()).unwrap().is_empty());
     }
 }
