@@ -9,9 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `canals` option on `/route` and on `Graph.route` in `asw-mobile` (default `true`). With `canals=false` the router closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Cape Cod, Chesapeake–Delaware, Welland) and goes around them, for routes that avoid canal fees. Each canal is closed in the middle, so ports at both ends stay reachable. On the planet graph, Port Said to Suez is 101.5 nm by default and 12,171 nm with `canals=false`.
+- `canals` option on `/route` and on `Graph.route` in `asw-mobile` (default `true`). With `canals=false` the router closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Privlaka, Cape Cod, Cape May, Chesapeake–Delaware) and goes around them, for routes that avoid canal fees. Each canal is closed in the middle, so ports at both ends stay reachable. On the planet graph, Port Said to Suez is 101.5 nm by default and 12,171 nm with `canals=false`.
 - Lefkada Canal as a passage. The channel between Lefkada and the mainland is now refined to res-13 and routable: from north of the floating bridge to Nidri is 9.2 nm through the channel, where the route went 37.1 nm around the island before. Needs a rebuilt graph.
 - Four more narrow channels as passages, each needs a rebuilt graph. Evripos Strait at the Chalkis old bridge: North to South Euboean Gulf is 23.0 nm, where the route went 199.1 nm around Euboea before. Potidea Canal: 1.8 nm, was 58.7 nm around Kassandra. Osor Channel between Cres and Lošinj (about 11 m wide, refined to res-14): 2.5 nm, was 33.5 nm. Trogir Channel: 1.3 nm, was 17.6 nm around Čiovo.
+- Five more passages, each needs a rebuilt graph. Privlaka Channel at Mali Lošinj (res-14): 3.3 nm, was 11.4 nm. Menai Strait: 10.8 nm, was about 50 nm around Anglesey. Swinomish Channel: 6.7 nm, was 82.8 nm. Cape May Canal: 4.5 nm, and 8.3 nm with `canals=false`. Šibenik: St. Anthony Channel, the harbour and the Krka estuary come from the Croatia OSM extract, so Šibenik is reachable for the first time.
+
+### Changed
+
+- The build keeps an edge only when the segment between the two cell centres does not cross the coastline. It tested only the midpoint before. This is the same test the router uses for smoothing, so a route no longer reports a land leg on a graph edge that clips a quay corner (seen at the Lefkada and Trogir bridges). On a Croatia regional build this removes 138 more edges and 32 of 186,557 nodes.
+- Passages refine up to res-14 (was res-13).
+- A downloaded OSM extract is cached under its own file name, so passages that use the same extract share one download.
+
+### Removed
+
+- Welland Canal passage. The Great Lakes are not in the graph, so the entry produced no cells and only cost an Ontario extract download on every build.
 
 ## [0.9.0] - 2026-09-30
 

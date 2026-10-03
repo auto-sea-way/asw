@@ -84,6 +84,13 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: None,
         cut: Some((14.3917, 44.6925, 14.3924, 44.6933)),
     },
+    Passage {
+        name: "Privlaka Channel",
+        corridor: (14.455, 44.541, 14.468, 44.549),
+        leaf_resolution: 14, // narrow cut at Mali Losinj, res-13 cells do not fit
+        geofabrik_url: None,
+        cut: Some((14.4603, 44.5448, 14.4608, 44.5462)),
+    },
     // Natural straits — coastline already provides the water gaps
     Passage {
         name: "Evripos Strait",
@@ -97,6 +104,27 @@ pub static PASSAGES: &[Passage] = &[
         corridor: (16.235, 43.51, 16.265, 43.522),
         leaf_resolution: 13, // narrow, with bridges
         geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Menai Strait",
+        corridor: (-4.20, 53.21, -4.15, 53.23),
+        leaf_resolution: 12, // the Swellies between the two bridges, rocks and islets
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Swinomish Channel",
+        corridor: (-122.53, 48.36, -122.47, 48.46),
+        leaf_resolution: 12, // ~100m dredged channel
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Sibenik Channel",
+        corridor: (15.84, 43.71, 15.92, 43.75),
+        leaf_resolution: 11, // St. Anthony Channel, ~150m; the harbour is river water in OSM
+        geofabrik_url: Some("https://download.geofabrik.de/europe/croatia-latest.osm.pbf"),
         cut: None,
     },
     Passage {
@@ -159,6 +187,13 @@ pub static PASSAGES: &[Passage] = &[
         cut: Some((-70.57, 41.75, -70.55, 41.785)),
     },
     Passage {
+        name: "Cape May Canal",
+        corridor: (-74.975, 38.945, -74.895, 38.972),
+        leaf_resolution: 12, // ~100m
+        geofabrik_url: None,
+        cut: Some((-74.94, 38.945, -74.93, 38.972)),
+    },
+    Passage {
         name: "Chesapeake-Delaware Canal",
         corridor: (-75.85, 39.40, -75.55, 39.60),
         leaf_resolution: 12,
@@ -166,14 +201,5 @@ pub static PASSAGES: &[Passage] = &[
             "https://download.geofabrik.de/north-america/us/delaware-latest.osm.pbf",
         ),
         cut: Some((-75.70, 39.50, -75.68, 39.58)),
-    },
-    Passage {
-        name: "Welland Canal",
-        corridor: (-79.30, 42.85, -79.15, 43.25),
-        leaf_resolution: 13,
-        geofabrik_url: Some(
-            "https://download.geofabrik.de/north-america/canada/ontario-latest.osm.pbf",
-        ),
-        cut: Some((-79.30, 43.00, -79.15, 43.02)),
     },
 ];
