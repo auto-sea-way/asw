@@ -30,7 +30,7 @@ fn in_passage_corridor(cell: CellIndex, corridors: &[(f64, f64, f64, f64)]) -> b
 
 /// Generate all navigable H3 cells via adaptive multi-resolution cascade
 /// (res-3 ocean through res-10 shoreline), with extended refinement into
-/// passage zones at even higher resolutions (up to res-13).
+/// passage zones at even higher resolutions (up to res-14).
 ///
 /// Cells in passage corridors are protected from land-elimination during the
 /// cascade, allowing narrow waterways (e.g. 25m-wide Corinth Canal) to survive
@@ -528,6 +528,7 @@ mod tests {
             corridor: (0.0, 0.0, 1.0, 1.0),
             leaf_resolution: 12,
             geofabrik_url: None,
+            cut: None,
         }];
 
         let zone_lookup = build_zone_lookup(&passages, None).expect("build_zone_lookup");

@@ -44,7 +44,7 @@ Rust workspace with 5 crates:
 
 ## Key Design Decisions
 
-- H3 hexagonal grid: adaptive multi-resolution cascade (res-3 ocean through res-10 shoreline, up to res-13 in passage corridors)
+- H3 hexagonal grid: adaptive multi-resolution cascade (res-3 ocean through res-10 shoreline, up to res-14 in passage corridors)
 - Hierarchical cell elimination: test parent cell before expanding children
 - Land polygons loaded without bbox filter — R-tree handles spatial queries efficiently
 - Critical narrow passages (Suez, Panama, etc.) use resolution cascade corridors
@@ -52,6 +52,7 @@ Rust workspace with 5 crates:
 - Nearest-node snapping via H3 binary search (no R-tree) — sorted node_h3 vec is both coordinate store and spatial index
 - Query-time endpoint stitching: routes start/end at the exact requested coordinates; clear line-of-sight pairs short-circuit to a direct great-circle leg without a graph search (shore-buffer aware; no graph densification needed for deep water)
 - Arctic: never routes north of 80°N; Northern Sea Route and Northwest Passage closed unless `arctic=true`
+- Canals: `canals=false` closes the man-made canals at query time through the `cut` box of each entry in `PASSAGES` (same mechanism as the Arctic boxes)
 - A* buffer pool (2 buffer sets, zero-filled, allocated on first use and reused) eliminates per-request allocation spikes
 - Cloud builds: shell out to system `ssh`/`scp` for streaming output
 - Hetzner API via reqwest (blocking), no SDK dependency

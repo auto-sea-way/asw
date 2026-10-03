@@ -46,7 +46,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-13 in passage corridors)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-14 in passage corridors)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
@@ -58,7 +58,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 | | auto-sea-way | [scgraph](https://github.com/connor-makowski/scgraph) | [eurostat/searoute](https://github.com/eurostat/searoute) | [searoute-py](https://github.com/genthalili/searoute-py) | Commercial SaaS APIs |
 |---|---|---|---|---|---|
 | **Routing graph** | Generated from OSM data (~40M cells) | Pre-curated shipping lane network (marnet) | Static hand-drawn (~4K edges) | Static hand-drawn (~4K edges) | Proprietary |
-| **Coastline detail** | Adaptive res-3→res-13 | None — routes along lane waypoints | Fixed low resolution | Fixed low resolution | Varies |
+| **Coastline detail** | Adaptive res-3→res-14 | None — routes along lane waypoints | Fixed low resolution | Fixed low resolution | Varies |
 | **Narrow passages** | Suez, Panama, Bosphorus, etc. | Only if in curated dataset | Approximate | Approximate | Usually yes |
 | **Arbitrary coordinates** | Yes | Snaps to nearest lane node (KD-tree) | Ports + coords | Ports + coords | Varies |
 | **Self-hosted** | Yes — single binary | Yes — Python library | Yes — Java library | Yes — Python library | No |
@@ -123,6 +123,7 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 - `from`, `to` — `lat,lon` coordinates
 - `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the requested value as `shore_buffer_nm`
 - `arctic` (optional, `true`/`false`, default `false`) — opens the Northern Sea Route and the Northwest Passage. They are closed by default because they are only passable in summer and mostly for ice-class ships, so Asia–Europe routes go via Suez. The central Arctic north of 80°N is permanent pack ice and is never routed, with or without this flag
+- `canals` (optional, `true`/`false`, default `true`) — `false` closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Cape Cod, Chesapeake–Delaware, Welland), so the route goes around them. Use it to avoid canal fees and transit bookings. Each canal is closed in the middle, so ports at both ends stay reachable from their own side. Natural straits (Bosphorus, Dover, Malacca and others) are not affected
 
 **`/route` response:** `distance_nm` counts only water segments. When a requested point sits on land, the geometry still starts/ends exactly there, and the overland connector segments are listed in `land_legs` (segment indices into `geometry.coordinates`) so clients can render them differently — they contribute nothing to `distance_nm`. Land detection is a coastline-crossing test, not point-in-polygon: a segment that lies entirely inland on one landmass, never touching a coastline, is not detected. `land_legs` covers pins near the shore, not arbitrary points deep inland.
 

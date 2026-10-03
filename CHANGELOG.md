@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `canals` option on `/route` and on `Graph.route` in `asw-mobile` (default `true`). With `canals=false` the router closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Cape Cod, Chesapeake–Delaware, Welland) and goes around them, for routes that avoid canal fees. Each canal is closed in the middle, so ports at both ends stay reachable. On the planet graph, Port Said to Suez is 101.5 nm by default and 12,171 nm with `canals=false`.
+- Lefkada Canal as a passage. The channel between Lefkada and the mainland is now refined to res-13 and routable: from north of the floating bridge to Nidri is 9.2 nm through the channel, where the route went 37.1 nm around the island before. Needs a rebuilt graph.
+- Four more narrow channels as passages, each needs a rebuilt graph. Evripos Strait at the Chalkis old bridge: North to South Euboean Gulf is 23.0 nm, where the route went 199.1 nm around Euboea before. Potidea Canal: 1.8 nm, was 58.7 nm around Kassandra. Osor Channel between Cres and Lošinj (about 11 m wide, refined to res-14): 2.5 nm, was 33.5 nm. Trogir Channel: 1.3 nm, was 17.6 nm around Čiovo.
+
 ## [0.9.0] - 2026-09-30
 
 The planet graph file changes (format v5, rebuilt 2026-09-30). Download it again with the new release, or rebuild.
