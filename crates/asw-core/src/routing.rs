@@ -114,21 +114,17 @@ fn canal_cuts(canals: bool) -> impl Iterator<Item = &'static (f64, f64, f64, f64
     passages.iter().filter_map(|p| p.cut.as_ref())
 }
 
-/// Does the corridor (sorted region ids) contain a closed canal cut? The
-/// coarse search works on whole res-3 regions and cannot see the cut boxes,
-/// so it still plans through a closed canal. A fine search limited to that
-/// corridor stops at the cut, or returns a detour that is only the shortest
-/// inside the corridor.
-fn crosses_closed_canal(corridor: &[u64], canals: bool) -> bool {
-    canal_cuts(canals).any(|&(x0, y0, x1, y1)| {
-        [(y0, x0), (y0, x1), (y1, x0), (y1, x1)]
-            .into_iter()
-            .filter_map(|(lat, lon)| h3o::LatLng::new(lat, lon).ok())
-            .any(|ll| {
-                let region = u64::from(ll.to_cell(h3o::Resolution::Three));
-                corridor.binary_search(&region).is_ok()
-            })
-    })
+/// Sorted res-3 regions that hold a closed canal cut. Empty while the canals
+/// are open. The coarse search keeps out of them (see `coarse::corridor`).
+fn closed_canal_regions(canals: bool) -> Vec<u64> {
+    let mut regions: Vec<u64> = canal_cuts(canals)
+        .flat_map(|&(x0, y0, x1, y1)| [(y0, x0), (y0, x1), (y1, x0), (y1, x1)])
+        .filter_map(|(lat, lon)| h3o::LatLng::new(lat, lon).ok())
+        .map(|ll| u64::from(ll.to_cell(h3o::Resolution::Three)))
+        .collect();
+    regions.sort_unstable();
+    regions.dedup();
+    regions
 }
 
 /// Is the point in the ice cap, in a closed Arctic passage, or in a closed
@@ -513,13 +509,20 @@ pub fn compute_route(
 
     let shore = shore_buffer_q(shore_buffer_nm);
     // Long routes: fine A* inside the corridor along the coarse path. No
-    // corridor (short route, or one through a closed canal) or nothing found
-    // inside it: search everything.
-    let corridor = (haversine_nm(from_lat, from_lon, to_lat, to_lon)
-        >= crate::coarse::CORRIDOR_MIN_NM)
-        .then(|| crate::coarse::corridor(graph, start, goal, arctic, canals))
-        .flatten()
-        .filter(|c| !crosses_closed_canal(c, canals));
+    // corridor (short route) or nothing found inside it: search everything.
+    // An end point in the region of a closed canal also gets no corridor:
+    // its coarse node can include the canal itself, and a corridor through
+    // the canal would fail at the cut or return a detour that is only the
+    // shortest inside the corridor.
+    let closed_regions = closed_canal_regions(canals);
+    let near_closed_canal = [start, goal].iter().any(|&n| {
+        let region = crate::coarse::region_of(graph.node_h3(n));
+        closed_regions.binary_search(&region).is_ok()
+    });
+    let corridor = (!near_closed_canal
+        && haversine_nm(from_lat, from_lon, to_lat, to_lon) >= crate::coarse::CORRIDOR_MIN_NM)
+        .then(|| crate::coarse::corridor(graph, start, goal, arctic, &closed_regions))
+        .flatten();
     let found = corridor.as_deref().and_then(|c| {
         let r = astar(graph, start, goal, buffers, shore, arctic, canals, Some(c));
         buffers.reset();
@@ -1547,7 +1550,7 @@ mod tests {
     }
 
     #[test]
-    fn corridor_through_a_closed_canal_is_dropped() {
+    fn closed_canals_close_their_regions() {
         let region = |lat: f64, lon: f64| {
             u64::from(
                 h3o::LatLng::new(lat, lon)
@@ -1555,11 +1558,11 @@ mod tests {
                     .to_cell(h3o::Resolution::Three),
             )
         };
-        let suez = vec![region(30.47, 32.35)];
-        let pacific = vec![region(0.0, -140.0)];
-        assert!(crosses_closed_canal(&suez, false));
-        assert!(!crosses_closed_canal(&suez, true), "canals are open");
-        assert!(!crosses_closed_canal(&pacific, false), "no canal there");
+        let closed = closed_canal_regions(false);
+        assert!(closed.contains(&region(30.47, 32.35)), "Suez");
+        assert!(!closed.contains(&region(0.0, -140.0)), "no canal there");
+        assert!(closed.is_sorted());
+        assert!(closed_canal_regions(true).is_empty(), "canals are open");
     }
 
     #[test]

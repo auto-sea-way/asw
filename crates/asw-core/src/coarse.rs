@@ -182,12 +182,19 @@ pub fn coarse_node_of(graph: &RoutingGraph, node: u32) -> Option<u32> {
 /// Sorted region ids the fine search may use between `start` and `goal`, or
 /// None when a corridor does not apply: both ends in one coarse node (a
 /// short route) or no coarse path. The caller then searches the whole graph.
+///
+/// `closed_regions` (sorted) are regions the coarse path must not pass
+/// through: the ones holding a closed canal. A coarse node is a whole piece
+/// of water in a res-3 region, far too big to cut a canal in the middle, so
+/// the region around the canal is closed here and the path goes around. The
+/// ring added around the path can still include such a region, and the fine
+/// search may use its open water.
 pub fn corridor(
     graph: &RoutingGraph,
     start: u32,
     goal: u32,
     arctic: bool,
-    canals: bool,
+    closed_regions: &[u64],
 ) -> Option<Vec<u64>> {
     let cs = coarse_node_of(graph, start)?;
     let ct = coarse_node_of(graph, goal)?;
@@ -195,6 +202,7 @@ pub fn corridor(
         return None;
     }
     let nc = graph.num_coarse() as usize;
+    let regions = graph.coarse_regions();
     let (tlat, tlon) = graph.coarse_pos(ct);
     let mut g = vec![f64::INFINITY; nc];
     let mut prev = vec![u32::MAX; nc];
@@ -215,7 +223,10 @@ pub fn corridor(
                 continue;
             }
             let (vlat, vlon) = graph.coarse_pos(v);
-            if v != ct && crate::routing::blocked(vlat, vlon, arctic, canals) {
+            if v != ct
+                && (crate::routing::blocked(vlat, vlon, arctic, true)
+                    || closed_regions.binary_search(&regions[v as usize]).is_ok())
+            {
                 continue;
             }
             let ng = g[u as usize] + haversine_nm(ulat, ulon, vlat, vlon);
@@ -251,7 +262,6 @@ pub fn corridor(
         members.extend_from_slice(&next);
         frontier = next;
     }
-    let regions = graph.coarse_regions();
     let mut out: Vec<u64> = members.iter().map(|&c| regions[c as usize]).collect();
     out.sort_unstable();
     out.dedup();
@@ -372,12 +382,14 @@ mod tests {
         let (nlat, nlon) = g.node_pos(ids[0]);
         assert!((lat - nlat).abs() < 1e-5 && (lon - nlon).abs() < 1e-5);
         // Corridor from A to C holds all three regions (path) and nothing else.
-        let corr = corridor(&g, ids[0], ids[2], false, true).unwrap();
+        let corr = corridor(&g, ids[0], ids[2], false, &[]).unwrap();
         let mut want = vec![u64::from(pa), u64::from(pb), u64::from(pc)];
         want.sort();
         assert_eq!(corr, want);
         // Same coarse node at both ends: no corridor.
-        assert!(corridor(&g, ids[0], ids[0], false, true).is_none());
+        assert!(corridor(&g, ids[0], ids[0], false, &[]).is_none());
+        // B closed: the only coarse path is gone.
+        assert!(corridor(&g, ids[0], ids[2], false, &[u64::from(pb)]).is_none());
     }
 
     #[test]
