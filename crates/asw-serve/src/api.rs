@@ -24,6 +24,8 @@ struct RouteQuery {
     shore_buffer: Option<f64>,
     /// Open the seasonal Arctic passages (default false).
     arctic: Option<bool>,
+    /// Allow man-made canals (default true). `false` routes around them.
+    canals: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +106,7 @@ async fn route_handler(
     }
 
     let arctic = params.arctic.unwrap_or(false);
+    let canals = params.canals.unwrap_or(true);
 
     // Bound concurrent A* computations to the buffer pool's capacity before
     // handing off to the blocking pool: without this, `spawn_blocking` can
@@ -141,6 +144,7 @@ async fn route_handler(
             &mut buffers,
             shore_buffer_nm,
             arctic,
+            canals,
         );
         app.astar_pool.release(buffers);
         result

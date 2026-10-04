@@ -77,7 +77,9 @@ fn extract_single_passage(
     work_dir: &Path,
 ) -> Result<Vec<Polygon<f64>>> {
     let safe_name = passage.name.to_lowercase().replace(' ', "-");
-    let pbf_path = work_dir.join(format!("{}.osm.pbf", safe_name));
+    // Cached under the extract's own file name, so passages that use the
+    // same extract share one download.
+    let pbf_path = work_dir.join(url.rsplit('/').next().unwrap_or(url));
     let water_pbf_path = work_dir.join(format!("{}-water.osm.pbf", safe_name));
     let geojson_path = work_dir.join(format!("{}-water.geojson", safe_name));
 

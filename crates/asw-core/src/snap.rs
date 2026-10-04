@@ -4,28 +4,29 @@
 use crate::graph::RoutingGraph;
 
 impl RoutingGraph {
-    /// Approximate H3 edge length in nautical miles, indexed by resolution (3..=13).
+    /// Approximate H3 edge length in nautical miles, indexed by resolution (3..=14).
     /// Used for early-termination: skip this resolution if current best is already
     /// closer than the cell edge length.
-    const H3_EDGE_NM: [f64; 14] = [
-        0.0, 0.0, 0.0,   // res 0-2: unused
-        35.0,  // res 3
-        13.0,  // res 4
-        5.0,   // res 5
-        1.9,   // res 6
-        0.7,   // res 7
-        0.27,  // res 8
-        0.10,  // res 9
-        0.038, // res 10
-        0.014, // res 11
-        0.005, // res 12
-        0.002, // res 13
+    const H3_EDGE_NM: [f64; 15] = [
+        0.0, 0.0, 0.0,    // res 0-2: unused
+        35.0,   // res 3
+        13.0,   // res 4
+        5.0,    // res 5
+        1.9,    // res 6
+        0.7,    // res 7
+        0.27,   // res 8
+        0.10,   // res 9
+        0.038,  // res 10
+        0.014,  // res 11
+        0.005,  // res 12
+        0.002,  // res 13
+        0.0007, // res 14
     ];
 
     /// Maximum k-ring expansion per resolution tier.
     fn k_max(res: u8) -> u32 {
         match res {
-            9..=13 => 30,
+            9..=14 => 30,
             6..=8 => 20,
             3..=5 => 15,
             _ => 3,
@@ -144,7 +145,7 @@ impl RoutingGraph {
         let mut best: Option<(u32, f64)> = None;
 
         // Pass 1: fast scan with small k
-        for res_u8 in (3..=13).rev() {
+        for res_u8 in (3..=14).rev() {
             let edge_nm = Self::H3_EDGE_NM[res_u8 as usize];
             if let Some((_, d)) = best {
                 if d < edge_nm * 0.4 {
@@ -154,7 +155,7 @@ impl RoutingGraph {
             self.search_resolution(&ll, lat, lon, res_u8, 3, &mut best);
         }
 
-        // Pass 2: adaptive k at common resolutions (3-9). Passage corridors (10-13)
+        // Pass 2: adaptive k at common resolutions (3-9). Passage corridors (10-14)
         // have tiny cells where d/edge explodes — they're covered by pass 1's k=3.
         // Skip entirely if pass 1 found a node within 0.5nm (excellent snap).
         let needs_pass2 = match best {
@@ -474,5 +475,20 @@ mod tests {
             (dist - dist_boundary).abs() < 1e-9,
             "expected boundary ring-8 candidate at {dist_boundary} nm, got {dist} nm (ring-9 candidate at {dist_beyond} nm must not win)"
         );
+    }
+
+    #[test]
+    fn nearest_node_finds_res14_cells() {
+        // A res-14 cell in a narrow channel and a res-10 cell at its mouth.
+        let fine = h3o::LatLng::new(44.6929, 14.3921)
+            .unwrap()
+            .to_cell(h3o::Resolution::Fourteen);
+        let coarse = h3o::LatLng::new(44.6950, 14.3890)
+            .unwrap()
+            .to_cell(h3o::Resolution::Ten);
+        let g = chain_graph(&[u64::from(fine), u64::from(coarse)]);
+        let (node, d) = g.nearest_node(44.6929, 14.3921).unwrap();
+        assert_eq!(g.node_h3(node), u64::from(fine));
+        assert!(d < 0.002, "{d}");
     }
 }

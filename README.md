@@ -27,7 +27,7 @@ You run it yourself: one binary and one graph file. Routing happens on your own 
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (a few seconds while the graph file is mapped and read in), then query a route:
@@ -46,7 +46,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 ## How It Works
 
 1. **Read** OSM land polygons shapefile
-2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-13 in passage corridors)
+2. **Generate** H3 hexagonal grid over ocean areas (adaptive cascade: res-3 deep ocean through res-10 shoreline, up to res-14 in passage corridors)
 3. **Classify** cells as navigable using hierarchical elimination and polygon intersection
 4. **Build** routing graph edges between adjacent navigable cells (same-resolution + cross-resolution)
 5. **Refine** passage corridors (Suez, Panama, Bosphorus, etc.) to higher resolutions for accurate navigation
@@ -58,7 +58,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 | | auto-sea-way | [scgraph](https://github.com/connor-makowski/scgraph) | [eurostat/searoute](https://github.com/eurostat/searoute) | [searoute-py](https://github.com/genthalili/searoute-py) | Commercial SaaS APIs |
 |---|---|---|---|---|---|
 | **Routing graph** | Generated from OSM data (~40M cells) | Pre-curated shipping lane network (marnet) | Static hand-drawn (~4K edges) | Static hand-drawn (~4K edges) | Proprietary |
-| **Coastline detail** | Adaptive res-3→res-13 | None — routes along lane waypoints | Fixed low resolution | Fixed low resolution | Varies |
+| **Coastline detail** | Adaptive res-3→res-14 | None — routes along lane waypoints | Fixed low resolution | Fixed low resolution | Varies |
 | **Narrow passages** | Suez, Panama, Bosphorus, etc. | Only if in curated dataset | Approximate | Approximate | Usually yes |
 | **Arbitrary coordinates** | Yes | Snaps to nearest lane node (KD-tree) | Ports + coords | Ports + coords | Varies |
 | **Self-hosted** | Yes — single binary | Yes — Python library | Yes — Java library | Yes — Python library | No |
@@ -78,34 +78,34 @@ Routes start and end at the exact requested coordinates; distances count only th
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 205us | 217us | 34>4 |
-| Aegean Hop | 25.3nm | 687us | 783us | 50>6 |
-| Strait of Gibraltar | 29.4nm | 658us | 758us | 64>5 |
-| Baltic Crossing | 42.0nm | 1.2ms | 1.4ms | 54>5 |
-| Balearic Sea | 127.6nm | 1.9ms | 1.9ms | 113>7 |
-| Florida Strait | 89.0nm | 389us | 414us | 22>4 |
-| Malacca Route | 534.5nm | 34.5ms | 35.1ms | 455>20 |
-| Tasman Sea | 1265.1nm | 32.8ms | 33.4ms | 337>16 |
-| South Atlantic | 3272.4nm | 24.1ms | 24.3ms | 149>8 |
-| North Atlantic | 3040.6nm | 287.8ms | 289.3ms | 399>16 |
-| Rotterdam-Singapore | 8245.7nm | 807.2ms | 808.9ms | 3162>61 |
-| Shanghai-Rotterdam | 10366.9nm | 1.19s | 1.19s | 4287>105 |
-| Tokyo-Seattle | 4286.7nm | 421.7ms | 423.1ms | 1630>47 |
+| English Channel | 22.1nm | 227us | 244us | 34>4 |
+| Aegean Hop | 25.3nm | 751us | 757us | 50>6 |
+| Strait of Gibraltar | 29.4nm | 723us | 732us | 64>5 |
+| Baltic Crossing | 42.0nm | 1.4ms | 1.9ms | 54>5 |
+| Balearic Sea | 127.6nm | 2.1ms | 8.0ms | 113>7 |
+| Florida Strait | 89.0nm | 414us | 448us | 22>4 |
+| Malacca Route | 534.5nm | 34.2ms | 34.6ms | 455>20 |
+| Tasman Sea | 1265.1nm | 32.8ms | 35.0ms | 337>16 |
+| South Atlantic | 3272.4nm | 24.0ms | 25.9ms | 149>8 |
+| North Atlantic | 3040.6nm | 287.4ms | 304.5ms | 399>16 |
+| Rotterdam-Singapore | 8246.4nm | 809.3ms | 826.9ms | 3157>62 |
+| Shanghai-Rotterdam | 10367.5nm | 1.22s | 1.27s | 4282>105 |
+| Tokyo-Seattle | 4286.7nm | 423.8ms | 437.7ms | 1630>47 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.2nm | 11.7ms | 11.8ms | 1124>28 |
-| Panama Canal | 53.2nm | 64.3ms | 64.9ms | 1101>64 |
-| Kiel Canal | 84.2nm | 38.0ms | 39.1ms | 1880>60 |
-| Corinth Canal | 6.4nm | 1.4ms | 1.4ms | 362>8 |
-| Bosphorus | 32.7nm | 1.4ms | 1.5ms | 147>9 |
-| Dardanelles | 45.1nm | 1.2ms | 1.2ms | 138>6 |
-| Malacca Strait | 28.8nm | 1.5ms | 1.5ms | 104>8 |
-| Singapore Strait | 27.1nm | 861us | 894us | 52>5 |
-| Messina Strait | 16.0nm | 497us | 522us | 75>6 |
-| Dover Strait | 18.4nm | 364us | 389us | 17>5 |
+| Suez Canal | 141.8nm | 11.7ms | 12.1ms | 1132>28 |
+| Panama Canal | 53.5nm | 63.5ms | 66.8ms | 1089>55 |
+| Kiel Canal | 84.3nm | 37.7ms | 38.2ms | 1868>55 |
+| Corinth Canal | 6.6nm | 1.3ms | 1.3ms | 361>4 |
+| Bosphorus | 32.7nm | 1.4ms | 1.4ms | 147>9 |
+| Dardanelles | 45.1nm | 1.2ms | 1.3ms | 138>6 |
+| Malacca Strait | 28.8nm | 1.5ms | 1.7ms | 104>8 |
+| Singapore Strait | 27.1nm | 890us | 2.2ms | 52>5 |
+| Messina Strait | 16.0nm | 504us | 541us | 75>6 |
+| Dover Strait | 18.4nm | 367us | 393us | 17>5 |
 
 ## API Endpoints
 
@@ -123,6 +123,7 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 - `from`, `to` — `lat,lon` coordinates
 - `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the requested value as `shore_buffer_nm`
 - `arctic` (optional, `true`/`false`, default `false`) — opens the Northern Sea Route and the Northwest Passage. They are closed by default because they are only passable in summer and mostly for ice-class ships, so Asia–Europe routes go via Suez. The central Arctic north of 80°N is permanent pack ice and is never routed, with or without this flag
+- `canals` (optional, `true`/`false`, default `true`) — `false` closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Privlaka, Cape Cod, Cape May, Chesapeake–Delaware), so the route goes around them. Use it to avoid canal fees and transit bookings. Each canal is closed in the middle, so ports at both ends stay reachable from their own side. Natural straits (Bosphorus, Dover, Malacca and others) are not affected. Long routes stay fast with canals closed (Rotterdam to Singapore around Africa: about 0.5 s). The exception is a long route that starts or ends in the same res-3 region as a closed canal, which needs a search of the whole graph (Colón to Callao around South America: about 4 s)
 
 **`/route` response:** `distance_nm` counts only water segments. When a requested point sits on land, the geometry still starts/ends exactly there, and the overland connector segments are listed in `land_legs` (segment indices into `geometry.coordinates`) so clients can render them differently — they contribute nothing to `distance_nm`. Land detection is a coastline-crossing test, not point-in-polygon: a segment that lies entirely inland on one landmass, never touching a coastline, is not detected. `land_legs` covers pins near the shore, not arbitrary points deep inland.
 
@@ -134,23 +135,23 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.9.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.9.0-full` | Full image — graph file included (~1.5 GB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.10.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.10.0-full` | Full image — graph file included (~1.5 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~1.5 GB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.9.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.9.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0
 ```
 
 The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
@@ -184,9 +185,9 @@ Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in about 4.5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 38,886,917 |
-| Edges | 295,481,392 |
-| Graph file size | 1,425 MB (v5, uncompressed, memory-mapped) |
+| Nodes | 39,068,079 |
+| Edges | 296,619,250 |
+| Graph file size | 1,429 MB (v5, uncompressed, memory-mapped) |
 | Connectivity | 100% (single connected component after build-time pruning) |
 | Server memory (RSS) | 1.38 GB after open, 1.43 GB after a transoceanic route mix (measured on the v4 file, 12 MB larger) |
 | Server memory (total) | plan for ~2.5 GB |
@@ -260,6 +261,7 @@ cargo build --release -p asw-cli
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas. The `shore_buffer` parameter partially mitigates this by keeping routes off headlands and uncharted near-shore hazards, but it is not a substitute for nautical charts.
 - **No sea-ice data.** The graph comes from land polygons, so ice is modelled with fixed areas: everything north of 80°N is closed, and the Northern Sea Route (Vilkitsky Strait and Severnaya Zemlya) and the Northwest Passage (across the Canadian Arctic Archipelago) are closed unless the request sets `arctic=true`. Ports inside these areas, such as Resolute, need `arctic=true`. Seasonal ice elsewhere, including around Antarctica, is not considered.
+- **Only water inside the OSM coastline, plus selected passages.** Lakes, lagoons and rivers are land in the source data. A harbour behind a river mouth or inside a lagoon is reachable only when a passage entry adds its water (Šibenik is added this way). The Venice lagoon and the Great Lakes are not in the graph. The Chesapeake–Delaware Canal is reachable from the Delaware side only: about 1 nm of Back Creek on the Chesapeake side has no water area in OSM.
 
 ## Data Sources
 

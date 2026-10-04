@@ -154,6 +154,7 @@ fn resolve_routes(app: &AppState, shore_buffer_nm: f64) -> Vec<usize> {
             &mut buffers,
             shore_buffer_nm,
             false,
+            true,
         )
         .is_some();
         if found {
@@ -195,6 +196,7 @@ fn run_benchmark(
                     buffers,
                     shore_buffer_nm,
                     false,
+                    true,
                 )
             };
             for _ in 0..warmup {
