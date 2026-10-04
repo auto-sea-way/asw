@@ -10,8 +10,9 @@ pub struct Passage {
     pub corridor: (f64, f64, f64, f64),
     /// Cascade refines to this resolution within zone
     pub leaf_resolution: u8,
-    /// Geofabrik PBF URL for inland canal water extraction.
-    /// None for natural straits where coastline already provides water gaps.
+    /// Geofabrik PBF URL for water that is not inside the coastline: inland
+    /// canals, and harbours behind a river mouth. None where the coastline
+    /// already provides the water gaps.
     pub geofabrik_url: Option<&'static str>,
     /// Box across the middle of a man-made canal, closed when a request sets
     /// `canals=false`: (min_lon, min_lat, max_lon, max_lat). It cuts the
@@ -120,6 +121,7 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: None,
         cut: None,
     },
+    // Harbour behind a river mouth: the water comes from the OSM extract
     Passage {
         name: "Sibenik Channel",
         corridor: (15.84, 43.71, 15.92, 43.75),

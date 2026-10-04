@@ -80,7 +80,7 @@ pub fn generate_cells(
     // Cells inside passage corridors must not be eliminated by contains_polygon
     // during the cascade, because narrow waterways (e.g. 25m-wide Corinth Canal)
     // are smaller than intermediate H3 cells — the canal only becomes visible
-    // at very high resolutions (res-12/13), so ancestors must survive until then.
+    // at very high resolutions (res-12 to res-14), so ancestors must survive until then.
     let passage_corridors: Vec<(f64, f64, f64, f64)> =
         passages.iter().map(|p| p.corridor).collect();
 
@@ -215,7 +215,7 @@ pub fn generate_cells(
             // Same parent-grouping strategy as the normal leaf filter, but
             // land-intersecting cells are refined further instead of dropped:
             // in passage zones, narrow waterways are smaller than cells at this
-            // resolution and only become visible at res-12/13.
+            // resolution and only become visible at res-12 to res-14.
             let pb = make_progress(current.len(), &format!("zone filter res-{}", H3_RES_LEAF));
             let (pure, straddle) = classify_by_parent(current, leaf_res_minus_1, land, &pb);
             pb.finish_and_clear();

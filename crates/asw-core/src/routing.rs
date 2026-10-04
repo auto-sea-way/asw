@@ -27,8 +27,9 @@ pub struct RouteResult {
 /// defaults by `touch()` itself; the heuristic decode (H3 -> lat/lng + trig)
 /// only happens once per node per search, no matter how many times the node
 /// is relaxed afterwards. A node the search must not use (closed Arctic
-/// area, or outside `corridor`) is marked closed right here, so it is never
-/// expanded and the test runs once per node, not once per edge.
+/// area, closed canal, or outside `corridor`) is marked closed right here,
+/// so it is never expanded and the test runs once per node, not once per
+/// edge.
 #[inline(always)]
 fn touch_and_cache_h(
     buffers: &mut crate::astar_pool::AstarBuffers,
@@ -111,6 +112,23 @@ const ARCTIC_PASSAGES: [(f64, f64, f64, f64); 2] = [
 fn canal_cuts(canals: bool) -> impl Iterator<Item = &'static (f64, f64, f64, f64)> {
     let passages = if canals { &[][..] } else { PASSAGES };
     passages.iter().filter_map(|p| p.cut.as_ref())
+}
+
+/// Does the corridor (sorted region ids) contain a closed canal cut? The
+/// coarse search works on whole res-3 regions and cannot see the cut boxes,
+/// so it still plans through a closed canal. A fine search limited to that
+/// corridor stops at the cut, or returns a detour that is only the shortest
+/// inside the corridor.
+fn crosses_closed_canal(corridor: &[u64], canals: bool) -> bool {
+    canal_cuts(canals).any(|&(x0, y0, x1, y1)| {
+        [(y0, x0), (y0, x1), (y1, x0), (y1, x1)]
+            .into_iter()
+            .filter_map(|(lat, lon)| h3o::LatLng::new(lat, lon).ok())
+            .any(|ll| {
+                let region = u64::from(ll.to_cell(h3o::Resolution::Three));
+                corridor.binary_search(&region).is_ok()
+            })
+    })
 }
 
 /// Is the point in the ice cap, in a closed Arctic passage, or in a closed
@@ -267,8 +285,8 @@ pub struct SmoothResult {
 /// only consulted when `shore_buffer_nm > 0`. Returns strictly increasing
 /// indices into `coords`, always keeping the first and last. When even the
 /// next hop is blocked (e.g. a pin on land), the blocked segment is kept and
-/// smoothing continues from that point. A shortcut into the ice cap or a
-/// closed Arctic passage (see `astar`) counts as blocked.
+/// smoothing continues from that point. A shortcut into the ice cap, a
+/// closed Arctic passage or a closed canal (see `astar`) counts as blocked.
 pub fn smooth_indices(
     coords: &[[f64; 2]],
     shore_dist: &[u8],
@@ -495,11 +513,13 @@ pub fn compute_route(
 
     let shore = shore_buffer_q(shore_buffer_nm);
     // Long routes: fine A* inside the corridor along the coarse path. No
-    // corridor (short route) or nothing found inside it: search everything.
+    // corridor (short route, or one through a closed canal) or nothing found
+    // inside it: search everything.
     let corridor = (haversine_nm(from_lat, from_lon, to_lat, to_lon)
         >= crate::coarse::CORRIDOR_MIN_NM)
         .then(|| crate::coarse::corridor(graph, start, goal, arctic, canals))
-        .flatten();
+        .flatten()
+        .filter(|c| !crosses_closed_canal(c, canals));
     let found = corridor.as_deref().and_then(|c| {
         let r = astar(graph, start, goal, buffers, shore, arctic, canals, Some(c));
         buffers.reset();
@@ -1524,6 +1544,22 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn corridor_through_a_closed_canal_is_dropped() {
+        let region = |lat: f64, lon: f64| {
+            u64::from(
+                h3o::LatLng::new(lat, lon)
+                    .unwrap()
+                    .to_cell(h3o::Resolution::Three),
+            )
+        };
+        let suez = vec![region(30.47, 32.35)];
+        let pacific = vec![region(0.0, -140.0)];
+        assert!(crosses_closed_canal(&suez, false));
+        assert!(!crosses_closed_canal(&suez, true), "canals are open");
+        assert!(!crosses_closed_canal(&pacific, false), "no canal there");
     }
 
     #[test]

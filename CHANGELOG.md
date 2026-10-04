@@ -17,7 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The build keeps an edge only when the segment between the two cell centres does not cross the coastline. It tested only the midpoint before. This is the same test the router uses for smoothing, so a route no longer reports a land leg on a graph edge that clips a quay corner (seen at the Lefkada and Trogir bridges). On a Croatia regional build this removes 138 more edges and 32 of 186,557 nodes.
-- Passages refine up to res-14 (was res-13).
+- Passages refine up to res-14 (was res-13), and nearest-node snapping searches res-14 too.
+- With `canals=false`, a long route whose corridor contains a closed canal skips the corridor and searches the whole graph. The coarse graph cannot see the small closed areas, so the corridor search stopped there and then fell back to the full search anyway. This also guarantees the shortest route, where the corridor could return a longer detour. These routes still need the full search and are slow. Planet: Rotterdam to Singapore with canals closed goes around Africa (11,704 nm) in 6.4 s (6.7 s before), New York to Los Angeles goes around South America (12,945 nm) in 9.1 s (9.6 s before). With canals open they take 0.8 s and 1.3 s. Long routes that touch no canal keep the corridor speed with `canals=false` too.
 - A downloaded OSM extract is cached under its own file name, so passages that use the same extract share one download.
 
 ### Removed
