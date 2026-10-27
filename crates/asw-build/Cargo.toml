@@ -18,4 +18,4 @@ anyhow.workspace = true
 shapefile = { version = "0.9", features = ["geo-types"] }
 reqwest = { version = "0.13", features = ["blocking"] }
 time = { version = "0.3", features = ["formatting"] }
-zip = "8"
+zip = "9"
