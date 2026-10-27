@@ -1,5 +1,10 @@
 [advisories]
-ignore = []
+ignore = [
+    # basic-toml is unmaintained. It comes only through uniffi's binding
+    # generator (uniffi_bindgen -> askama), at build time, and uniffi 0.32.2
+    # is the latest release. Remove when uniffi drops it.
+    { id = "RUSTSEC-2026-0374", reason = "unmaintained, build-time only via uniffi, no release without it" },
+]
 
 [licenses]
 allow = [
