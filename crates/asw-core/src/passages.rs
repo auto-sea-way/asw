@@ -43,7 +43,11 @@ pub static PASSAGES: &[Passage] = &[
     },
     Passage {
         name: "Panama Canal",
-        corridor: (-79.95, 8.88, -79.50, 9.42),
+        // West edge sits between the Gatun locks (-79.924) and the Rio Chagres
+        // polygon below the dam (east end -79.930). The extract keeps every water
+        // polygon that touches this box, and the river joins Gatun Lake at the
+        // spillway, so a box that reaches it lets routes go over the dam.
+        corridor: (-79.928, 8.88, -79.50, 9.42),
         leaf_resolution: 13, // bumped from 11 — lock channels need 3.5m edges
         geofabrik_url: Some("https://download.geofabrik.de/central-america/panama-latest.osm.pbf"),
         cut: Some((-79.70, 9.04, -79.60, 9.06)),
@@ -92,6 +96,13 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: None,
         cut: Some((14.4603, 44.5448, 14.4608, 44.5462)),
     },
+    Passage {
+        name: "Vistula Spit Canal",
+        corridor: (19.30, 54.348, 19.325, 54.372),
+        leaf_resolution: 13, // ~25m lock chamber
+        geofabrik_url: None,
+        cut: Some((19.305, 54.355, 19.320, 54.358)),
+    },
     // Natural straits — coastline already provides the water gaps
     Passage {
         name: "Evripos Strait",
@@ -111,6 +122,20 @@ pub static PASSAGES: &[Passage] = &[
         name: "Menai Strait",
         corridor: (-4.20, 53.21, -4.15, 53.23),
         leaf_resolution: 12, // the Swellies between the two bridges, rocks and islets
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Poros Strait",
+        corridor: (23.448, 37.490, 23.466, 37.502),
+        leaf_resolution: 11, // ~130m east of Poros town
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "East River",
+        corridor: (-73.97, 40.745, -73.93, 40.785),
+        leaf_resolution: 11, // both channels around Roosevelt Island, ~200m
         geofabrik_url: None,
         cut: None,
     },

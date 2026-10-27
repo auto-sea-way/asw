@@ -7,12 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The planet graph file changes. Download it again with the new release, or rebuild.
+
 ### Added
+
+- Three passages found with an audit of OpenStreetMap ferry routes. For each `route=ferry` way, the audit compares the ferry line with the route between its two ends; on the v0.10.0 graph 168 of 19,023 ferries have a much longer route, in 116 places. Poros Strait (res-11): Poros town to the eastern exit is 1.3 nm, was 12.2 nm around the island, and Poros to Hydra is 11.7 nm, was 20.5 nm. East River in New York (res-11), both channels at Roosevelt Island: East 34th Street to East 90th Street is 2.4 nm, was 217.6 nm around Long Island. Vistula Spit Canal (res-13, opened in 2022): Gdańsk Bay to the Vistula Lagoon is 2.7 nm, was 54.0 nm through the Strait of Baltiysk; it is a man-made canal, so `canals=false` closes it at the lock.
 
 - Reference test for planet routes. Twenty-two routes from NGA Pub 151 (Distances Between Ports), eight of them across the Pacific, must match the published distance within 2 %; today all are within 1.2 %. Every water leg of these routes and of the two routes from #65 is also walked along its great circle and checked against Natural Earth 1:10m land, a coastline that does not come from OpenStreetMap: no point may lie 3 nm or more inside one land polygon. On the code before the great-circle fix this check finds five Pub 151 routes with a leg over land (Baja California, Jalisco, Kauai, Socotra, Long Island), although their distances were within 2 %. The test needs the planet graph and the Natural Earth land shapefile in `export/`: `cargo test --release -p asw-core --test reference_distances -- --ignored --nocapture` (`ASW_GRAPH` and `ASW_CHECK_LAND` override the paths).
 
 ### Fixed
 
+- Panama Canal: routes from west of Colón no longer go up the Chagres River and over Gatun Dam into Gatun Lake. The passage took every OSM water polygon that touches its box, and the box reached the river polygon below the dam, which joins the lake at the spillway. The box now starts east of the river, and these routes go through the locks (9.40°N 80.05°W to 8.80°N 79.45°W: 56.2 nm through the locks, was 53.5 nm over the dam). The reference test no longer exempts the area, and the README no longer lists it as a limitation.
 - Route geometry on long legs (#65 — thanks to @GLatourZ for measuring the problem on two ocean crossings). Smoothing and the direct-line shortcut tested a leg as a straight line in longitude and latitude, while `distance_nm` summed great-circle lengths between the same waypoints. On a leg of thousands of miles the two curves lie hundreds of miles apart, so the great circle between two returned waypoints could cross land (Saint-Nazaire to the Bahamas clipped Belle-Île, Panama to Japan ran through Mexico) and `distance_nm` was the length of a line that could not be sailed. A leg is now checked along its great circle every 20 nm, and the returned polyline is split to the same step, so great-circle, rhumb-line and straight-line readings of the geometry agree within 0.1 nm and `distance_nm` is the length of the returned polyline. Routes have more points (a transatlantic route has about 190 instead of 4); `smooth_hops` still counts the waypoints before the split. Planet: Miami to 30°N 140°E follows the Central American coast and is 9,024 nm (was 9,020 nm along a line through Mexico), Rotterdam to Singapore 8,289 nm (was 8,246 nm), New York to Southampton 3,048 nm (was 3,041 nm).
 
 ### Changed
