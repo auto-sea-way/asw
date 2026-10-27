@@ -72,40 +72,40 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 23 routes, 50 iterations each, on the planet graph (format v5, memory-mapped). Graphs in an older format must be rebuilt: older files are rejected at load time.
 
-Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded). Routes longer than 500 nm first find their way on the coarse graph and then search only a corridor around it; the three ocean crossings went from 0.7–4.5 s to 0.4–1.2 s with it.
+Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded). Consecutive coordinates are at most 20 nm apart along the great circle, so the polyline reads the same whether you join the points with great-circle arcs, rhumb lines or straight lines on the map, and `distance_nm` is its length. Routes longer than 500 nm first find their way on the coarse graph and then search only a corridor around it. The three ocean crossings take 0.36–0.74 s.
 
 ### Sailing Routes
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 227us | 244us | 34>4 |
-| Aegean Hop | 25.3nm | 751us | 757us | 50>6 |
-| Strait of Gibraltar | 29.4nm | 723us | 732us | 64>5 |
-| Baltic Crossing | 42.0nm | 1.4ms | 1.9ms | 54>5 |
-| Balearic Sea | 127.6nm | 2.1ms | 8.0ms | 113>7 |
-| Florida Strait | 89.0nm | 414us | 448us | 22>4 |
-| Malacca Route | 534.5nm | 34.2ms | 34.6ms | 455>20 |
-| Tasman Sea | 1265.1nm | 32.8ms | 35.0ms | 337>16 |
-| South Atlantic | 3272.4nm | 24.0ms | 25.9ms | 149>8 |
-| North Atlantic | 3040.6nm | 287.4ms | 304.5ms | 399>16 |
-| Rotterdam-Singapore | 8246.4nm | 809.3ms | 826.9ms | 3157>62 |
-| Shanghai-Rotterdam | 10367.5nm | 1.22s | 1.27s | 4282>105 |
-| Tokyo-Seattle | 4286.7nm | 423.8ms | 437.7ms | 1630>47 |
+| English Channel | 22.1nm | 223us | 254us | 34>4 |
+| Aegean Hop | 25.3nm | 703us | 740us | 50>6 |
+| Strait of Gibraltar | 29.4nm | 647us | 665us | 64>5 |
+| Baltic Crossing | 42.0nm | 1.2ms | 1.3ms | 54>5 |
+| Balearic Sea | 127.6nm | 2.0ms | 2.3ms | 113>7 |
+| Florida Strait | 89.0nm | 329us | 352us | 22>4 |
+| Malacca Route | 535.8nm | 31.1ms | 32.7ms | 455>22 |
+| Tasman Sea | 1265.2nm | 31.0ms | 32.0ms | 337>16 |
+| South Atlantic | 3272.4nm | 16.4ms | 17.5ms | 149>7 |
+| North Atlantic | 3047.9nm | 215.3ms | 235.5ms | 399>17 |
+| Rotterdam-Singapore | 8289.4nm | 440.5ms | 456.2ms | 3157>64 |
+| Shanghai-Rotterdam | 10363.9nm | 737.8ms | 755.1ms | 4282>93 |
+| Tokyo-Seattle | 4287.8nm | 356.0ms | 372.1ms | 1630>44 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.8nm | 11.7ms | 12.1ms | 1132>28 |
-| Panama Canal | 53.5nm | 63.5ms | 66.8ms | 1089>55 |
-| Kiel Canal | 84.3nm | 37.7ms | 38.2ms | 1868>55 |
-| Corinth Canal | 6.6nm | 1.3ms | 1.3ms | 361>4 |
-| Bosphorus | 32.7nm | 1.4ms | 1.4ms | 147>9 |
+| Suez Canal | 141.8nm | 11.9ms | 12.3ms | 1132>28 |
+| Panama Canal | 53.5nm | 64.8ms | 69.3ms | 1089>55 |
+| Kiel Canal | 84.3nm | 38.7ms | 39.6ms | 1868>55 |
+| Corinth Canal | 6.6nm | 1.3ms | 1.5ms | 361>4 |
+| Bosphorus | 32.7nm | 1.4ms | 1.5ms | 147>9 |
 | Dardanelles | 45.1nm | 1.2ms | 1.3ms | 138>6 |
-| Malacca Strait | 28.8nm | 1.5ms | 1.7ms | 104>8 |
-| Singapore Strait | 27.1nm | 890us | 2.2ms | 52>5 |
-| Messina Strait | 16.0nm | 504us | 541us | 75>6 |
-| Dover Strait | 18.4nm | 367us | 393us | 17>5 |
+| Malacca Strait | 28.8nm | 1.5ms | 1.5ms | 104>8 |
+| Singapore Strait | 27.1nm | 869us | 890us | 52>5 |
+| Messina Strait | 16.0nm | 504us | 528us | 75>6 |
+| Dover Strait | 18.4nm | 378us | 409us | 17>5 |
 
 ## API Endpoints
 
@@ -125,7 +125,7 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 - `arctic` (optional, `true`/`false`, default `false`) — opens the Northern Sea Route and the Northwest Passage. They are closed by default because they are only passable in summer and mostly for ice-class ships, so Asia–Europe routes go via Suez. The central Arctic north of 80°N is permanent pack ice and is never routed, with or without this flag
 - `canals` (optional, `true`/`false`, default `true`) — `false` closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Privlaka, Cape Cod, Cape May, Chesapeake–Delaware), so the route goes around them. Use it to avoid canal fees and transit bookings. Each canal is closed in the middle, so ports at both ends stay reachable from their own side. Natural straits (Bosphorus, Dover, Malacca and others) are not affected. Long routes stay fast with canals closed (Rotterdam to Singapore around Africa: about 0.5 s). The exception is a long route that starts or ends in the same res-3 region as a closed canal, which needs a search of the whole graph (Colón to Callao around South America: about 4 s)
 
-**`/route` response:** `distance_nm` counts only water segments. When a requested point sits on land, the geometry still starts/ends exactly there, and the overland connector segments are listed in `land_legs` (segment indices into `geometry.coordinates`) so clients can render them differently — they contribute nothing to `distance_nm`. Land detection is a coastline-crossing test, not point-in-polygon: a segment that lies entirely inland on one landmass, never touching a coastline, is not detected. `land_legs` covers pins near the shore, not arbitrary points deep inland.
+**`/route` response:** `geometry` is a polyline whose points are at most 20 nm apart along the great circle; the route is checked for land along the great circle between waypoints at that step, so great-circle, rhumb-line and straight-line readings of the geometry agree within 0.1 nm. `distance_nm` is the great-circle length of that polyline and counts only water segments. When a requested point sits on land, the geometry still starts/ends exactly there, and the overland connector segments are listed in `land_legs` (segment indices into `geometry.coordinates`) so clients can render them differently — they contribute nothing to `distance_nm`. Land detection is a coastline-crossing test, not point-in-polygon: a segment that lies entirely inland on one landmass, never touching a coastline, is not detected. `land_legs` covers pins near the shore, not arbitrary points deep inland.
 
 ## Packages
 
@@ -262,6 +262,7 @@ cargo build --release -p asw-cli
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas. The `shore_buffer` parameter partially mitigates this by keeping routes off headlands and uncharted near-shore hazards, but it is not a substitute for nautical charts.
 - **No sea-ice data.** The graph comes from land polygons, so ice is modelled with fixed areas: everything north of 80°N is closed, and the Northern Sea Route (Vilkitsky Strait and Severnaya Zemlya) and the Northwest Passage (across the Canadian Arctic Archipelago) are closed unless the request sets `arctic=true`. Ports inside these areas, such as Resolute, need `arctic=true`. Seasonal ice elsewhere, including around Antarctica, is not considered.
 - **Only water inside the OSM coastline, plus selected passages.** Lakes, lagoons and rivers are land in the source data. A harbour behind a river mouth or inside a lagoon is reachable only when a passage entry adds its water (Šibenik is added this way). The Venice lagoon and the Great Lakes are not in the graph. The Chesapeake–Delaware Canal is reachable from the Delaware side only: about 1 nm of Back Creek on the Chesapeake side has no water area in OSM.
+- **Gatun Dam.** In the current planet graph the Chagres River below Gatun Dam connects to Gatun Lake. A route that reaches the Panama Canal from west of Colón can go up the river and over the dam instead of through the locks. The distance is close to the real one, but the geometry is wrong there. This will be fixed in the next graph release.
 
 ## Data Sources
 

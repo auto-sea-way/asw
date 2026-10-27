@@ -55,16 +55,36 @@ pub fn cell_polygon(cell: CellIndex) -> geo::Polygon<f64> {
     geo::Polygon::new(geo::LineString::new(coords), vec![])
 }
 
+/// Earth radius in nautical miles.
+pub const EARTH_RADIUS_NM: f64 = 3440.065;
+
 /// Haversine distance in nautical miles between two (lat, lon) points.
 pub fn haversine_nm(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
     use std::f64::consts::PI;
-    let r = 3440.065; // Earth radius in nm
+    let r = EARTH_RADIUS_NM;
     let dlat = (lat2 - lat1) * PI / 180.0;
     let dlon = (lon2 - lon1) * PI / 180.0;
     let a = (dlat / 2.0).sin().powi(2)
         + (lat1 * PI / 180.0).cos() * (lat2 * PI / 180.0).cos() * (dlon / 2.0).sin().powi(2);
     let c = 2.0 * a.sqrt().asin();
     r * c
+}
+
+/// Point at fraction `f` (0..=1) along the great circle from point 1 to
+/// point 2, as (lat, lon) with lon in -180..=180.
+pub fn great_circle_point(lat1: f64, lon1: f64, lat2: f64, lon2: f64, f: f64) -> (f64, f64) {
+    let d = haversine_nm(lat1, lon1, lat2, lon2) / EARTH_RADIUS_NM;
+    if d < 1e-12 {
+        return (lat1, lon1);
+    }
+    let (p1, l1) = (lat1.to_radians(), lon1.to_radians());
+    let (p2, l2) = (lat2.to_radians(), lon2.to_radians());
+    let a = ((1.0 - f) * d).sin() / d.sin();
+    let b = (f * d).sin() / d.sin();
+    let x = a * p1.cos() * l1.cos() + b * p2.cos() * l2.cos();
+    let y = a * p1.cos() * l1.sin() + b * p2.cos() * l2.sin();
+    let z = a * p1.sin() + b * p2.sin();
+    (z.atan2(x.hypot(y)).to_degrees(), y.atan2(x).to_degrees())
 }
 
 #[cfg(test)]

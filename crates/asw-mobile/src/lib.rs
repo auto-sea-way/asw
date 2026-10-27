@@ -523,11 +523,11 @@ mod tests {
     }
 
     #[test]
-    fn route_clear_line_of_sight_returns_two_points() {
+    fn route_clear_line_of_sight_is_direct() {
         let (dir, path) = chain_graph_path(vec![]);
         let g = open_graph(path.to_string_lossy().into_owned()).unwrap();
         let r = g.route(36.0, 26.0, 37.0, 28.0, 0.0, false, true).unwrap();
-        assert_eq!(r.coordinates.len(), 2);
+        // Long legs are split along the great circle; the ends stay exact.
         assert_eq!(
             r.coordinates[0],
             Coordinate {
@@ -536,7 +536,7 @@ mod tests {
             }
         );
         assert_eq!(
-            r.coordinates[1],
+            *r.coordinates.last().unwrap(),
             Coordinate {
                 lat: 37.0,
                 lon: 28.0
