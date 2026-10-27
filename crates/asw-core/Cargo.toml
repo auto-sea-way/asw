@@ -10,3 +10,6 @@ geo.workspace = true
 tracing.workspace = true
 anyhow.workspace = true
 memmap2.workspace = true
+
+[dev-dependencies]
+shapefile = { version = "0.9", features = ["geo-types"] }

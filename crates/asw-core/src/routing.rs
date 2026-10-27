@@ -1,9 +1,15 @@
 use crate::coast::CoastlineIndex;
 use crate::graph::RoutingGraph;
-use crate::h3::haversine_nm;
+use crate::h3::{great_circle_point, haversine_nm};
 use crate::passages::PASSAGES;
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
+
+/// Longest leg the route may contain, in nm. Land checks sample the great
+/// circle at this step, and output legs are split to it, so great-circle,
+/// rhumb-line and straight lon/lat readings of a leg agree within 0.1 nm
+/// up to 79°N (0.02 nm at 47°N).
+pub const LEG_STEP_NM: f64 = 20.0;
 
 /// Result of a route computation.
 pub struct RouteResult {
@@ -11,9 +17,10 @@ pub struct RouteResult {
     pub distance_nm: f64,
     /// Raw A* path node count
     pub raw_hops: usize,
-    /// Smoothed waypoint count
+    /// Smoothed waypoint count, before long legs are split
     pub smooth_hops: usize,
-    /// Smoothed coordinates as (lon, lat) for GeoJSON
+    /// Route polyline as (lon, lat) for GeoJSON; consecutive points are at
+    /// most `LEG_STEP_NM` apart along the great circle
     pub coordinates: Vec<[f64; 2]>,
     /// Segment indices that cross land: `s` means the segment
     /// `coordinates[s] -> coordinates[s+1]`. These segments contribute
@@ -268,8 +275,8 @@ pub struct SmoothResult {
 
 /// Greedy line-of-sight smoothing over raw `[lon, lat]` coordinates.
 ///
-/// Removes waypoints whose direct predecessor→successor line (a) doesn't
-/// cross any coastline and (b) when `shore_buffer_nm > 0`, doesn't come
+/// Removes waypoints whose direct predecessor→successor great circle (a)
+/// doesn't cross any coastline and (b) when `shore_buffer_nm > 0`, doesn't come
 /// closer to the coastline than min(buffer, the input's own minimum
 /// clearance over the skipped span, per `shore_dist`). Rule (b) means
 /// smoothing never brings the route closer to shore than the raw input
@@ -313,26 +320,19 @@ pub fn smooth_indices(
 
         let clear = |j: usize| -> bool {
             let [t_lon, t_lat] = coords[j];
-            if segment_blocked(c_lon, c_lat, t_lon, t_lat, arctic, canals)
-                || coastline.crosses_land(c_lon, c_lat, t_lon, t_lat)
-            {
-                return false;
-            }
-            if use_buffer {
-                // ponytail: O(n) slice scan per probe; the coastline query above
-                // dwarfs it. Sparse-table range-min if a profile ever says so.
+            let threshold = if use_buffer {
+                // ponytail: O(n) slice scan per probe; the coastline queries
+                // dwarf it. Sparse-table range-min if a profile ever says so.
                 let raw_min = shore_dist[current_idx..=j].iter().min().copied();
                 let raw_min_nm =
                     raw_min.unwrap_or(u8::MAX) as f64 * crate::graph::SHORE_DIST_UNIT_NM;
-                let threshold = shore_buffer_nm.min(raw_min_nm);
-                if threshold > 0.0
-                    && coastline.segment_min_distance_nm(c_lon, c_lat, t_lon, t_lat, threshold)
-                        < threshold
-                {
-                    return false;
-                }
-            }
-            true
+                shore_buffer_nm.min(raw_min_nm)
+            } else {
+                0.0
+            };
+            leg_clear(
+                coastline, c_lon, c_lat, t_lon, t_lat, threshold, arctic, canals,
+            )
         };
 
         // Try direct line to destination
@@ -365,7 +365,13 @@ pub fn smooth_indices(
         if v_lo == end_idx {
             result.push(end_idx);
             if !v_lo_verified
-                && coastline.crosses_land(c_lon, c_lat, coords[end_idx][0], coords[end_idx][1])
+                && leg_crosses_land(
+                    coastline,
+                    c_lon,
+                    c_lat,
+                    coords[end_idx][0],
+                    coords[end_idx][1],
+                )
             {
                 land_segs.push(result.len() - 2);
             }
@@ -393,7 +399,7 @@ pub fn smooth_indices(
             v_lo = current_idx + 1;
         }
         result.push(v_lo);
-        if forced && coastline.crosses_land(c_lon, c_lat, coords[v_lo][0], coords[v_lo][1]) {
+        if forced && leg_crosses_land(coastline, c_lon, c_lat, coords[v_lo][0], coords[v_lo][1]) {
             land_segs.push(result.len() - 2);
         }
         current_idx = v_lo;
@@ -405,15 +411,84 @@ pub fn smooth_indices(
     }
 }
 
-/// Can the straight line between the requested points be used as the route?
-///
-/// Requires (a) no coastline crossing and (b) when a shore buffer is
-/// requested, that the line keeps min(buffer, both endpoints' own shore
-/// clearance) from the coastline — the same graceful-degradation rule
-/// `smooth_indices` applies, with the two pins as the whole "path". The
+/// Number of pieces of at most `LEG_STEP_NM` the great circle a -> b splits into.
+fn piece_count(lon1: f64, lat1: f64, lon2: f64, lat2: f64) -> usize {
+    (haversine_nm(lat1, lon1, lat2, lon2) / LEG_STEP_NM)
+        .ceil()
+        .max(1.0) as usize
+}
+
+/// Run `f` on each piece (lon1, lat1, lon2, lat2) of the great circle
+/// a -> b, in order, until it returns true. Each piece is at most
+/// `LEG_STEP_NM` long, so testing it as a straight lon/lat line is within
+/// 0.1 nm of testing the arc itself.
+fn any_piece(
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+    mut f: impl FnMut(f64, f64, f64, f64) -> bool,
+) -> bool {
+    let n = piece_count(lon1, lat1, lon2, lat2);
+    let (mut plon, mut plat) = (lon1, lat1);
+    for i in 1..=n {
+        let (lat, lon) = if i == n {
+            (lat2, lon2)
+        } else {
+            great_circle_point(lat1, lon1, lat2, lon2, i as f64 / n as f64)
+        };
+        if f(plon, plat, lon, lat) {
+            return true;
+        }
+        (plon, plat) = (lon, lat);
+    }
+    false
+}
+
+/// Does the great circle a -> b cross any coastline?
+fn leg_crosses_land(
+    coastline: &CoastlineIndex<'_>,
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+) -> bool {
+    any_piece(lon1, lat1, lon2, lat2, |a, b, c, d| {
+        coastline.crosses_land(a, b, c, d)
+    })
+}
+
+/// Can the great circle a -> b be sailed: it stays out of the ice cap,
+/// closed Arctic passages and closed canals, crosses no coastline, and
+/// when `threshold > 0` keeps that clearance from the coastline. The
 /// small epsilon absorbs float noise when the closest approach is exactly
 /// an endpoint (its point clearance and the segment clearance are then the
 /// same geometric quantity computed via different code paths).
+#[allow(clippy::too_many_arguments)]
+fn leg_clear(
+    coastline: &CoastlineIndex<'_>,
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+    threshold: f64,
+    arctic: bool,
+    canals: bool,
+) -> bool {
+    !any_piece(lon1, lat1, lon2, lat2, |a, b, c, d| {
+        segment_blocked(a, b, c, d, arctic, canals)
+            || coastline.crosses_land(a, b, c, d)
+            || (threshold > 0.0
+                && coastline.segment_min_distance_nm(a, b, c, d, threshold) < threshold - 1e-9)
+    })
+}
+
+/// Can the great circle between the requested points be used as the route?
+///
+/// Requires (a) no coastline crossing and (b) when a shore buffer is
+/// requested, that the arc keeps min(buffer, both endpoints' own shore
+/// clearance) from the coastline — the same graceful-degradation rule
+/// `smooth_indices` applies, with the two pins as the whole "path".
 #[allow(clippy::too_many_arguments)]
 fn direct_line_ok(
     coastline: &CoastlineIndex<'_>,
@@ -425,20 +500,52 @@ fn direct_line_ok(
     arctic: bool,
     canals: bool,
 ) -> bool {
-    if segment_blocked(from_lon, from_lat, to_lon, to_lat, arctic, canals)
-        || coastline.crosses_land(from_lon, from_lat, to_lon, to_lat)
-    {
-        return false;
+    let threshold = if shore_buffer_nm > 0.0 {
+        let from_d = coastline.min_distance_nm(from_lon, from_lat, shore_buffer_nm);
+        let to_d = coastline.min_distance_nm(to_lon, to_lat, shore_buffer_nm);
+        shore_buffer_nm.min(from_d).min(to_d)
+    } else {
+        0.0
+    };
+    leg_clear(
+        coastline, from_lon, from_lat, to_lon, to_lat, threshold, arctic, canals,
+    )
+}
+
+/// Build the result: every leg is split along its great circle into pieces
+/// of at most `LEG_STEP_NM`, so the polyline reads the same as great-circle,
+/// rhumb-line or straight lon/lat legs, and `distance_nm` is its water
+/// length. Flagged land legs (pin on land, peninsula clip) are not sailed
+/// and contribute nothing; all their pieces stay flagged.
+fn finish(waypoints: &[[f64; 2]], land: &[usize], raw_hops: usize) -> RouteResult {
+    let mut coordinates = vec![waypoints[0]];
+    let mut land_legs = Vec::new();
+    let mut distance_nm = 0.0;
+    for (i, w) in waypoints.windows(2).enumerate() {
+        let is_land = land.contains(&i);
+        any_piece(
+            w[0][0],
+            w[0][1],
+            w[1][0],
+            w[1][1],
+            |lon1, lat1, lon2, lat2| {
+                if is_land {
+                    land_legs.push(coordinates.len() - 1);
+                } else {
+                    distance_nm += haversine_nm(lat1, lon1, lat2, lon2);
+                }
+                coordinates.push([lon2, lat2]);
+                false
+            },
+        );
     }
-    if shore_buffer_nm <= 0.0 {
-        return true;
+    RouteResult {
+        distance_nm,
+        raw_hops,
+        smooth_hops: waypoints.len(),
+        coordinates,
+        land_legs,
     }
-    let from_d = coastline.min_distance_nm(from_lon, from_lat, shore_buffer_nm);
-    let to_d = coastline.min_distance_nm(to_lon, to_lat, shore_buffer_nm);
-    let threshold = shore_buffer_nm.min(from_d).min(to_d);
-    threshold <= 0.0
-        || coastline.segment_min_distance_nm(from_lon, from_lat, to_lon, to_lat, threshold)
-            >= threshold - 1e-9
 }
 
 /// Is the point on navigable water? Snap to the nearest water node (its
@@ -487,13 +594,7 @@ pub fn compute_route(
         arctic,
         canals,
     ) {
-        return Some(RouteResult {
-            distance_nm: haversine_nm(from_lat, from_lon, to_lat, to_lon),
-            raw_hops: 2,
-            smooth_hops: 2,
-            coordinates: vec![[from_lon, from_lat], [to_lon, to_lat]],
-            land_legs: vec![],
-        });
+        return Some(finish(&[[from_lon, from_lat], [to_lon, to_lat]], &[], 2));
     }
 
     let (start, _) = node_knn(from_lat, from_lon)?;
@@ -573,26 +674,7 @@ pub fn compute_route(
         canals,
     );
     let smoothed: Vec<[f64; 2]> = sm.kept.into_iter().map(|i| coords[i]).collect();
-    let smooth_hops = smoothed.len();
-    let land_legs = sm.land_segs;
-
-    // Water distance along the smoothed path: flagged land legs (pin on
-    // land, peninsula clip) are not sailed and contribute nothing.
-    let mut smooth_dist = 0.0;
-    for (i, w) in smoothed.windows(2).enumerate() {
-        if land_legs.contains(&i) {
-            continue;
-        }
-        smooth_dist += haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]);
-    }
-
-    Some(RouteResult {
-        distance_nm: smooth_dist,
-        raw_hops,
-        smooth_hops,
-        coordinates: smoothed,
-        land_legs,
-    })
+    Some(finish(&smoothed, &sm.land_segs, raw_hops))
 }
 
 #[cfg(test)]
@@ -1016,8 +1098,8 @@ mod tests {
             &g,
             0.0,
             0.0,
-            0.3,
             0.2,
+            0.1,
             &coastline,
             &knn,
             &mut buffers,
@@ -1026,8 +1108,8 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(r.coordinates, vec![[0.0, 0.0], [0.2, 0.3]]);
-        assert!((r.distance_nm - haversine_nm(0.0, 0.0, 0.3, 0.2)).abs() < 1e-9);
+        assert_eq!(r.coordinates, vec![[0.0, 0.0], [0.1, 0.2]]);
+        assert!((r.distance_nm - haversine_nm(0.0, 0.0, 0.2, 0.1)).abs() < 1e-9);
         assert_eq!(r.raw_hops, 2);
         assert_eq!(r.smooth_hops, 2);
     }
@@ -1081,7 +1163,7 @@ mod tests {
             false,
             true,
         );
-        assert!(loose.is_some_and(|r| r.coordinates.len() == 2));
+        assert!(loose.is_some_and(|r| r.smooth_hops == 2));
 
         // 3 nm buffer: clearance violated -> shortcut declined, falls through
         // to snapping (knn None -> no route). Proves the gate.
@@ -1209,9 +1291,9 @@ mod tests {
             "distance {} != two-leg sum {expected}",
             r.distance_nm
         );
-        assert_eq!(r.coordinates.len(), 3);
+        assert_eq!(r.smooth_hops, 3);
         assert_eq!(r.coordinates[0], [0.4, 0.0]);
-        assert_eq!(r.coordinates[2], [0.6, 0.0]);
+        assert_eq!(*r.coordinates.last().unwrap(), [0.6, 0.0]);
     }
 
     #[test]
@@ -1614,7 +1696,7 @@ mod tests {
             true,
             true,
         );
-        assert!(open.is_some_and(|r| r.coordinates.len() == 2));
+        assert!(open.is_some_and(|r| r.smooth_hops == 2));
     }
 
     #[test]
@@ -1654,5 +1736,138 @@ mod tests {
         );
         // Antimeridian-crossing segments are nowhere near either box.
         assert!(!segment_blocked(179.0, 70.0, -179.0, 70.0, false, true));
+    }
+
+    /// Issue #65: the great circle of the Saint-Nazaire -> Bahamas leg
+    /// clips Belle-Île although the straight lon/lat line passes south of
+    /// it. The island here is a box around the clipped part of the island.
+    fn belle_ile() -> crate::coast::CoastlineSections {
+        crate::coast::CoastlineSections::from_runs(&[vec![
+            (-3.2, 47.28),
+            (-3.0, 47.28),
+            (-3.0, 47.34),
+            (-3.2, 47.34),
+            (-3.2, 47.28),
+        ]])
+    }
+    const SAINT_NAZAIRE: [f64; 2] = [-2.2834578811579997, 47.231778110756];
+    const BAHAMAS: [f64; 2] = [-77.0, 25.9];
+
+    #[test]
+    fn smooth_indices_checks_great_circle_not_chord() {
+        let sections = belle_ile();
+        let coastline = sections.index();
+        let coords = [SAINT_NAZAIRE, [-5.0, 46.5], BAHAMAS];
+        let out = smooth_indices(&coords, &[255; 3], &coastline, 0.0, false, true);
+        assert_eq!(
+            out.kept,
+            vec![0, 1, 2],
+            "great circle clips Belle-Île, the corner must stay"
+        );
+        assert!(out.land_segs.is_empty());
+    }
+
+    #[test]
+    fn direct_line_shortcut_checks_great_circle() {
+        let sections = belle_ile();
+        let coastline = sections.index();
+        let [lon1, lat1] = SAINT_NAZAIRE;
+        let [lon2, lat2] = BAHAMAS;
+        assert!(!direct_line_ok(
+            &coastline, lat1, lon1, lat2, lon2, 0.0, false, true
+        ));
+    }
+
+    /// Every returned leg is short enough that great-circle, rhumb-line and
+    /// straight lon/lat readings agree within coastline resolution, and
+    /// `distance_nm` is exactly the great-circle length of the polyline.
+    #[test]
+    fn compute_route_densifies_long_legs() {
+        let sections = crate::coast::CoastlineSections::from_runs(&[]);
+        let coastline = sections.index();
+        let g = GraphBuilder::default().build();
+        let knn = |_: f64, _: f64| -> Option<(u32, f64)> { None };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(1);
+        let r = compute_route(
+            &g,
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            &coastline,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(r.coordinates.first(), Some(&[0.0, 0.0]));
+        assert_eq!(r.coordinates.last(), Some(&[10.0, 0.0]));
+        assert!(
+            r.coordinates.len() >= 31,
+            "600 nm must become legs of at most {LEG_STEP_NM} nm, got {} points",
+            r.coordinates.len()
+        );
+        let leg = |w: &[[f64; 2]]| haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]);
+        for w in r.coordinates.windows(2) {
+            assert!(leg(w) <= LEG_STEP_NM + 1e-6, "leg of {} nm", leg(w));
+        }
+        let full: f64 = r.coordinates.windows(2).map(leg).sum();
+        assert!((r.distance_nm - full).abs() < 1e-6);
+        assert!((r.distance_nm - haversine_nm(0.0, 0.0, 0.0, 10.0)).abs() < 1e-6);
+    }
+
+    /// A land leg keeps pointing at the right segment after the water legs
+    /// before it are densified.
+    #[test]
+    fn compute_route_land_leg_index_survives_densification() {
+        let (g, _) = chain_graph(&[(0.0, 0.0), (0.0, 5.0), (0.0, 10.0)]);
+        // Ring island around the to-pin (0.0, 10.2).
+        let sections = crate::coast::CoastlineSections::from_runs(&[vec![
+            (10.15, -0.05),
+            (10.25, -0.05),
+            (10.25, 0.05),
+            (10.15, 0.05),
+            (10.15, -0.05),
+        ]]);
+        let coast = sections.index();
+        let knn = |lat: f64, lon: f64| -> Option<(u32, f64)> {
+            (0..g.num_nodes())
+                .map(|n| {
+                    let (nlat, nlon) = g.node_pos(n);
+                    (n, haversine_nm(lat, lon, nlat, nlon))
+                })
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+        };
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
+        let r = compute_route(
+            &g,
+            0.0,
+            0.0,
+            0.0,
+            10.2,
+            &coast,
+            &knn,
+            &mut buffers,
+            0.0,
+            false,
+            true,
+        )
+        .expect("route must exist despite land pin");
+        assert!(r.coordinates.len() > 3, "long water leg must be densified");
+        assert_eq!(
+            r.land_legs,
+            vec![r.coordinates.len() - 2],
+            "only the final pin leg crosses the ring"
+        );
+        let leg = |w: &[[f64; 2]]| haversine_nm(w[0][1], w[0][0], w[1][1], w[1][0]);
+        let water: f64 = r
+            .coordinates
+            .windows(2)
+            .take(r.coordinates.len() - 2)
+            .map(leg)
+            .sum();
+        assert!((r.distance_nm - water).abs() < 1e-6);
     }
 }

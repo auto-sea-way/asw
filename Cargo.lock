@@ -231,6 +231,7 @@ dependencies = [
  "geo",
  "h3o",
  "memmap2",
+ "shapefile",
  "tracing",
 ]
 
