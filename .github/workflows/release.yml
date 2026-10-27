@@ -118,9 +118,13 @@ jobs:
 
       - name: Set up Gradle
         if: runner.os == 'Linux'
-        uses: gradle/actions/setup-gradle@v5
+        uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: "8.14"
+          # v6 moved caching into a proprietary component under separate
+          # terms; with caching off it is never loaded. The release runs
+          # rarely, so the cache saves little.
+          cache-disabled: true
 
       - name: Set up JDK 17
         if: runner.os == 'Linux'
