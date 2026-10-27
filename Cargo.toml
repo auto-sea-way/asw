@@ -23,7 +23,7 @@ geojson = "1.0"
 anyhow = "1"
 memmap2 = "0.9"
 uniffi = "0.32"
-zstd = "0.13"
+zstd = "0.14"
 
 [profile.release]
 opt-level = 3
