@@ -94,6 +94,29 @@ fn shore_factor(d: u8, buffer_q: u8) -> f32 {
     }
 }
 
+/// Is the point inside the corridor of a man-made canal (a passage with a
+/// `cut`)? A canal is narrower than most buffers, so every cell in it would
+/// pay the shore penalty, and A* would rather sail around: Elbe to Kiel Bay
+/// was 409 nm at a 0.1 nm buffer instead of 97 nm through the Kiel Canal.
+/// Within these corridors the penalty is off.
+#[inline]
+fn in_canal(lat: f64, lon: f64) -> bool {
+    CANAL_CORRIDORS
+        .iter()
+        .any(|&(x0, y0, x1, y1)| lon >= x0 && lon <= x1 && lat >= y0 && lat <= y1)
+}
+
+/// Corridors of the passages with a `cut`, collected once: `in_canal` runs
+/// on every relaxed edge into a cell inside the buffer.
+static CANAL_CORRIDORS: std::sync::LazyLock<Vec<(f64, f64, f64, f64)>> =
+    std::sync::LazyLock::new(|| {
+        PASSAGES
+            .iter()
+            .filter(|p| p.cut.is_some())
+            .map(|p| p.corridor)
+            .collect()
+    });
+
 /// North of this latitude the sea is permanent pack ice: never routable.
 /// The graph is built from land polygons only, so without this the Arctic
 /// Ocean is open water and Asia-Europe routes go over the pole.
@@ -246,7 +269,14 @@ pub fn astar(
             let [nlat, nlon] = buffers.pos[neighbor as usize];
             let weight = haversine_nm(clat, clon, nlat, nlon) as f32;
             let weight = match shore {
-                Some(q) => weight * shore_factor(graph.shore_dist(neighbor), q),
+                Some(q) => {
+                    let f = shore_factor(graph.shore_dist(neighbor), q);
+                    if f > 1.0 && in_canal(nlat, nlon) {
+                        weight
+                    } else {
+                        weight * f
+                    }
+                }
                 None => weight,
             };
             let tentative_g = current_g + weight;
@@ -867,12 +897,16 @@ mod tests {
     /// Two corridors S->A->G (~120 nm, A hugs the shore) and S->B->G (~166 nm,
     /// B offshore). Without a buffer the short corridor wins; with one, the long.
     fn corridor_graph() -> (RoutingGraph, u32, u32, u32, u32) {
-        let coords = [
+        corridor_graph_at([
             (0.0, 0.0, "S", 255u8),
             (1.0, 0.0, "A", 0u8), // on the shore
             (0.0, 1.6, "B", 255u8),
             (1.0, 1.0, "G", 255u8),
-        ];
+        ])
+    }
+
+    /// `corridor_graph` with the nodes at `coords` (lat, lng, label, shore_dist).
+    fn corridor_graph_at(coords: [(f64, f64, &str, u8); 4]) -> (RoutingGraph, u32, u32, u32, u32) {
         let mut cells: Vec<(u64, f64, f64, u8, &str)> = coords
             .iter()
             .map(|&(lat, lng, label, q)| {
@@ -913,6 +947,25 @@ mod tests {
         let (path, cost) = astar(&g, s, goal, &mut buffers, shore, false, true, None).unwrap();
         assert_eq!(path, vec![s, b_node, goal]);
         assert!(cost > path_len(&g, &path) - 1e-3);
+    }
+
+    #[test]
+    fn penalty_is_off_inside_a_canal_corridor() {
+        // A on the shore inside the Kiel Canal corridor; the offshore way
+        // via B is about twice as long.
+        let (g, s, a, b_node, goal) = corridor_graph_at([
+            (54.0, 9.0, "S", 255u8),
+            (54.1, 9.6, "A", 0u8),
+            (54.8, 9.6, "B", 255u8),
+            (54.2, 10.4, "G", 255u8),
+        ]);
+        assert!(in_canal(54.1, 9.6) && !in_canal(54.8, 9.6));
+        let mut buffers = crate::astar_pool::AstarBuffers::new(g.num_nodes() as usize);
+        let shore = shore_buffer_q(0.1);
+        let (path, cost) = astar(&g, s, goal, &mut buffers, shore, false, true, None).unwrap();
+        assert_eq!(path, vec![s, a, goal]);
+        assert!((cost - path_len(&g, &path)).abs() < 1e-3);
+        assert!(path_len(&g, &[s, b_node, goal]) > cost);
     }
 
     #[test]
