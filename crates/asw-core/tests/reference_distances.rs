@@ -152,17 +152,10 @@ fn slerp(lat1: f64, lon1: f64, lat2: f64, lon2: f64, f: f64) -> (f64, f64) {
     )
 }
 
-/// Known bug, to be fixed in the next graph release: the v0.10.0 graph
-/// connects the Chagres River below Gatun Dam to Gatun Lake, so routes from
-/// west of Colón go up the river and over the dam instead of through the
-/// locks. Remove this box once the rebuilt graph is out.
-const GATUN_DAM_KNOWN_BUG: (f64, f64, f64, f64) = (-80.02, 9.25, -79.92, 9.34);
-
 fn exempt(lat: f64, lon: f64) -> bool {
     PASSAGES
         .iter()
         .map(|p| p.corridor)
-        .chain([GATUN_DAM_KNOWN_BUG])
         .any(|(x0, y0, x1, y1)| lon >= x0 && lon <= x1 && lat >= y0 && lat <= y1)
 }
 
