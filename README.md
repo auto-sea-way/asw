@@ -1,3 +1,5 @@
+<img src="docs/logo/logo.svg" alt="auto-sea-way logo" width="120">
+
 # auto-sea-way
 
 Open source sea routing between any two coordinates on the planet. auto-sea-way builds a global routing graph of the water surface from OpenStreetMap coastlines, indexes it with H3 hexagons, and serves routes over a small HTTP API. Written in Rust.
