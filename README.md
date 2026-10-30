@@ -1,3 +1,5 @@
+<img src="docs/logo/logo.svg" alt="auto-sea-way logo" width="120">
+
 # auto-sea-way
 
 Open source sea routing between any two coordinates on the planet. auto-sea-way builds a global routing graph of the water surface from OpenStreetMap coastlines, indexes it with H3 hexagons, and serves routes over a small HTTP API. Written in Rust.
@@ -22,6 +24,8 @@ The existing options are limited in different ways:
 auto-sea-way generates its graph instead of drawing it. About 40 million navigable cells are derived from OpenStreetMap land polygons, coarse in the open ocean and fine along coastlines and inside narrow passages such as Suez and Panama. Routes start and end at the exact coordinates you ask for, and a route that has to touch land (a pin on a quay, a headland clipped by smoothing) reports which segments do.
 
 You run it yourself: one binary and one graph file. Routing happens on your own server, so requests cost nothing and the coordinates stay with you.
+
+> **Not for navigation.** Routes are for planning and analysis only. See [Not for navigation](#not-for-navigation).
 
 ## Quick Start
 
@@ -256,6 +260,10 @@ cargo build --release -p asw-cli
 | `ASW_GRAPH_URL` | — | URL to download graph if file is missing |
 | `ASW_API_KEY` | — | **Required.** API key for authenticating `/route` and `/info` requests |
 | `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
+
+## Not for navigation
+
+auto-sea-way computes routes for planning and for software that needs sea distances. It is not a navigation aid and must not be used as the only source for navigation at sea. The graph has no depth, tide, current, traffic separation scheme, ice or weather data, and the OpenStreetMap coastline can be wrong or out of date. Check every route against official nautical charts and notices to mariners before you use it on the water. The software and the graph are provided "as is", without warranty of any kind, as stated in the licenses.
 
 ## Known Limitations
 
