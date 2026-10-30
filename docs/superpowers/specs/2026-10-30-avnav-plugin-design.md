@@ -1,13 +1,13 @@
 # AvNav plugin for auto-sea-way: design
 
 Date: 2026-10-30
-Status: builder check done, waiting for owner approval
+Status: approved; revised 2026-10-30 (separate "Route to here" tool, warning instead of stop)
 
 ## Intent
 
 [AvNav](https://github.com/wellenvogel/avnav) is an open source chart plotter that many DIY sailors run on a Raspberry Pi on board. In [avnav#435](https://github.com/wellenvogel/avnav/issues/435) a user asked for automatic route generation. The maintainer (wellenvogel) said he will not build it himself, but is open to contributions and pointed to Linux plugins.
 
-This plugin lets an AvNav user draw a rough route (at minimum a start and a destination), press one button, and get a route over water that goes around land. asw runs on the Pi next to AvNav, so it works offline at sea. The route is saved as a normal AvNav route that the sailor can edit, but the plugin keeps the sailor from following it until they have checked it, because asw does not know water depth.
+This plugin lets an AvNav user put the crosshair on a destination, press one button, and get a route over water from the boat to that place that goes around land. asw runs on the Pi next to AvNav, so it works offline at sea. Before the route is saved, the plugin warns that asw does not know water depth and that the sailor must check every point.
 
 Why now: AvNav is the smallest step to put asw into the hands of real sailors. The maintainer invited a plugin, he is also an editor of open-boat-projects.org, and we introduced asw on its forum on 2026-10-30 ([thread](https://www.segeln-forum.de/thread/99078-vorstellung-auto-sea-way-open-source-sea-routing/)).
 
@@ -15,8 +15,7 @@ Why now: AvNav is the smallest step to put asw into the hands of real sailors. T
 
 - A zip plugin that an AvNav user on Linux or a Raspberry Pi installs through AvNav's Plugins page.
 - The plugin downloads the asw binary and the planet graph, starts `asw serve` locally and stops it with the plugin.
-- A button in AvNav's route editor turns the route being edited into an asw route and saves it as a new route.
-- A generated route cannot be followed until the sailor marks it as checked.
+- A "Route to here" button on AvNav's chart page makes a route from the boat to the crosshair and saves it as a normal AvNav route after the sailor has read the warning.
 
 ## Non-goals
 
@@ -31,7 +30,7 @@ Why now: AvNav is the smallest step to put asw into the hands of real sailors. T
 These would make the plugin a failure even if it works technically:
 
 - A download of the 1.4 GB graph that starts without the sailor asking for it. Sailors at sea can have an expensive data plan.
-- An asw route that an autopilot follows without the sailor having looked at it.
+- An asw route saved without the sailor seeing the warning that it does not know depth.
 - An open port on the boat network. asw listens on `127.0.0.1` only.
 - Text that makes the route look safe for navigation.
 - The name of any consuming app other than AvNav and asw in the code, README or releases.
@@ -44,7 +43,7 @@ From the AvNav source (master, 2026-10-30) and its docs in `newDoc/docs/en/speci
 
 - A plugin is a directory with `plugin.json`, `plugin.mjs` (browser, all platforms), optional `plugin.css` and optional `plugin.py` (server, not Android). Zip plugins are uploaded on the Plugins page and appear as `user-<name>`.
 - `plugin.py` gets an API object (`server/avnav_api.py`). The functions used here: `getDataDir`, `setStatus`, `registerRequestHandler` (HTTP calls from the browser part to `<getBaseUrl()>/api`), `registerEditableParameters` and `saveConfigValues` (settings on the plugin page), `registerRestart`, `shouldStopMainThread`, `startAlarm` and `clearAlarm` (AvNav 202607xx and newer), `log` and `error`.
-- `plugin.mjs` can register a button on a page with `registerUserButton` (the route editor page id is `editroutepage`), show a dialog with `showDialog`, and read any store key with `getStoreData`. Useful keys: `nav.routeHandler.editingRoute` (the route open in the editor), `nav.routeHandler.activeName`, `map.centerPosition`, `nav.gps.lat` and `nav.gps.lon`.
+- `plugin.mjs` can register a button on a page with `registerUserButton` (the chart page id is `navpage`), show a dialog with `showDialog`, and read any store key with `getStoreData`. Useful keys: `nav.routeHandler.editingRoute` (the route open in the editor), `nav.routeHandler.activeName`, `map.centerPosition`, `nav.gps.lat` and `nav.gps.lon`.
 - The browser API cannot change the route in the editor and cannot start or stop navigation.
 - Routes are `.gpx` files in the router's `routes` directory under the AvNav data directory. The Routes page lists that directory on every request (`AVNRouter.handleList`), so a new file written there shows up without a restart.
 - There is no plugin hook to block or approve route activation. The router has `getleg` and `unsetleg` commands in `AVNRouter.handleSpecialApiRequest`, reachable through AvNav's own HTTP API. Using them from a plugin relies on an internal interface that can change between AvNav versions.
@@ -70,38 +69,33 @@ From the AvNav source (master, 2026-10-30) and its docs in `newDoc/docs/en/speci
 
 ### Making a route
 
-- A user button on the route editor page, "Auto route", opens a dialog. It needs a route open in the editor with at least two points.
-- Dialog options: distance from shore in nautical miles (asw `shore_buffer`, 0 to 5, default 0), avoid canals (`canals=false`), allow Arctic (`arctic=true`). The plugin remembers the last values.
-- The browser part sends the waypoints and options to the Python part. Python calls asw `/route` for each leg between consecutive waypoints and joins the results into one route.
-- Every waypoint of the sailor's route is kept, in order and with its name. Points added by asw are named "asw 1", "asw 2" and so on. Shared points between legs are not duplicated.
-- Each asw response has `distance_nm` and `land_legs`. The dialog shows the total distance in nautical miles. If any leg has land legs (for example a waypoint on a quay), the route still contains them, and the dialog lists which waypoints are on land.
-- The result is saved as a new route file named `<original name> (asw, unchecked)`. The original route is never changed. If that name exists, it is overwritten after the dialog asks.
-- The dialog states that the route does not consider depth and is not for navigation.
+Changed by the owner on 2026-10-30 after seeing a preview of the first design (a button in the route editor that rebuilt the drawn route). The owner found that UI confusing and chose a separate tool, and dropped the stop mechanism in favour of a warning before saving.
 
-### Checking before use
+- A user button "Route to here" on AvNav's chart page (`navpage`), next to AvNav's own Goto. The start is the boat's GPS position (`nav.gps.lat`, `nav.gps.lon`), the destination is the map centre under AvNav's crosshair (`map.centerPosition`).
+- Without a GPS fix, or while asw is not ready, the dialog only explains why it cannot route. (Builder's call.)
+- Step 1, the dialog: distance from shore in nautical miles (asw `shore_buffer`, 0 to 5, default 0), avoid canals (`canals=false`), allow Arctic (`arctic=true`), remembered from last time, and a "Make route" button.
+- The browser part sends start, destination and options to the Python part, which calls asw `/route` once. The two ends keep the names "Start" and "Destination"; the points in between are named "asw 1", "asw 2", and so on.
+- Step 2, the same dialog shows the result: the distance in nautical miles, whether the start or the destination is on land (asw `land_legs`), the warning "This route only goes around land. It does not know water depth, rocks or traffic rules. Check every point on the chart before you use it.", a name field filled with "asw <yyyy-mm-dd hh:mm>" (builder's call), and the buttons "Save route" and "Cancel".
+- Nothing is saved before "Save route". The route is saved as a normal AvNav route file `<name>.gpx`; if that name exists, the dialog asks before overwriting. After saving, the sailor opens, edits and starts it like any other AvNav route.
 
-Decided by the owner: the sailor must not be able to follow a generated route before checking it, and must be able to move its points in the route editor. AvNav has no hook for this, so there are two steps:
+### What was removed
 
-1. **Now: watch and stop.** The plugin keeps its own list of the routes it generated and has not seen checked, in its data directory, matched by the route's points. The name `(asw, unchecked)` is only a hint for the sailor, so renaming the route on AvNav's Routes page does not unlock it. The Python part watches the active route (through `getleg` or the router's state). If the active route matches an unchecked entry, it stops navigation right away (`unsetleg`) and raises an AvNav alarm saying that the route must be checked first. The sailor marks a route as checked with a "Mark as checked" action in the plugin dialog. This removes it from the list and removes `, unchecked` from the file name. If the sailor edits an unchecked route, its points change, so the plugin must still recognise it: the builder decides how (for example, by the file name together with the points, or by keeping the original file name). Decided by the owner.
-   - Known limit: the route is active for about a second before it is stopped, so a few NMEA sentences may reach an autopilot. The README states this.
-   - Known limit: in AvNav's disconnected mode, a local copy of a route can be activated without the server knowing, so the plugin cannot stop it. AvNav sends no RMB or APB for local routes, so an autopilot gets nothing. The browser part watches `nav.routeHandler.activeName` and the active route's points, and shows a warning when an unchecked asw route is followed locally. Decided by the owner.
-2. **Later: a hook in AvNav.** Propose in #435 a route property that AvNav respects, such as "activation blocked until confirmed", and offer to send the AvNav pull request. When AvNav has it, the plugin uses it and drops the watcher.
+The first design kept a list of unchecked routes, stopped them if started and raised an alarm until the sailor pressed "Mark as checked". The owner removed this on 2026-10-30: the warning before saving is the only guard. Once saved, AvNav follows the route like any other, including output to an autopilot. The README states this.
 
 ## Testing
 
-- One small self-check in the plugin repo, runnable with plain Python: joining leg responses, naming the added points, skipping duplicate shared points, and the unchecked and checked naming rule.
-- Manual test: run AvNav from source on Linux or in a container, install the zip, download the graph, make routes in the Marmaris area and the Aegean, edit one, try to activate it unchecked, then mark it checked and activate it.
+- One small self-check in the plugin repo, runnable with plain Python: turning an asw response into named route points, and the on-land check.
+- Manual test: run AvNav from source on Linux or in a container, install the zip, download the graph, make routes from a set boat position to the crosshair in the Marmaris area and the Aegean, save one, open it on the Routes page and start it.
 - A real Raspberry Pi has not been tested. The owner or a forum user needs to test a Pi 4 or 5 before the plugin is announced as working on a Pi.
 
 ## Success
 
-- A sailor on a Pi 4 or 5 installs the zip, presses download at the marina, draws start and destination, presses Auto route, edits the result, marks it checked and follows it.
+- A sailor on a Pi 4 or 5 installs the zip, presses download at the marina, puts the crosshair on the destination, presses Route to here, reads the warning, saves the route, checks it on the chart and follows it.
 - wellenvogel adds the plugin to AvNav's plugin list (`newDoc/docs/*/special/plugin-list.md`).
 - We post it in the open-boat-projects.org forum thread and reply in #435.
 
 ## Left to the builder
 
 - Plugin internals: file layout, how the browser part and Python part talk (beyond `registerRequestHandler`), how progress is shown, and the port choice.
-- How the watcher reads and stops the active route (the HTTP API or the router object in the same process), as long as the risk is documented.
 - GPX details of the saved route, matching what AvNav itself writes.
 - The repo's README, license (MIT / Apache 2.0 like asw) and release workflow.

@@ -189,30 +189,49 @@ def test_leg_without_route_reported():
 
 - [ ] **Step 3: Commit** — `git commit -am "Stop unchecked asw routes from being followed"`.
 
-### Task 6: `plugin.mjs` — button, dialog and local warning
+### Revision 2026-10-30 (owner decision)
+
+The owner rejected the route-editor UI after the preview and asked for a separate "Route to here" tool on the chart page, with a warning before saving instead of the unchecked list and the stop. Tasks 2 and 5 are done but their code is removed by Task 6. The spec sections "Making a route" and "What was removed" are the requirements.
+
+### Task 6: Server side for "Route to here" and removal of the stop mechanism
 
 **Files:**
-- Create: `asw/plugin.mjs`, `asw/plugin.css` (button icon only), `asw/icon.svg`
+- Modify: `asw/plugin.py`, `asw/aswplugin/route.py`, `tests/selfcheck.py`
+- Delete: `asw/aswplugin/unchecked.py`
 
 **Interfaces:**
-- Consumes: the HTTP API from Task 4 at `api.getBaseUrl() + "/api/<cmd>"`.
-- AvNav API: `registerUserButton({name: "aswAutoRoute", ...}, "editroutepage")`, `showDialog`, `getStoreData("nav.routeHandler.editingRoute")`, `getStoreData("nav.routeHandler.activeName")`. Before writing code, open AvNav in the browser and log `getStoreData("nav.routeHandler.editingRoute")` to see the object's real shape (name and points with lat, lon, name); use what is there.
+- Removes: `Registry`, the watcher and its alarm, the `check` and `unchecked` commands, `unchecked_name`, `checked_name`, `SUFFIX`, the damaged-registry warning, and their selfchecks. `points_key` goes too if nothing uses it.
+- `route` command: `?data=<json>` with `{"from": {"lat", "lon"}, "to": {"lat", "lon"}, "shore_buffer": float, "canals": bool, "arctic": bool}` (same validation as now). It calls asw once and does NOT write a file. It keeps the result in memory as the plugin's single pending route (one sailor) and returns `{"ok": true, "distance_nm": float, "points": int, "land": [str], "name": "asw <yyyy-mm-dd hh:mm>"}` or `{"ok": false, "error": str}`. `land` uses the names "Start" and "Destination".
+- New `save` command: `?name=<str>&overwrite=0|1` writes the pending route as `<routes dir>/<name>.gpx` (same name checks as now, plus printable and at most 200 bytes) → `{"ok": true, "name": str}`, `{"ok": false, "exists": true}` when the file exists and overwrite is 0, or `{"ok": false, "error": str}` when there is no pending route.
+- `route.py`: `join_legs` stays (one leg), point names "Start", "asw 1", ..., "Destination". A new helper `route_points(leg: dict) -> tuple[list[Point], float, list[str]]` may wrap it.
 
-- [ ] **Step 1: Implement the dialog.** Disabled with a short reason unless status is `ready` and the route has 2 or more points. Fields: distance from shore (nm, 0–5, step 0.1), avoid canals, allow Arctic, from `options`. Text under the fields: "The route goes around land. It does not consider depth and is not for navigation. Check every point before you use it." Buttons: Make route, Cancel. After success: distance in nm, number of points, waypoints on land (if any), and "Saved as <name>. Open it on the Routes page, check it, then press Mark as checked." A second section lists `unchecked` routes, each with a Mark as checked button (confirmation inside the dialog, no browser `confirm()`). If the name exists, ask in the dialog before overwriting.
+- [ ] **Step 1: Failing checks** in `tests/selfcheck.py`: one leg → names `["Start", "asw 1", ..., "Destination"]`; land_legs `[0]` → `["Start"]`, last segment → `["Destination"]`; remove the registry checks.
+- [ ] **Step 2: Run, expect failure.** `python3 tests/selfcheck.py`.
+- [ ] **Step 3: Implement** the route/save split in `plugin.py`, delete the watcher, registry and their commands. Also take the deferred Task 4 minors on the touched code: `safe_name` length and printable check; `prctl` resolved at module level; clear `want_start` in `start()`; bad JSON → "Invalid route request."; `cleanup_stale` at the start of the download thread; no 2.1 GB check when only the binary is missing.
+- [ ] **Step 4: Run, expect PASS.**
+- [ ] **Step 5: Container check** (AvNav 20261029, port 8099): `route` Marmaris (36.848, 28.278) → Bodrum (37.034, 27.430) returns about 80 nm and `land: ["Destination"]` and writes no file; `save` writes the file; a second `save` with the same name returns `exists`; `save` with overwrite writes it. Remove the old test routes and `unchecked.json` from the container.
+- [ ] **Step 6: Commit** — `git commit -am "Route to here: compute first, save after the warning"`.
 
-- [ ] **Step 2: Local-route warning.** Every 5 s read `activeName`; if it is in `unchecked` names, show one AvNav dialog per activation: "You are following an asw route that is not checked." (The server cannot see local routes in disconnected mode.)
+### Task 7: `plugin.mjs` — "Route to here" button and dialog
 
-- [ ] **Step 3: Manual test** in the container with the browser: the full flow from the spec's "Success" section, plus the disconnected-mode warning. Take screenshots for the README.
+**Files:**
+- Create: `asw/plugin.mjs`, `asw/plugin.css`, `asw/icon.svg`
 
-- [ ] **Step 4: Commit** — `git commit -am "Auto route button and dialog"`.
+**Interfaces:**
+- Consumes: Task 6's `status`, `download`, `route`, `save`, `options` commands at `api.getBaseUrl() + "/api/<cmd>"`.
+- AvNav API: `registerUserButton({name: "aswRouteHere", ...}, "navpage")`, `showDialog`, `getStoreData("nav.gps.lat")`, `getStoreData("nav.gps.lon")`, `getStoreData("map.centerPosition")` (check its shape in the browser first).
 
-### Task 7: README, release workflow, first release
+- [ ] **Step 1: Implement.** One dialog, two steps, all texts in the spec's "Making a route". Step 1: options and "Make route"; if there is no GPS fix or asw is not `ready`, show only the reason (and, when the graph is missing, the download size and a "Download map data" button that calls `download`). Step 2 in the same dialog: distance in nm, the on-land line if any, the warning text verbatim, the name field, "Save route" and "Cancel"; on `exists`, ask in the dialog before saving with overwrite. Never use the browser's alert/confirm/prompt.
+- [ ] **Step 2: Browser test** (the controller runs it with Playwright): set a boat position (feed an NMEA RMC sentence to AvNav, or AvNav's own test/simulation input), put the crosshair at Bodrum, press the button, make the route, save it, open it on the Routes page. Screenshots for the README.
+- [ ] **Step 3: Commit** — `git commit -am "Route to here button and dialog"`.
+
+### Task 8: README, release workflow, first release
 
 **Files:**
 - Create: `README.md`, `.github/workflows/release.yml`, `CHANGELOG.md`
 
-- [ ] **Step 1: README** in the owner's plain style: what it does (one paragraph), the not-for-navigation and not-weather-routing notes, requirements (AvNav 20261008+, 64-bit Linux or Pi 4/5 with 2 GB or more, about 2.1 GB free), install (upload zip on the Plugins page, press download on Wi-Fi), use (draw start and destination, Auto route, check, Mark as checked), the two known limits from the spec (about a second active before stop; local routes only warned), screenshots, link to asw.
+- [ ] **Step 1: README** in the owner's plain style: what it does (one paragraph), the not-for-navigation and not-weather-routing notes, that a saved route is a normal AvNav route that AvNav will follow and send to an autopilot like any other, requirements (AvNav 20261029 daily or the coming 202610xx release, 64-bit Linux or Pi 4/5 with 2 GB or more, about 2.1 GB free), install (upload zip on the Plugins page, press download on Wi-Fi), use (crosshair on the destination, Route to here, read the warning, save, check), screenshots, link to asw.
 - [ ] **Step 2: Release workflow** on tag `v*`: run `python3 tests/selfcheck.py`, run `build.sh`, attach `dist/avnav-asw-<version>.zip` to the GitHub release.
 - [ ] **Step 3: Run `python3 tests/selfcheck.py` and `./build.sh` locally** → `ok`, zip present.
-- [ ] **Step 4: Draft (do not post) the #435 reply** in the owner's voice: the plugin, its limits, and the proposal for an AvNav route flag "activation blocked until confirmed", with an offer to send that AvNav pull request. Save it in the plugin repo's `docs/` for the owner.
+- [ ] **Step 4: Draft (do not post) the #435 reply** in the owner's voice: the plugin, its limits, and an offer to help. Save it in the plugin repo's `docs/` for the owner.
 - [ ] **Step 5: Commit.** Then ask the owner to create `auto-sea-way/avnav-plugin`, push, and tag `v0.1.0` only after the owner says yes. A Pi test by the owner or a forum user comes before announcing it in #435 and the forum thread.
