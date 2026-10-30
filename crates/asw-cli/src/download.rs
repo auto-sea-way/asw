@@ -67,7 +67,7 @@ pub fn ensure_graph(path: &Path, url: Option<&str>) -> Result<()> {
         asw_core::graph::RoutingGraph::open(&tmp_path, false)?;
         Ok(n)
     })()
-    .context("graph download is corrupt or incomplete");
+    .context("graph download failed");
     let downloaded = match fetched {
         Ok(n) => n,
         Err(e) => {
@@ -79,7 +79,12 @@ pub fn ensure_graph(path: &Path, url: Option<&str>) -> Result<()> {
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("Failed to rename {:?} to {:?}", tmp_path, path))?;
     info!(
-        "Graph downloaded: {:.1} MB",
+        "Graph {}: {:.1} MB",
+        if is_zst(url) {
+            "unpacked"
+        } else {
+            "downloaded"
+        },
         downloaded as f64 / 1_000_000.0
     );
     Ok(())
@@ -126,7 +131,7 @@ mod tests {
         b.add_node(u64::from(cell), 255);
         b.build().save(&p).unwrap();
         let bytes = std::fs::read(&p).unwrap();
-        std::fs::remove_file(&p).unwrap();
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
         bytes
     }
 
@@ -146,6 +151,7 @@ mod tests {
     fn nothing_left(p: &Path) {
         assert!(!p.exists());
         assert!(!p.with_extension("graph.tmp").exists());
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -155,6 +161,7 @@ mod tests {
         ensure_graph(&p, Some(&url)).unwrap();
         RoutingGraph::open(&p, false).unwrap();
         assert!(!p.with_extension("graph.tmp").exists());
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -164,6 +171,7 @@ mod tests {
         let url = serve_once("200 OK", bytes.clone(), "asw.graph");
         ensure_graph(&p, Some(&url)).unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), bytes);
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
 
     #[test]

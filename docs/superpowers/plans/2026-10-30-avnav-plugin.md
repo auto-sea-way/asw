@@ -1,7 +1,5 @@
 # AvNav asw plugin Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** A zip plugin for AvNav (20261008 and newer, Linux and Raspberry Pi) that runs asw locally and turns the route in AvNav's route editor into a land-avoiding route, saved as a new route that cannot be followed until the sailor marks it as checked.
 
 **Architecture:** `plugin.py` is thin AvNav glue (status, HTTP handler, child process, watcher thread). All logic that can be tested without AvNav lives in a small package `aswplugin/` next to it: route joining and GPX, the unchecked registry, install checks. `plugin.mjs` adds the "Auto route" button and dialog in the route editor and the local-route warning.

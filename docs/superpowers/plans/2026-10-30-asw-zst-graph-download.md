@@ -1,7 +1,5 @@
 # asw `.zst` graph download Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
 **Goal:** `asw serve --graph-url <...>/asw.graph.zst` downloads the compressed graph, unpacks it while downloading, checks it and only then puts it in place.
 
 **Architecture:** One change in `crates/asw-cli/src/download.rs`. When the URL path ends in `.zst`, the HTTP body goes through a zstd stream decoder into the existing temporary file; then the file is opened as a v5 graph before the rename. Plain URLs keep working as today.

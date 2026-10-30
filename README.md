@@ -150,7 +150,7 @@ docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph.zst \
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph \
   -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0
 
 # Slim image — mounted graph file

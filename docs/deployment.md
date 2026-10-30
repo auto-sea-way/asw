@@ -36,7 +36,7 @@ services:
       - "3000:3000"
     environment:
       - ASW_API_KEY=${ASW_API_KEY}
-      - ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph.zst
+      - ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph
     volumes:
       - asw-data:/data
     healthcheck:
@@ -137,7 +137,7 @@ spec:
                   name: asw-secrets
                   key: api-key
             - name: ASW_GRAPH_URL
-              value: https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph.zst
+              value: https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph
           volumeMounts:
             - name: data
               mountPath: /data
