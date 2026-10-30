@@ -36,7 +36,9 @@ pub fn ensure_graph(path: &Path, url: Option<&str>) -> Result<()> {
 
     let client = reqwest::blocking::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
-        .timeout(std::time::Duration::from_secs(3600))
+        // Blocking reqwest applies this per read, so it is an idle timeout:
+        // a dead link fails after 2 minutes, a slow one keeps going.
+        .timeout(std::time::Duration::from_secs(120))
         .build()
         .context("Failed to build HTTP client")?;
 

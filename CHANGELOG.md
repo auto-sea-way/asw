@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The graph download stops after 2 minutes without data (was 1 hour), so a dropped connection gives an error soon. A slow but working connection is not affected, because the limit applies to each read.
 - Long routes are faster. The land check on a long leg scanned every coastline inside the leg's bounding box; it now scans only the 20 nm pieces. Planet: Rotterdam to Singapore 1.14 s → 0.44 s, Shanghai to Rotterdam 1.36 s → 0.74 s, New York to Southampton 323 ms → 215 ms, Cape Town to Rio de Janeiro 26 ms → 16 ms. Short routes are unchanged.
 
 ## [0.10.0] - 2026-10-04
