@@ -150,7 +150,7 @@ docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph \
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph.zst \
   -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0
 
 # Slim image — mounted graph file
@@ -257,7 +257,7 @@ cargo build --release -p asw-cli
 | `ASW_PORT` | `3000` | Server listen port |
 | `ASW_HOST` | `0.0.0.0` | Bind address |
 | `ASW_GRAPH` | `export/asw.graph` | Path to graph file |
-| `ASW_GRAPH_URL` | — | URL to download graph if file is missing |
+| `ASW_GRAPH_URL` | — | URL to download the graph if the file is missing; a `.zst` URL is unpacked and checked while downloading |
 | `ASW_API_KEY` | — | **Required.** API key for authenticating `/route` and `/info` requests |
 | `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
 
