@@ -75,7 +75,7 @@ Changed by the owner on 2026-10-30 after seeing a preview of the first design (a
 - Without a GPS fix, or while asw is not ready, the dialog only explains why it cannot route. (Builder's call.)
 - Step 1, the dialog: distance from shore in nautical miles (asw `shore_buffer`, 0 to 5, default 0), avoid canals (`canals=false`), allow Arctic (`arctic=true`), remembered from last time, and a "Make route" button.
 - The browser part sends start, destination and options to the Python part, which calls asw `/route` once. The two ends keep the names "Start" and "Destination"; the points in between are named "asw 1", "asw 2", and so on.
-- Step 2, the same dialog shows the result: the distance in nautical miles, whether the start or the destination is on land (asw `land_legs`), the warning "This route only goes around land. It does not know water depth, rocks or traffic rules. Check every point on the chart before you use it.", a name field filled with "asw <yyyy-mm-dd hh:mm>" (builder's call), and the buttons "Save route" and "Cancel".
+- Step 2, the same dialog shows the result: the distance in nautical miles, whether the start or the destination is on land (asw `land_legs`), the warning "This route only goes around land. It does not know water depth, rocks or traffic rules. Check every point on the chart before you use it.", a name field filled with "asw <yyyy-mm-dd hhmm>" (builder's call; no ":" because AvNav refuses it in route names), and the buttons "Save route" and "Cancel".
 - Nothing is saved before "Save route". The route is saved as a normal AvNav route file `<name>.gpx`; if that name exists, the dialog asks before overwriting. After saving, the sailor opens, edits and starts it like any other AvNav route.
 
 ### What was removed
