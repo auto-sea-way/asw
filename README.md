@@ -23,6 +23,8 @@ auto-sea-way generates its graph instead of drawing it. About 40 million navigab
 
 You run it yourself: one binary and one graph file. Routing happens on your own server, so requests cost nothing and the coordinates stay with you.
 
+> **Not for navigation.** Routes are for planning and analysis only. See [Not for navigation](#not-for-navigation).
+
 ## Quick Start
 
 ```bash
@@ -256,6 +258,10 @@ cargo build --release -p asw-cli
 | `ASW_GRAPH_URL` | — | URL to download graph if file is missing |
 | `ASW_API_KEY` | — | **Required.** API key for authenticating `/route` and `/info` requests |
 | `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
+
+## Not for navigation
+
+auto-sea-way computes routes for planning and for software that needs sea distances. It is not a navigation aid and must not be used as the only source for navigation at sea. The graph has no depth, tide, current, traffic separation scheme, ice or weather data, and the OpenStreetMap coastline can be wrong or out of date. Check every route against official nautical charts and notices to mariners before you use it on the water. The software and the graph are provided "as is", without warranty of any kind, as stated in the licenses.
 
 ## Known Limitations
 
