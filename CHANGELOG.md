@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--graph-url` / `ASW_GRAPH_URL` accept the compressed `asw.graph.zst` (540 MB instead of 1.4 GB). The file is unpacked while downloading and must open as a graph, otherwise nothing is left behind. A plain URL download is now also checked (opened as a graph) and removed if it does not open.
 - Reference test for planet routes. Twenty-two routes from NGA Pub 151 (Distances Between Ports), eight of them across the Pacific, must match the published distance within 2 %; today all are within 1.2 %. Every water leg of these routes and of the two routes from #65 is also walked along its great circle and checked against Natural Earth 1:10m land, a coastline that does not come from OpenStreetMap: no point may lie 3 nm or more inside one land polygon. On the code before the great-circle fix this check finds five Pub 151 routes with a leg over land (Baja California, Jalisco, Kauai, Socotra, Long Island), although their distances were within 2 %. The test needs the planet graph and the Natural Earth land shapefile in `export/`: `cargo test --release -p asw-core --test reference_distances -- --ignored --nocapture` (`ASW_GRAPH` and `ASW_CHECK_LAND` override the paths).
 
 ### Fixed
@@ -18,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The graph download stops after 2 minutes without data (was 1 hour), so a dropped connection gives an error soon. A slow but working connection is not affected, because the limit applies to each read.
 - Long routes are faster. The land check on a long leg scanned every coastline inside the leg's bounding box; it now scans only the 20 nm pieces. Planet: Rotterdam to Singapore 1.14 s → 0.44 s, Shanghai to Rotterdam 1.36 s → 0.74 s, New York to Southampton 323 ms → 215 ms, Cape Town to Rio de Janeiro 26 ms → 16 ms. Short routes are unchanged.
 
 ## [0.10.0] - 2026-10-04
