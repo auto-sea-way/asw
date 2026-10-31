@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-31
+
+The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
+
 ### Added
 
 - `--graph-url` / `ASW_GRAPH_URL` accept the compressed `asw.graph.zst` (540 MB instead of 1.4 GB). The file is unpacked while downloading and must open as a graph, otherwise nothing is left behind. A plain URL download is now also checked (opened as a graph) and removed if it does not open.
@@ -272,6 +276,7 @@ The planet graph file is unchanged from 0.7.0 (format v4); the release carries t
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.11.0]: https://github.com/auto-sea-way/asw/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/auto-sea-way/asw/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/auto-sea-way/asw/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/auto-sea-way/asw/compare/v0.8.0...v0.8.1
