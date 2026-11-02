@@ -13,7 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 subtle = "2"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
