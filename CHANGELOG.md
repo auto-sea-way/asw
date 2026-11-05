@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+The planet graph file is unchanged from 0.10.0.
+
+### Fixed
+
+- Corners in open water. Smoothing jumped to the farthest node it could see, so a route could turn far from the obstacle that forced the turn. A new pass moves each corner to a better node, and every change must pass the same land and shore buffer check. Las Palmas to Mindelo at a 0.2 nm buffer is 865.2 nm (was 912.8 nm), Rotterdam to Singapore 8234.2 nm (was 8289.4 nm) and Tokyo to Seattle 4237.6 nm (was 4287.8 nm). On 30 routes in both directions at five buffers, 248 of 300 results got shorter and none longer, and the results for the two directions of a route now differ by more than 2 % in one case (was 11). Routing takes about 5 to 15 % longer, under 130 ms on the longest benchmark route.
+
 ## [0.11.0] - 2026-10-31
 
 The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.

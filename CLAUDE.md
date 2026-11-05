@@ -52,6 +52,7 @@ Rust workspace with 5 crates:
 - Nearest-node snapping via H3 binary search (no R-tree) — sorted node_h3 vec is both coordinate store and spatial index
 - Query-time endpoint stitching: routes start/end at the exact requested coordinates; clear line-of-sight pairs short-circuit to a direct great-circle leg without a graph search (shore-buffer aware; no graph densification needed for deep water)
 - Route geometry is great-circle: smoothing and the direct-line shortcut test each candidate leg along its great circle sampled every `LEG_STEP_NM` (20 nm) with the planar coastline check, and output legs are split to the same step, so `distance_nm` (haversine sum) is the length of the returned polyline and any renderer draws it within 0.1 nm of the checked track (issue #65)
+- Smoothing is greedy (farthest visible raw node), then `refine_corners` moves each corner to the raw node with the shortest two legs among those that see both neighbours, or cuts it with two nodes. Every change must pass the same `leg_clear` check and shorten the route
 - Arctic: never routes north of 80°N; Northern Sea Route and Northwest Passage closed unless `arctic=true`
 - Canals: `canals=false` closes the man-made canals at query time through the `cut` box of each entry in `PASSAGES` (same mechanism as the Arctic boxes)
 - A* buffer pool (2 buffer sets, zero-filled, allocated on first use and reused) eliminates per-request allocation spikes

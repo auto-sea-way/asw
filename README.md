@@ -82,34 +82,34 @@ Routes start and end at the exact requested coordinates; distances count only th
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 223us | 254us | 34>4 |
-| Aegean Hop | 25.3nm | 703us | 740us | 50>6 |
-| Strait of Gibraltar | 29.4nm | 647us | 665us | 64>5 |
-| Baltic Crossing | 42.0nm | 1.2ms | 1.3ms | 54>5 |
-| Balearic Sea | 127.6nm | 2.0ms | 2.3ms | 113>7 |
-| Florida Strait | 89.0nm | 329us | 352us | 22>4 |
-| Malacca Route | 535.8nm | 31.1ms | 32.7ms | 455>22 |
-| Tasman Sea | 1265.2nm | 31.0ms | 32.0ms | 337>16 |
-| South Atlantic | 3272.4nm | 16.4ms | 17.5ms | 149>7 |
-| North Atlantic | 3047.9nm | 215.3ms | 235.5ms | 399>17 |
-| Rotterdam-Singapore | 8289.4nm | 440.5ms | 456.2ms | 3157>64 |
-| Shanghai-Rotterdam | 10363.9nm | 737.8ms | 755.1ms | 4282>93 |
-| Tokyo-Seattle | 4287.8nm | 356.0ms | 372.1ms | 1630>44 |
+| English Channel | 22.1nm | 269us | 303us | 34>4 |
+| Aegean Hop | 25.3nm | 828us | 854us | 50>6 |
+| Strait of Gibraltar | 29.4nm | 655us | 681us | 64>5 |
+| Baltic Crossing | 41.9nm | 1.7ms | 1.7ms | 54>5 |
+| Balearic Sea | 127.6nm | 2.6ms | 2.7ms | 113>7 |
+| Florida Strait | 89.0nm | 329us | 360us | 22>4 |
+| Malacca Route | 533.8nm | 34.1ms | 36.1ms | 455>20 |
+| Tasman Sea | 1264.7nm | 34.7ms | 35.4ms | 337>11 |
+| South Atlantic | 3272.3nm | 16.8ms | 17.3ms | 149>7 |
+| North Atlantic | 3047.1nm | 219.4ms | 237.9ms | 399>17 |
+| Rotterdam-Singapore | 8234.2nm | 445.4ms | 461.7ms | 3157>58 |
+| Shanghai-Rotterdam | 10353.0nm | 733.4ms | 753.5ms | 4282>87 |
+| Tokyo-Seattle | 4237.6nm | 355.3ms | 367.6ms | 1630>40 |
 
 ### Passage Transits
 
 | Route | Distance | P50 | P95 | Hops |
 |-------|----------|-----|-----|------|
-| Suez Canal | 141.8nm | 11.9ms | 12.3ms | 1132>28 |
-| Panama Canal | 53.5nm | 64.8ms | 69.3ms | 1089>55 |
-| Kiel Canal | 84.3nm | 38.7ms | 39.6ms | 1868>55 |
-| Corinth Canal | 6.6nm | 1.3ms | 1.5ms | 361>4 |
-| Bosphorus | 32.7nm | 1.4ms | 1.5ms | 147>9 |
-| Dardanelles | 45.1nm | 1.2ms | 1.3ms | 138>6 |
-| Malacca Strait | 28.8nm | 1.5ms | 1.5ms | 104>8 |
-| Singapore Strait | 27.1nm | 869us | 890us | 52>5 |
-| Messina Strait | 16.0nm | 504us | 528us | 75>6 |
-| Dover Strait | 18.4nm | 378us | 409us | 17>5 |
+| Suez Canal | 141.7nm | 12.7ms | 12.8ms | 1132>27 |
+| Panama Canal | 53.5nm | 63.6ms | 68.7ms | 1089>55 |
+| Kiel Canal | 84.3nm | 38.9ms | 39.4ms | 1868>55 |
+| Corinth Canal | 6.6nm | 1.3ms | 1.6ms | 361>4 |
+| Bosphorus | 32.7nm | 1.7ms | 1.7ms | 147>9 |
+| Dardanelles | 45.1nm | 1.4ms | 1.4ms | 138>6 |
+| Malacca Strait | 28.8nm | 1.7ms | 1.7ms | 104>8 |
+| Singapore Strait | 26.4nm | 1.1ms | 1.2ms | 52>5 |
+| Messina Strait | 16.0nm | 645us | 664us | 75>6 |
+| Dover Strait | 18.4nm | 395us | 416us | 17>5 |
 
 ## API Endpoints
 
