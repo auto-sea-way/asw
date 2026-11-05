@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-The planet graph file is unchanged from 0.10.0.
+## [0.11.1] - 2026-11-05
+
+The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
 
 ### Fixed
 
@@ -282,6 +284,7 @@ The planet graph file is unchanged from 0.7.0 (format v4); the release carries t
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.11.1]: https://github.com/auto-sea-way/asw/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/auto-sea-way/asw/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/auto-sea-way/asw/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/auto-sea-way/asw/compare/v0.8.1...v0.9.0
