@@ -17,9 +17,10 @@ The existing options are limited in different ways:
 - Commercial routing APIs are closed, priced per request, and cannot be hosted by you.
 - The open source libraries ([eurostat/searoute](https://github.com/eurostat/searoute),
   [searoute-py](https://github.com/genthalili/searoute-py),
-  [scgraph](https://github.com/connor-makowski/scgraph)) route along a hand-drawn network
-  of about 4,000 shipping lanes. They have no coastline detail, so they cannot tell a
-  harbour entrance from open ocean.
+  [searoute-ts](https://github.com/mayurrawte/searoute-ts),
+  [scgraph](https://github.com/connor-makowski/scgraph)) route along MARNET, a fixed
+  network of shipping lanes from Eurostat. They have no coastline detail, so they cannot
+  tell a harbour entrance from open ocean.
 
 auto-sea-way generates its graph instead of drawing it. About 40 million navigable cells are derived from OpenStreetMap land polygons, coarse in the open ocean and fine along coastlines and inside narrow passages such as Suez and Panama. Routes start and end at the exact coordinates you ask for, and a route that has to touch land (a pin on a quay, a headland clipped by smoothing) reports which segments do.
 
