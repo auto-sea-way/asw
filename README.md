@@ -1,3 +1,5 @@
+<img src="docs/logo/logo.svg" alt="auto-sea-way logo" width="120">
+
 # auto-sea-way
 
 Open source sea routing between any two coordinates on the planet. auto-sea-way builds a global routing graph of the water surface from OpenStreetMap coastlines, indexes it with H3 hexagons, and serves routes over a small HTTP API. Written in Rust.
@@ -15,19 +17,24 @@ The existing options are limited in different ways:
 - Commercial routing APIs are closed, priced per request, and cannot be hosted by you.
 - The open source libraries ([eurostat/searoute](https://github.com/eurostat/searoute),
   [searoute-py](https://github.com/genthalili/searoute-py),
-  [scgraph](https://github.com/connor-makowski/scgraph)) route along a hand-drawn network
-  of about 4,000 shipping lanes. They have no coastline detail, so they cannot tell a
-  harbour entrance from open ocean.
+  [searoute-ts](https://github.com/mayurrawte/searoute-ts),
+  [scgraph](https://github.com/connor-makowski/scgraph)) route along MARNET, a fixed
+  network of shipping lanes from Eurostat, and
+  [@arcnautical/maritime-routing](https://github.com/arcnautical/maritime-routing) routes
+  on a grid of about 5.5 km. They have no coastline detail, so they cannot tell a harbour
+  entrance from open ocean.
 
 auto-sea-way generates its graph instead of drawing it. About 40 million navigable cells are derived from OpenStreetMap land polygons, coarse in the open ocean and fine along coastlines and inside narrow passages such as Suez and Panama. Routes start and end at the exact coordinates you ask for, and a route that has to touch land (a pin on a quay, a headland clipped by smoothing) reports which segments do.
 
 You run it yourself: one binary and one graph file. Routing happens on your own server, so requests cost nothing and the coordinates stay with you.
 
+> **Not for navigation.** Routes are for planning and analysis only. See [Not for navigation](#not-for-navigation).
+
 ## Quick Start
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (a few seconds while the graph file is mapped and read in), then query a route:
@@ -55,57 +62,27 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 ## Comparison with Alternatives
 
-| | auto-sea-way | [scgraph](https://github.com/connor-makowski/scgraph) | [eurostat/searoute](https://github.com/eurostat/searoute) | [searoute-py](https://github.com/genthalili/searoute-py) | Commercial SaaS APIs |
-|---|---|---|---|---|---|
-| **Routing graph** | Generated from OSM data (~40M cells) | Pre-curated shipping lane network (marnet) | Static hand-drawn (~4K edges) | Static hand-drawn (~4K edges) | Proprietary |
-| **Coastline detail** | Adaptive res-3→res-14 | None — routes along lane waypoints | Fixed low resolution | Fixed low resolution | Varies |
-| **Narrow passages** | Suez, Panama, Bosphorus, etc. | Only if in curated dataset | Approximate | Approximate | Usually yes |
-| **Arbitrary coordinates** | Yes | Snaps to nearest lane node (KD-tree) | Ports + coords | Ports + coords | Varies |
-| **Self-hosted** | Yes — single binary | Yes — Python library | Yes — Java library | Yes — Python library | No |
-| **API server included** | Yes (HTTP/JSON) | No | No | No | Yes |
-| **Multi-modal** | Maritime only | Maritime, road, rail, custom | Maritime only | Maritime only | Varies |
-| **Language** | Rust | Python (optional C++ extension) | Java | Python | — |
-| **License** | MIT / Apache 2.0 | MIT | EUPL | MIT | Proprietary |
-| **Status** | Active | Active | Inactive (last commit 2023) | Maintained | — |
+| | auto-sea-way | [scgraph](https://github.com/connor-makowski/scgraph) | [searoute-py](https://github.com/genthalili/searoute-py) | [searoute-ts](https://github.com/mayurrawte/searoute-ts) | [eurostat/searoute](https://github.com/eurostat/searoute) | [@arcnautical/maritime-routing](https://github.com/arcnautical/maritime-routing) | Commercial SaaS APIs |
+|---|---|---|---|---|---|---|---|
+| **Routing graph** | Generated from OSM land polygons (~39M cells) | marnet geograph (from searoute, ~11K nodes) | MARNET shipping lanes (~4K lanes, ~10K points) | MARNET, 100 km by default (20 km tested) | MARNET 5 to 100 km (up to ~72K points) | 0.05° grid from OSM water (~5.5 km) | Proprietary |
+| **Coastline detail** | Adaptive res-3 to res-14 | None, routes along lane waypoints | None, fixed lanes | None, fixed lanes | None, fixed lanes | Grid cells of ~5.5 km | Varies |
+| **Narrow passages** | Suez, Panama, Kiel, Corinth, Bosphorus and more | Only if in the network | Approximate | Approximate | Approximate | Forced grid cells for some | Usually yes |
+| **Arbitrary coordinates** | Yes, exact start and end | Joins the nearest network node | Joins the nearest network node | Joins the nearest network node | Joins the nearest network node | Yes, straight lines where it finds no path | Varies |
+| **NGA Pub 151, 22 port pairs (tested 2026-11-05 and 06)** | Within 2 % on 22, mean 0.5 % | Within 2 % on 15, mean 2.8 % | Within 2 % on 14, mean 1.7 % | Within 2 % on 12, mean 2.1 % | Within 2 % on 12, mean 2.4 % | Within 2 % on 5, mean 5.4 % | Not tested |
+| **Over land on 45 test routes, away from inland end points** | 1.6 nm | 924 nm | 394 nm | 715 nm | 549 nm | 17,184 nm | Not tested |
+| **Median time per route** | 34 ms (up to 0.75 s) | 0.06 ms | 0.66 ms | 147 ms | Batch only | 56 ms | Varies |
+| **Self-hosted** | Yes, single binary or Docker | Yes, Python library | Yes, Python library | Yes, npm library | Yes, Java library | Yes, npm library | No |
+| **API server included** | Yes (HTTP/JSON) | No | No | No | No | No | Yes |
+| **Multi-modal** | Maritime only | Maritime, road, rail, custom | Maritime only | Maritime only | Maritime only | Maritime only | Varies |
+| **Language** | Rust | Python (optional C++ extension) | Python | TypeScript | Java | TypeScript | |
+| **License** | MIT / Apache 2.0 | MIT | Apache 2.0 | MIT | EUPL 1.2 | MIT | Proprietary |
+| **Status** | Active | Active | Maintained (last commit 2026-05) | Active | Inactive (last commit 2022-01) | New (1.0.1, 2026-09) | |
 
-## Routing Benchmarks
+## Benchmarks
 
-23 routes, 50 iterations each, on the planet graph (format v5, memory-mapped). Graphs in an older format must be rebuilt: older files are rejected at load time.
+On 5 and 6 November 2026 auto-sea-way was compared with the five open source routers above on 45 routes: the 23 benchmark routes of `asw bench` and 22 port pairs from NGA Pub 151, *Distances Between Ports*. All lines were measured by the same code, from the requested start to the requested end, and checked for land against the OpenStreetMap land polygons and Natural Earth. A line that goes over land was not compared. auto-sea-way had the shortest line on water on 40 of the 45 routes and on 15 of the 16 routes under 200 nm, and it was the closest to Pub 151 on 15 of the 22 pairs. scgraph and searoute-py are much faster, and all five are much smaller than the 1.43 GB graph. The [benchmarks page](https://auto-sea-way.github.io/benchmarks.html) has the method, the numbers for every route, a map to compare the routes and the speed tables of `asw bench`.
 
-Routes start and end at the exact requested coordinates; distances count only the water segments (overland connectors for pins placed on land are excluded). Consecutive coordinates are at most 20 nm apart along the great circle, so the polyline reads the same whether you join the points with great-circle arcs, rhumb lines or straight lines on the map, and `distance_nm` is its length. Routes longer than 500 nm first find their way on the coarse graph and then search only a corridor around it. The three ocean crossings take 0.36–0.74 s.
-
-### Sailing Routes
-
-| Route | Distance | P50 | P95 | Hops |
-|-------|----------|-----|-----|------|
-| English Channel | 22.1nm | 223us | 254us | 34>4 |
-| Aegean Hop | 25.3nm | 703us | 740us | 50>6 |
-| Strait of Gibraltar | 29.4nm | 647us | 665us | 64>5 |
-| Baltic Crossing | 42.0nm | 1.2ms | 1.3ms | 54>5 |
-| Balearic Sea | 127.6nm | 2.0ms | 2.3ms | 113>7 |
-| Florida Strait | 89.0nm | 329us | 352us | 22>4 |
-| Malacca Route | 535.8nm | 31.1ms | 32.7ms | 455>22 |
-| Tasman Sea | 1265.2nm | 31.0ms | 32.0ms | 337>16 |
-| South Atlantic | 3272.4nm | 16.4ms | 17.5ms | 149>7 |
-| North Atlantic | 3047.9nm | 215.3ms | 235.5ms | 399>17 |
-| Rotterdam-Singapore | 8289.4nm | 440.5ms | 456.2ms | 3157>64 |
-| Shanghai-Rotterdam | 10363.9nm | 737.8ms | 755.1ms | 4282>93 |
-| Tokyo-Seattle | 4287.8nm | 356.0ms | 372.1ms | 1630>44 |
-
-### Passage Transits
-
-| Route | Distance | P50 | P95 | Hops |
-|-------|----------|-----|-----|------|
-| Suez Canal | 141.8nm | 11.9ms | 12.3ms | 1132>28 |
-| Panama Canal | 53.5nm | 64.8ms | 69.3ms | 1089>55 |
-| Kiel Canal | 84.3nm | 38.7ms | 39.6ms | 1868>55 |
-| Corinth Canal | 6.6nm | 1.3ms | 1.5ms | 361>4 |
-| Bosphorus | 32.7nm | 1.4ms | 1.5ms | 147>9 |
-| Dardanelles | 45.1nm | 1.2ms | 1.3ms | 138>6 |
-| Malacca Strait | 28.8nm | 1.5ms | 1.5ms | 104>8 |
-| Singapore Strait | 27.1nm | 869us | 890us | 52>5 |
-| Messina Strait | 16.0nm | 504us | 528us | 75>6 |
-| Dover Strait | 18.4nm | 378us | 409us | 17>5 |
+`asw bench` writes the latest local run to [benchmarks/BENCHMARKS.md](benchmarks/BENCHMARKS.md) and the routes to [bench-routes.geojson](benchmarks/bench-routes.geojson). Routes longer than 500 nm first find their way on the coarse graph and then search only a corridor around it; the three ocean crossings take 0.36 to 0.74 s. Graphs in an older format must be rebuilt: older files are rejected at load time.
 
 ## API Endpoints
 
@@ -121,7 +98,7 @@ Protected endpoints require an `X-Api-Key` header matching the configured `ASW_A
 **`/route` parameters:**
 
 - `from`, `to` — `lat,lon` coordinates
-- `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. The response echoes the requested value as `shore_buffer_nm`
+- `shore_buffer` (optional, nautical miles, `0`–`5.0`, default `0`) — soft clearance: the router strongly prefers water at least this far from the coastline, but can still enter harbors/coves when there is no alternative; not a hard guarantee. Inside the corridor box of each man-made canal (see `canals`) the penalty is off, since a canal is narrower than the buffer and the route would otherwise go around it. For Suez and Panama this box also covers the Bitter Lakes, Gatun Lake and Limón Bay. The response echoes the requested value as `shore_buffer_nm`
 - `arctic` (optional, `true`/`false`, default `false`) — opens the Northern Sea Route and the Northwest Passage. They are closed by default because they are only passable in summer and mostly for ice-class ships, so Asia–Europe routes go via Suez. The central Arctic north of 80°N is permanent pack ice and is never routed, with or without this flag
 - `canals` (optional, `true`/`false`, default `true`) — `false` closes the man-made canals (Suez, Panama, Kiel, Corinth, Lefkada, Potidea, Osor, Privlaka, Vistula Spit, Cape Cod, Cape May, Chesapeake–Delaware), so the route goes around them. Use it to avoid canal fees and transit bookings. Each canal is closed in the middle, so ports at both ends stay reachable from their own side. Natural straits (Bosphorus, Dover, Malacca and others) are not affected. Long routes stay fast with canals closed (Rotterdam to Singapore around Africa: about 0.5 s). The exception is a long route that starts or ends in the same res-3 region as a closed canal, which needs a search of the whole graph (Colón to Callao around South America: about 4 s)
 
@@ -135,23 +112,23 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.10.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.10.0-full` | Full image — graph file included (~1.5 GB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.11.2` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.11.2-full` | Full image — graph file included (~1.5 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~1.5 GB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.10.0/asw.graph \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.11.2/asw.graph.zst \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.10.0
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2
 ```
 
 The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
@@ -217,7 +194,7 @@ asw serve --graph export/asw.graph --host 0.0.0.0 --port 3000
 # Export as GeoJSON for visualization
 asw geojson --graph export/asw.graph --bbox marmaris --coastline --output export/asw.geojson
 
-# Benchmark routing performance (20 fixed routes, 50 iterations each)
+# Benchmark routing performance (23 fixed routes, 50 iterations each)
 asw bench --graph export/asw.graph --output export/bench.json
 asw bench --compare export/bench.json          # compare against a saved baseline
 asw bench --shore-buffer 1.0                   # benchmark with the shore-clearance penalty applied
@@ -253,9 +230,13 @@ cargo build --release -p asw-cli
 | `ASW_PORT` | `3000` | Server listen port |
 | `ASW_HOST` | `0.0.0.0` | Bind address |
 | `ASW_GRAPH` | `export/asw.graph` | Path to graph file |
-| `ASW_GRAPH_URL` | — | URL to download graph if file is missing |
+| `ASW_GRAPH_URL` | — | URL to download the graph if the file is missing; a `.zst` URL is unpacked and checked while downloading |
 | `ASW_API_KEY` | — | **Required.** API key for authenticating `/route` and `/info` requests |
 | `HETZNER_TOKEN` | — | Hetzner API token for cloud builds |
+
+## Not for navigation
+
+auto-sea-way computes routes for planning and for software that needs sea distances. It is not a navigation aid and must not be used as the only source for navigation at sea. The graph has no depth, tide, current, traffic separation scheme, ice or weather data, and the OpenStreetMap coastline can be wrong or out of date. Check every route against official nautical charts and notices to mariners before you use it on the water. The software and the graph are provided "as is", without warranty of any kind, as stated in the licenses.
 
 ## Known Limitations
 

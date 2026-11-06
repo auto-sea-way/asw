@@ -264,5 +264,58 @@ fn planet_routes_match_pub151_and_stay_off_land() {
             None => println!("{name:34} {:8.1} nm", r.distance_nm),
         }
     }
+    // Smoothing must not turn in open water: greedy smoothing made this route
+    // 912.8 nm at a 0.2 nm buffer, with a corner 200 nm from any land.
+    buffers.reset();
+    let r = compute_route(
+        &graph,
+        28.14,
+        -15.41,
+        16.89,
+        -25.0,
+        &coastline,
+        &knn,
+        &mut buffers,
+        0.2,
+        false,
+        true,
+    )
+    .expect("Las Palmas - Mindelo: no route");
+    println!(
+        "Las Palmas - Mindelo, 0.2 nm buffer {:8.1} nm",
+        r.distance_nm
+    );
+    if r.distance_nm > 870.0 {
+        failures.push(format!(
+            "Las Palmas - Mindelo: {:.1} nm at a 0.2 nm buffer",
+            r.distance_nm
+        ));
+    }
+    // A buffer must not send an ocean crossing along a coast: at a 1 nm
+    // buffer this route ran up the African coast to Guinea-Bissau, 6884.3 nm
+    // against 6789.0 nm without a buffer.
+    buffers.reset();
+    let r = compute_route(
+        &graph,
+        -33.9,
+        18.4333,
+        40.7,
+        -74.0167,
+        &coastline,
+        &knn,
+        &mut buffers,
+        1.0,
+        false,
+        true,
+    )
+    .expect("Cape Town - New York: no route");
+    println!("Cape Town - New York, 1 nm buffer {:8.1} nm", r.distance_nm);
+    if r.distance_nm > 6820.0 {
+        failures.push(format!(
+            "Cape Town - New York: {:.1} nm at a 1 nm buffer",
+            r.distance_nm
+        ));
+    }
+
     assert!(failures.is_empty(), "{failures:#?}");
 }

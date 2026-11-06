@@ -14,15 +14,44 @@ The planet graph file changes. Download it again with the new release, or rebuil
 - Three passages found with an audit of OpenStreetMap ferry routes. For each `route=ferry` way, the audit compares the ferry line with the route between its two ends; on the v0.10.0 graph 168 of 19,023 ferries have a much longer route, in 116 places. Poros Strait (res-11): Poros town to the eastern exit is 1.3 nm, was 12.2 nm around the island, and Poros to Hydra is 11.7 nm, was 20.5 nm. East River in New York (res-11), both channels at Roosevelt Island: East 34th Street to East 90th Street is 2.4 nm, was 217.6 nm around Long Island. Vistula Spit Canal (res-13, opened in 2022): Gdańsk Bay to the Vistula Lagoon is 2.7 nm, was 54.0 nm through the Strait of Baltiysk; it is a man-made canal, so `canals=false` closes it at the lock.
 - 65 more narrow sounds from the same audit, in the Stockholm and Turku archipelagos, Bohuslän, the Norwegian coast, Helsinki, Zadar, the Seto Inland Sea, Myanmar and the Faroe Islands. Each box covers one stretch of a ferry line that had no water cells. Its resolution comes from the narrowest width measured land to land across the line: res-11 from about 100 m, res-12 from 40 m and res-13 below that. Herttoniemi to Laajasalo in Helsinki (about 10 m) needs res-14. All 73 ferries in these places now pass the audit: the route is at most 1.5 times the ferry line, or at most 1 nm longer. Examples: Oldeide to Måløy 4.2 nm, was 21.0 nm; Malkenes to Rosendal 14.0 nm, was 40.5 nm; Kragerø to Tangane 3.7 nm, was 13.2 nm; Zadar to Sali 13.1 nm, was 21.8 nm; Hvannasund to Svínoy 4.9 nm, was 15.5 nm; Herttoniemi to Laajasalo 1.6 nm, was 12.2 nm. The boxes add cells only around the coast inside them: the 16 Stockholm boxes take a regional build from 176,473 to 403,203 nodes. Places where the missing water is not in the OSM coastline at all (mangrove channels at Boipeba and Paranaguá in Brazil) are left for later.
 
+### Fixed
+
+- Panama Canal: routes from west of Colón no longer go up the Chagres River and over Gatun Dam into Gatun Lake. The passage took every OSM water polygon that touches its box, and the box reached the river polygon below the dam, which joins the lake at the spillway. The box now starts east of the river, and these routes go through the locks (9.40°N 80.05°W to 8.80°N 79.45°W: 56.2 nm through the locks, was 53.5 nm over the dam). The reference test no longer exempts the area, and the README no longer lists it as a limitation.
+
+## [0.11.2] - 2026-11-06
+
+The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
+
+### Fixed
+
+- Ocean crossings that followed a coast at a shore buffer. Smoothing keeps the farthest node its probes find, and the probes double their step, so they jumped over single nodes far out in open water that were visible while the next stretch of coast was hidden. With a buffer this kept Cape Town to New York on the African coast as far as Guinea-Bissau: 6884.3 nm at a 1 nm buffer, against 6789.0 nm without a buffer. With a buffer, a search now looks for the shortest route over anchor nodes (the corners of the greedy pass and 128 evenly spaced raw nodes), and every leg must pass the same land and shore buffer check. The greedy route is always one of the options, so no route gets longer. Cape Town to New York is 6791.1 nm at a 1 nm buffer, and the planet reference test now checks it. On 45 routes in both directions at five buffers (450 results), 7 got shorter, none longer, and none got more land legs. Without a buffer nothing changes. With a 1 nm buffer, `asw bench` takes up to 14 ms more per route: 0 to 6 % on the four longest routes, and up to 2.3 times as long on routes that take a few milliseconds.
+- Two `asw bench` routes started or ended on land. The Kiel Canal route ended at 54.25°N 9.10°E, on farmland about 10 nm north of the canal, so it went out through the Eider and finished with a land leg (84.3 nm); it now ends in the Elbe off the Brunsbüttel locks (53.88°N 9.15°E) and runs through the canal (55.6 nm). The Dardanelles route started on land near Bolayır and went around the Gallipoli peninsula (45.1 nm); it now starts in the strait off Gelibolu (40.40°N 26.70°E) and runs through it (35.4 nm). Benchmark results for these two routes are not comparable with older runs.
+
+## [0.11.1] - 2026-11-05
+
+The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
+
+### Fixed
+
+- Corners in open water. Smoothing jumped to the farthest node it could see, so a route could turn far from the obstacle that forced the turn. A new pass moves each corner to a better node, and every change must pass the same land and shore buffer check. Las Palmas to Mindelo at a 0.2 nm buffer is 865.2 nm (was 912.8 nm), Rotterdam to Singapore 8234.2 nm (was 8289.4 nm) and Tokyo to Seattle 4237.6 nm (was 4287.8 nm). On 30 routes in both directions at five buffers, 248 of 300 results got shorter and none longer, and the results for the two directions of a route now differ by more than 2 % in one case (was 11). Routing takes about 5 to 15 % longer, under 130 ms on the longest benchmark route.
+
+## [0.11.0] - 2026-10-31
+
+The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
+
+### Added
+
+- `--graph-url` / `ASW_GRAPH_URL` accept the compressed `asw.graph.zst` (540 MB instead of 1.4 GB). The file is unpacked while downloading and must open as a graph, otherwise nothing is left behind. A plain URL download is now also checked (opened as a graph) and removed if it does not open.
 - Reference test for planet routes. Twenty-two routes from NGA Pub 151 (Distances Between Ports), eight of them across the Pacific, must match the published distance within 2 %; today all are within 1.2 %. Every water leg of these routes and of the two routes from #65 is also walked along its great circle and checked against Natural Earth 1:10m land, a coastline that does not come from OpenStreetMap: no point may lie 3 nm or more inside one land polygon. On the code before the great-circle fix this check finds five Pub 151 routes with a leg over land (Baja California, Jalisco, Kauai, Socotra, Long Island), although their distances were within 2 %. The test needs the planet graph and the Natural Earth land shapefile in `export/`: `cargo test --release -p asw-core --test reference_distances -- --ignored --nocapture` (`ASW_GRAPH` and `ASW_CHECK_LAND` override the paths).
 
 ### Fixed
 
-- Panama Canal: routes from west of Colón no longer go up the Chagres River and over Gatun Dam into Gatun Lake. The passage took every OSM water polygon that touches its box, and the box reached the river polygon below the dam, which joins the lake at the spillway. The box now starts east of the river, and these routes go through the locks (9.40°N 80.05°W to 8.80°N 79.45°W: 56.2 nm through the locks, was 53.5 nm over the dam). The reference test no longer exempts the area, and the README no longer lists it as a limitation.
+- `shore_buffer` no longer sends routes around a man-made canal (#69 — thanks to @MartinHoblisch for measuring it on every canal and for the fix). Every cell of a canal lies within the buffer, so with the penalty of up to 16× a route under 500 nm (no corridor) took the way around whenever it was shorter than the canal's penalised length. Above 500 nm the corridor kept the route in the canal, so a farther start could get a shorter route. The penalty is now off inside the corridor of each passage with a `cut`. For Suez and Panama the corridor also covers the Bitter Lakes, Gatun Lake and Limón Bay, so the buffer does not apply there either. Planet, 0.1 nm buffer: Elbe mouth to Kiel Bay 97 nm (was 409 nm), Lefkada 12 nm (was 37 nm); 0.3 nm: Cape Cod Canal 15 nm (was 102 nm). Narrow approaches outside a corridor keep the penalty: Privlaka at 0.6 nm and Cape May still go around.
 - Route geometry on long legs (#65 — thanks to @GLatourZ for measuring the problem on two ocean crossings). Smoothing and the direct-line shortcut tested a leg as a straight line in longitude and latitude, while `distance_nm` summed great-circle lengths between the same waypoints. On a leg of thousands of miles the two curves lie hundreds of miles apart, so the great circle between two returned waypoints could cross land (Saint-Nazaire to the Bahamas clipped Belle-Île, Panama to Japan ran through Mexico) and `distance_nm` was the length of a line that could not be sailed. A leg is now checked along its great circle every 20 nm, and the returned polyline is split to the same step, so great-circle, rhumb-line and straight-line readings of the geometry agree within 0.1 nm and `distance_nm` is the length of the returned polyline. Routes have more points (a transatlantic route has about 190 instead of 4); `smooth_hops` still counts the waypoints before the split. Planet: Miami to 30°N 140°E follows the Central American coast and is 9,024 nm (was 9,020 nm along a line through Mexico), Rotterdam to Singapore 8,289 nm (was 8,246 nm), New York to Southampton 3,048 nm (was 3,041 nm).
 
 ### Changed
 
+- The graph download stops after 2 minutes without data (was 1 hour), so a dropped connection gives an error soon. A slow but working connection is not affected, because the limit applies to each read.
 - Long routes are faster. The land check on a long leg scanned every coastline inside the leg's bounding box; it now scans only the 20 nm pieces. Planet: Rotterdam to Singapore 1.14 s → 0.44 s, Shanghai to Rotterdam 1.36 s → 0.74 s, New York to Southampton 323 ms → 215 ms, Cape Town to Rio de Janeiro 26 ms → 16 ms. Short routes are unchanged.
 
 ## [0.10.0] - 2026-10-04
@@ -275,6 +304,9 @@ The planet graph file is unchanged from 0.7.0 (format v4); the release carries t
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.11.2]: https://github.com/auto-sea-way/asw/compare/v0.11.1...v0.11.2
+[0.11.1]: https://github.com/auto-sea-way/asw/compare/v0.11.0...v0.11.1
+[0.11.0]: https://github.com/auto-sea-way/asw/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/auto-sea-way/asw/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/auto-sea-way/asw/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/auto-sea-way/asw/compare/v0.8.0...v0.8.1
