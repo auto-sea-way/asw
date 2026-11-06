@@ -340,23 +340,70 @@ pub fn smooth_indices(
         "shore_dist must be parallel to coords when a buffer is requested"
     );
 
-    let clear_leg = |i: usize, j: usize| -> bool {
-        let [i_lon, i_lat] = coords[i];
-        let [j_lon, j_lat] = coords[j];
-        let threshold = if use_buffer {
+    let threshold = |i: usize, j: usize| -> f64 {
+        if use_buffer {
             // ponytail: O(n) slice scan per probe; the coastline queries
-            // dwarf it. Sparse-table range-min if a profile ever says so.
+            // dwarf it (a sparse table measured no faster with the anchor
+            // search).
             let raw_min = shore_dist[i..=j].iter().min().copied();
             let raw_min_nm = raw_min.unwrap_or(u8::MAX) as f64 * crate::graph::SHORE_DIST_UNIT_NM;
             shore_buffer_nm.min(raw_min_nm)
         } else {
             0.0
-        };
+        }
+    };
+    let clear_leg = |i: usize, j: usize| -> bool {
+        let ([i_lon, i_lat], [j_lon, j_lat]) = (coords[i], coords[j]);
         leg_clear(
-            coastline, i_lon, i_lat, j_lon, j_lat, threshold, arctic, canals,
+            coastline,
+            i_lon,
+            i_lat,
+            j_lon,
+            j_lat,
+            threshold(i, j),
+            arctic,
+            canals,
         )
     };
+    let (mut result, mut land_segs) = greedy_pass(coords, coastline, &clear_leg, false);
+    refine_corners(&mut result, &mut land_segs, coords, &clear_leg);
 
+    // Greedy smoothing depends on its first corners and only sees the raw
+    // nodes its probes test, so with a shore buffer it can follow a coast
+    // that a single long leg would have crossed in open water (Cape Town to
+    // New York at a 1 nm buffer ran up the African coast, 95 nm too long).
+    // With a buffer, search for the shortest route over anchor points: the
+    // corners of this pass and evenly spaced raw nodes.
+    // ponytail: buffer only; without one it changed none of 225 test routes
+    // and cost up to 3x the smoothing time on short routes.
+    if use_buffer {
+        let greedy_cost = kept_len(coords, &result) + LAND_LEG_COST_NM * land_segs.len() as f64;
+        let (kept, land, cost) =
+            shortest_over_anchors(coords, &clear_leg, &[(&result, &land_segs)]);
+        if cost < greedy_cost - 1e-6 {
+            result = kept;
+            land_segs = land;
+            refine_corners(&mut result, &mut land_segs, coords, &clear_leg);
+        }
+    }
+
+    SmoothResult {
+        kept: result,
+        land_segs,
+    }
+}
+
+/// One greedy pass: from each kept node, keep the farthest node that
+/// `clear_leg` accepts, found by exponential probing and a binary search.
+/// With `scan_back` it also looks back from the end for a farther visible
+/// node, because visibility along a raw path has gaps that the probes jump
+/// over. Returns the kept indices and the legs that cross land.
+fn greedy_pass(
+    coords: &[[f64; 2]],
+    coastline: &CoastlineIndex<'_>,
+    clear_leg: &impl Fn(usize, usize) -> bool,
+    scan_back: bool,
+) -> (Vec<usize>, Vec<usize>) {
     let mut result = vec![0];
     let mut land_segs = Vec::new();
     let mut current_idx = 0;
@@ -420,6 +467,13 @@ pub fn smooth_indices(
             }
         }
 
+        if scan_back {
+            if let Some(j) = (v_lo + 1..end_idx).rev().find(|&j| clear(j)) {
+                v_lo = j;
+                v_lo_verified = true;
+            }
+        }
+
         // v_lo_verified is false only when the very first probe
         // (current_idx + 1) was blocked: v_lo was never verified clear and
         // the segment is kept anyway to make progress (land pin case).
@@ -436,12 +490,136 @@ pub fn smooth_indices(
         current_idx = v_lo;
     }
 
-    refine_corners(&mut result, &mut land_segs, coords, &clear_leg);
+    (result, land_segs)
+}
 
-    SmoothResult {
-        kept: result,
-        land_segs,
+/// About this many evenly spaced raw nodes join the anchors of
+/// `shortest_over_anchors`.
+const EVEN_ANCHORS: usize = 128;
+
+/// Land checks per anchor, cheapest candidates first, before the best known
+/// leg into it is taken.
+const ANCHOR_TRIES: usize = 5;
+
+/// An anchor leg is only tried when it saves at least this much against the
+/// best known way: smaller gains are left to `refine_corners`, and they would
+/// cost most of the land checks.
+const ANCHOR_MIN_GAIN_NM: f64 = 1.0;
+
+/// A leg over land (a pin on land) counts as this much longer, so a route
+/// keeps no more of them than it needs.
+const LAND_LEG_COST_NM: f64 = 1.0e6;
+
+/// Shortest route from the first to the last raw node over anchor nodes: the
+/// nodes of the `known` routes (kept indices and land legs, every leg known
+/// to pass or to be a forced land leg) plus evenly spaced raw nodes. For each
+/// anchor, the known legs into it set the price to beat, and the cheapest
+/// other anchors are tried with `clear` until one passes. The known routes
+/// are always possible, so the result is never longer than the shortest of
+/// them. Returns the kept indices, the land legs and the cost (length plus
+/// `LAND_LEG_COST_NM` per land leg).
+// ponytail: anchors and ANCHOR_TRIES bound the land checks; a route over all
+// raw nodes would be exact but needs O(n^2) of them.
+fn shortest_over_anchors(
+    coords: &[[f64; 2]],
+    clear: &impl Fn(usize, usize) -> bool,
+    known: &[(&[usize], &[usize])],
+) -> (Vec<usize>, Vec<usize>, f64) {
+    let n = coords.len();
+    let len =
+        |i: usize, j: usize| haversine_nm(coords[i][1], coords[i][0], coords[j][1], coords[j][0]);
+    let mut anchors: Vec<usize> = (0..n)
+        .step_by(n.div_ceil(EVEN_ANCHORS).max(1))
+        .chain([n - 1])
+        .collect();
+    for (kept, _) in known {
+        anchors.extend_from_slice(kept);
     }
+    anchors.sort_unstable();
+    anchors.dedup();
+    let at = |node: usize| {
+        anchors
+            .binary_search(&node)
+            .expect("known node is an anchor")
+    };
+    let mut known_into: std::collections::HashMap<usize, Vec<(usize, bool)>> =
+        std::collections::HashMap::new();
+    for (kept, land) in known {
+        for (k, w) in kept.windows(2).enumerate() {
+            known_into
+                .entry(w[1])
+                .or_default()
+                .push((w[0], land.contains(&k)));
+        }
+    }
+
+    // Best known route; a leg is only tried when a route through it, with a
+    // straight line on to the end, could still beat this by the minimum gain.
+    let bound = known
+        .iter()
+        .map(|(kept, land)| kept_len(coords, kept) + LAND_LEG_COST_NM * land.len() as f64)
+        .fold(f64::INFINITY, f64::min);
+    let m = anchors.len();
+    let mut cost = vec![f64::INFINITY; m];
+    let mut pred = vec![(usize::MAX, false); m];
+    cost[0] = 0.0;
+    for b in 1..m {
+        let j = anchors[b];
+        let mut best = f64::INFINITY;
+        let mut best_pred = (usize::MAX, false);
+        for &(i, land) in known_into.get(&j).map(Vec::as_slice).unwrap_or(&[]) {
+            let a = at(i);
+            let c = cost[a] + len(i, j) + if land { LAND_LEG_COST_NM } else { 0.0 };
+            if c < best {
+                best = c;
+                best_pred = (a, land);
+            }
+        }
+        let to_end = len(j, n - 1);
+        let mut tries: Vec<(f64, usize)> = (0..b)
+            .filter(|&a| cost[a].is_finite())
+            .map(|a| (cost[a] + len(anchors[a], j), a))
+            .filter(|&(c, _)| {
+                c < best - ANCHOR_MIN_GAIN_NM && c + to_end < bound - ANCHOR_MIN_GAIN_NM
+            })
+            .collect();
+        tries.sort_by(|x, y| x.0.total_cmp(&y.0));
+        for &(c, a) in tries.iter().take(ANCHOR_TRIES) {
+            if clear(anchors[a], j) {
+                best = c;
+                best_pred = (a, false);
+                break;
+            }
+        }
+        cost[b] = best;
+        pred[b] = best_pred;
+    }
+
+    let mut path = vec![(m - 1, false)];
+    while path.last().unwrap().0 != 0 {
+        let (a, land) = pred[path.last().unwrap().0];
+        path.last_mut().unwrap().1 = land;
+        path.push((a, false));
+    }
+    path.reverse();
+    let kept: Vec<usize> = path.iter().map(|&(a, _)| anchors[a]).collect();
+    // path[k + 1].1 marks the leg that ends at the (k + 1)-th kept node
+    let land_segs: Vec<usize> = (0..path.len() - 1).filter(|&k| path[k + 1].1).collect();
+    (kept, land_segs, cost[m - 1])
+}
+
+/// Length in nm of the polyline through `coords` at the `kept` indices.
+fn kept_len(coords: &[[f64; 2]], kept: &[usize]) -> f64 {
+    kept.windows(2)
+        .map(|w| {
+            haversine_nm(
+                coords[w[0]][1],
+                coords[w[0]][0],
+                coords[w[1]][1],
+                coords[w[1]][0],
+            )
+        })
+        .sum()
 }
 
 /// Passes of `refine_corners`: moving a corner can open a better place for
@@ -641,11 +819,28 @@ fn leg_clear(
     canals: bool,
 ) -> bool {
     !any_piece(lon1, lat1, lon2, lat2, |a, b, c, d| {
-        segment_blocked(a, b, c, d, arctic, canals)
-            || coastline.crosses_land(a, b, c, d)
-            || (threshold > 0.0
-                && coastline.segment_min_distance_nm(a, b, c, d, threshold) < threshold - 1e-9)
+        piece_blocked(coastline, a, b, c, d, threshold, arctic, canals)
     })
+}
+
+/// Is one piece of a leg (at most `LEG_STEP_NM`) blocked: closed area,
+/// coastline crossing, or closer to the coast than `threshold`?
+#[allow(clippy::too_many_arguments)]
+fn piece_blocked(
+    coastline: &CoastlineIndex<'_>,
+    lon1: f64,
+    lat1: f64,
+    lon2: f64,
+    lat2: f64,
+    threshold: f64,
+    arctic: bool,
+    canals: bool,
+) -> bool {
+    segment_blocked(lon1, lat1, lon2, lat2, arctic, canals)
+        || coastline.crosses_land(lon1, lat1, lon2, lat2)
+        || (threshold > 0.0
+            && coastline.segment_min_distance_nm(lon1, lat1, lon2, lat2, threshold)
+                < threshold - 1e-9)
 }
 
 /// Can the great circle between the requested points be used as the route?
@@ -1139,6 +1334,29 @@ mod tests {
             (-0.1, 0.1),
             (-0.1, -0.1),
         ]])
+    }
+
+    #[test]
+    fn shortest_over_anchors_mixes_the_known_routes() {
+        // Two known zigzag routes, and a straight way through node 2 that
+        // only the land checks know about.
+        let coords = [[0.0, 0.0], [1.0, 1.0], [2.0, 0.0], [3.0, 1.0], [4.0, 0.0]];
+        let clear = |i: usize, j: usize| matches!((i, j), (0, 2) | (2, 4));
+        let (kept, land, cost) =
+            shortest_over_anchors(&coords, &clear, &[(&[0, 1, 4], &[]), (&[0, 3, 4], &[])]);
+        assert_eq!(kept, vec![0, 2, 4]);
+        assert!(land.is_empty());
+        assert!((cost - kept_len(&coords, &kept)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shortest_over_anchors_keeps_a_forced_land_leg_flagged() {
+        // The only way out of node 0 is a known land leg; it stays flagged.
+        let coords = [[0.0, 0.0], [0.1, 0.0], [1.0, 0.5], [2.0, 0.0]];
+        let clear = |i: usize, j: usize| i >= 1 && j > i;
+        let (kept, land, _) = shortest_over_anchors(&coords, &clear, &[(&[0, 1, 2, 3], &[0])]);
+        assert_eq!(kept, vec![0, 1, 3]);
+        assert_eq!(land, vec![0]);
     }
 
     #[test]
