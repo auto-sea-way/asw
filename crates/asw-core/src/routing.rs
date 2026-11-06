@@ -365,7 +365,7 @@ pub fn smooth_indices(
             canals,
         )
     };
-    let (mut result, mut land_segs) = greedy_pass(coords, coastline, &clear_leg, false);
+    let (mut result, mut land_segs) = greedy_pass(coords, coastline, &clear_leg);
     refine_corners(&mut result, &mut land_segs, coords, &clear_leg);
 
     // Greedy smoothing depends on its first corners and only sees the raw
@@ -395,14 +395,11 @@ pub fn smooth_indices(
 
 /// One greedy pass: from each kept node, keep the farthest node that
 /// `clear_leg` accepts, found by exponential probing and a binary search.
-/// With `scan_back` it also looks back from the end for a farther visible
-/// node, because visibility along a raw path has gaps that the probes jump
-/// over. Returns the kept indices and the legs that cross land.
+/// Returns the kept indices and the legs that cross land.
 fn greedy_pass(
     coords: &[[f64; 2]],
     coastline: &CoastlineIndex<'_>,
     clear_leg: &impl Fn(usize, usize) -> bool,
-    scan_back: bool,
 ) -> (Vec<usize>, Vec<usize>) {
     let mut result = vec![0];
     let mut land_segs = Vec::new();
@@ -463,13 +460,6 @@ fn greedy_pass(
                 v_hi = mid;
             } else {
                 v_lo = mid;
-                v_lo_verified = true;
-            }
-        }
-
-        if scan_back {
-            if let Some(j) = (v_lo + 1..end_idx).rev().find(|&j| clear(j)) {
-                v_lo = j;
                 v_lo_verified = true;
             }
         }
