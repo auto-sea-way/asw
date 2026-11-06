@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-11-06
+
+The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
+
 ### Fixed
 
 - Ocean crossings that followed a coast at a shore buffer. Smoothing keeps the farthest node its probes find, and the probes double their step, so they jumped over single nodes far out in open water that were visible while the next stretch of coast was hidden. With a buffer this kept Cape Town to New York on the African coast as far as Guinea-Bissau: 6884.3 nm at a 1 nm buffer, against 6789.0 nm without a buffer. With a buffer, a search now looks for the shortest route over anchor nodes (the corners of the greedy pass and 128 evenly spaced raw nodes), and every leg must pass the same land and shore buffer check. The greedy route is always one of the options, so no route gets longer. Cape Town to New York is 6791.1 nm at a 1 nm buffer, and the planet reference test now checks it. On 45 routes in both directions at five buffers (450 results), 7 got shorter, none longer, and none got more land legs. Without a buffer nothing changes. With a 1 nm buffer, `asw bench` takes up to 14 ms more per route: 0 to 6 % on the four longest routes, and up to 2.3 times as long on routes that take a few milliseconds.
@@ -289,6 +293,7 @@ The planet graph file is unchanged from 0.7.0 (format v4); the release carries t
 - 41% peak memory reduction during server init (6.4 GB → 3.8 GB)
 - Pre-built statically-linked musl binaries in Docker images
 
+[0.11.2]: https://github.com/auto-sea-way/asw/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/auto-sea-way/asw/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/auto-sea-way/asw/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/auto-sea-way/asw/compare/v0.9.0...v0.10.0
