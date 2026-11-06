@@ -33,10 +33,10 @@ const ROUTES: &[(&str, f64, f64, f64, f64)] = &[
     // Passage transits (short routes forcing passage edges)
     ("Suez Canal", 29.50, 32.85, 31.50, 32.00),
     ("Panama Canal", 8.80, -79.45, 9.40, -80.05),
-    ("Kiel Canal", 54.40, 10.20, 54.25, 9.10),
+    ("Kiel Canal", 54.40, 10.20, 53.88, 9.15),
     ("Corinth Canal", 37.95, 22.95, 37.88, 23.05),
     ("Bosphorus", 40.85, 28.90, 41.35, 29.15),
-    ("Dardanelles", 40.50, 26.72, 40.00, 26.15),
+    ("Dardanelles", 40.40, 26.70, 40.00, 26.15),
     ("Malacca Strait", 1.30, 103.90, 1.15, 103.45),
     ("Singapore Strait", 1.30, 103.80, 1.22, 104.20),
     ("Messina Strait", 38.30, 15.65, 38.05, 15.67),
