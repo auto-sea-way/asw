@@ -687,4 +687,87 @@ pub static PASSAGES: &[Passage] = &[
         geofabrik_url: None,
         cut: None,
     },
+    // Narrow channels to ports found with 500 random port pairs: the fjord,
+    // bay or river behind each one had no cells, so routes to the port ended
+    // with a land leg. The comment is the narrowest width of the widest water
+    // path from the port to the open sea.
+    Passage {
+        name: "Kirke Narrows, Chile",
+        corridor: (-73.0149, -52.0612, -73.0027, -52.0558),
+        leaf_resolution: 11, // ~125m, the way into Ultima Esperanza and Puerto Natales
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Hario Strait, Japan",
+        corridor: (129.7516, 33.0502, 129.7626, 33.0570),
+        leaf_resolution: 11, // ~170m, the way into Omura Bay
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Oder at Szczecin, Poland",
+        corridor: (14.5813, 53.4279, 14.6386, 53.5211),
+        leaf_resolution: 11, // ~170m
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Piast Canal, Poland",
+        // A sea-level fairway from the Szczecin Lagoon to the Swina, with no
+        // locks, so `canals=false` keeps it open (like the Houston Ship Channel).
+        corridor: (14.2799, 53.8059, 14.3432, 53.8526),
+        leaf_resolution: 11, // ~170m
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Randers Fjord, Denmark",
+        corridor: (10.0475, 56.4547, 10.2223, 56.4851),
+        leaf_resolution: 12, // ~68m
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Iddefjord, Norway",
+        corridor: (11.2391, 59.0896, 11.3810, 59.1203),
+        leaf_resolution: 12, // ~87m, Svinesund to Halden
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Svelvik, Norway",
+        corridor: (10.4062, 59.6077, 10.4175, 59.6194),
+        leaf_resolution: 11, // ~145m, the way into the Drammensfjord
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Drammen, Norway",
+        corridor: (10.2180, 59.7291, 10.2433, 59.7381),
+        leaf_resolution: 11, // ~144m, the river mouth at the port
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Banes Bay, Cuba",
+        corridor: (-75.6855, 20.8767, -75.6708, 20.8857),
+        leaf_resolution: 11, // ~129m, the bay entrance
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Morlaix River, France",
+        corridor: (-3.8640, 48.5857, -3.8336, 48.6234),
+        leaf_resolution: 13, // ~34m
+        geofabrik_url: None,
+        cut: None,
+    },
+    Passage {
+        name: "Aura River, Finland",
+        corridor: (22.1884, 60.4327, 22.2243, 60.4479),
+        leaf_resolution: 12, // ~72m, Turku harbour
+        geofabrik_url: None,
+        cut: None,
+    },
 ];
