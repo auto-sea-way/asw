@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Two `asw bench` routes started or ended on land. The Kiel Canal route ended at 54.25°N 9.10°E, on farmland about 10 nm north of the canal, so it went out through the Eider and finished with a land leg (84.3 nm); it now ends in the Elbe off the Brunsbüttel locks (53.88°N 9.15°E) and runs through the canal (55.6 nm). The Dardanelles route started on land near Bolayır and went around the Gallipoli peninsula (45.1 nm); it now starts in the strait off Gelibolu (40.40°N 26.70°E) and runs through it (35.4 nm). Benchmark results for these two routes are not comparable with older runs.
+
 ## [0.11.1] - 2026-11-05
 
 The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
