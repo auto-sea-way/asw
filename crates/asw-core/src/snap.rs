@@ -70,7 +70,11 @@ impl RoutingGraph {
     /// requested. A k-level is never split across steps (each step's bound is
     /// a whole ring count), so "finish the whole current k before returning"
     /// holds at doubling boundaries too.
-    fn search_resolution(
+    ///
+    /// `nodes` gives the nodes that belong to one ring cell: the cell itself
+    /// (`exact`), or its descendants at the fine resolutions.
+    #[allow(clippy::too_many_arguments)]
+    fn search_resolution<I: IntoIterator<Item = u32>>(
         &self,
         ll: &h3o::LatLng,
         lat: f64,
@@ -78,6 +82,7 @@ impl RoutingGraph {
         res_u8: u8,
         k_max: u32,
         best: &mut Option<(u32, f64)>,
+        nodes: impl Fn(h3o::CellIndex) -> I,
     ) {
         let res = match h3o::Resolution::try_from(res_u8) {
             Ok(r) => r,
@@ -108,7 +113,7 @@ impl RoutingGraph {
                     found_at_current_k = false;
                 }
 
-                if let Some(node_id) = self.h3_lookup(u64::from(neighbor)) {
+                for node_id in nodes(neighbor) {
                     found_at_current_k = true;
                     let (nlat, nlon) = self.node_pos(node_id);
                     let dist = crate::h3::haversine_nm(lat, lon, nlat, nlon);
@@ -131,6 +136,25 @@ impl RoutingGraph {
         }
     }
 
+    /// Nodes at res 10..=14 that descend from `cell`. H3 ids sort by
+    /// resolution first and then by digits, so the descendants at one
+    /// resolution are one run in the sorted node array, from the centre
+    /// child (all digits 0) to the last child.
+    fn fine_nodes_under(&self, cell: h3o::CellIndex) -> impl Iterator<Item = u32> + '_ {
+        let h3s = self.node_h3s();
+        (10..=14u8).flat_map(move |r| {
+            let res = h3o::Resolution::try_from(r).expect("valid resolution");
+            let first = cell.center_child(res).map_or(u64::MAX, u64::from);
+            let last = cell
+                .child_at(cell.children_count(res).saturating_sub(1), res)
+                .map_or(0, u64::from);
+            let a = h3s.partition_point(|&h| h < first);
+            (a..h3s.len())
+                .take_while(move |&i| h3s[i] <= last)
+                .map(|i| i as u32)
+        })
+    }
+
     /// Find the nearest node via two-pass adaptive k-ring expansion. The graph
     /// is pruned to one connected component at build time, so any node is
     /// routable.
@@ -143,6 +167,7 @@ impl RoutingGraph {
     pub fn nearest_node(&self, lat: f64, lon: f64) -> Option<(u32, f64)> {
         let ll = h3o::LatLng::new(lat, lon).ok()?;
         let mut best: Option<(u32, f64)> = None;
+        let exact = |c: h3o::CellIndex| self.h3_lookup(u64::from(c));
 
         // Pass 1: fast scan with small k
         for res_u8 in (3..=14).rev() {
@@ -152,17 +177,31 @@ impl RoutingGraph {
                     continue;
                 }
             }
-            self.search_resolution(&ll, lat, lon, res_u8, 3, &mut best);
+            self.search_resolution(&ll, lat, lon, res_u8, 3, &mut best, exact);
         }
 
-        // Pass 2: adaptive k at common resolutions (3-9). Passage corridors (10-14)
-        // have tiny cells where d/edge explodes — they're covered by pass 1's k=3.
+        // Pass 2: adaptive k at common resolutions (3-9), after a search for
+        // res 10-14 cells as descendants of res-9 ring cells. Pass 1 sees those
+        // tiny cells only within ~3 rings, so a pin on land next to a narrow
+        // channel would snap to a coarse node miles away.
         // Skip entirely if pass 1 found a node within 0.5nm (excellent snap).
         let needs_pass2 = match best {
             Some((_, d)) => d >= 0.5,
             None => true,
         };
         if needs_pass2 {
+            // Up to 10 res-9 rings (~1.4 nm). Skip it when the res-6 cells
+            // around the point hold no fine cells (open water, inland).
+            let around: Vec<h3o::CellIndex> = ll.to_cell(h3o::Resolution::Six).grid_disk(1);
+            if around
+                .into_iter()
+                .any(|c| self.fine_nodes_under(c).next().is_some())
+            {
+                let k = best.map_or(10, |(_, d)| ((d / Self::H3_EDGE_NM[9]) as u32 + 2).min(10));
+                self.search_resolution(&ll, lat, lon, 9, k, &mut best, |c| {
+                    self.fine_nodes_under(c)
+                });
+            }
             for res_u8 in (3..=9).rev() {
                 let edge_nm = Self::H3_EDGE_NM[res_u8 as usize];
                 if let Some((_, d)) = best {
@@ -179,7 +218,7 @@ impl RoutingGraph {
                 } else {
                     Self::k_max(res_u8) // No candidate yet: full search
                 };
-                self.search_resolution(&ll, lat, lon, res_u8, k_limit, &mut best);
+                self.search_resolution(&ll, lat, lon, res_u8, k_limit, &mut best, exact);
             }
         }
 
@@ -196,7 +235,7 @@ impl RoutingGraph {
         // once a step yields a match (typically k≈12 in practice), so this
         // usually walks a fraction of the full 7,651-cell k=50 disk (up to ~5x
         // the minimal needed disk when a hit lands just past a step bound).
-        self.search_resolution(&ll, lat, lon, 3, 50, &mut best);
+        self.search_resolution(&ll, lat, lon, 3, 50, &mut best, exact);
 
         best
     }
@@ -490,5 +529,21 @@ mod tests {
         let (node, d) = g.nearest_node(44.6929, 14.3921).unwrap();
         assert_eq!(g.node_h3(node), u64::from(fine));
         assert!(d < 0.002, "{d}");
+    }
+
+    #[test]
+    fn finds_fine_cells_beyond_three_rings() {
+        // A port pin on land 0.3 nm from a res-12 channel cell, with the
+        // nearest res-9 cell 2 nm away (Turku in a regional build).
+        let (lat, lon) = (60.45, 22.23);
+        let channel = h3o::LatLng::new(lat + 0.005, lon)
+            .unwrap()
+            .to_cell(h3o::Resolution::Twelve);
+        let bay = h3o::LatLng::new(lat - 0.033, lon)
+            .unwrap()
+            .to_cell(h3o::Resolution::Nine);
+        let g = chain_graph(&[u64::from(channel), u64::from(bay)]);
+        let (node, d) = g.nearest_node(lat, lon).unwrap();
+        assert_eq!(g.node_h3(node), u64::from(channel), "snapped {d} nm away");
     }
 }
