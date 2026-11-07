@@ -21,10 +21,15 @@ fn in_passage_corridor(cell: CellIndex, corridors: &[(f64, f64, f64, f64)]) -> b
         return false;
     }
     let (lat, lon) = cell_center(cell);
+    let m_lat = 2.0 * cell_radius_deg(cell);
+    let m_lon = m_lat / lat.to_radians().cos().max(0.01);
     corridors
         .iter()
         .any(|&(min_lon, min_lat, max_lon, max_lat)| {
-            lon >= min_lon && lon <= max_lon && lat >= min_lat && lat <= max_lat
+            lon >= min_lon - m_lon
+                && lon <= max_lon + m_lon
+                && lat >= min_lat - m_lat
+                && lat <= max_lat + m_lat
         })
 }
 
@@ -546,6 +551,31 @@ mod tests {
         let (zone, normal) = split_zone_candidates(vec![child, outside], &zone_lookup);
         assert_eq!(zone, vec![(child, 12)]);
         assert_eq!(normal, vec![outside]);
+    }
+
+    /// H3 descendants reach beyond their ancestor's hexagon, so a cell whose
+    /// centre lies outside a narrow corridor can still own the water inside
+    /// it. Every ancestor of a cell in the corridor must be protected, or the
+    /// cascade drops it as land and the channel gets no cells (Randers Fjord).
+    #[test]
+    fn corridor_protects_every_ancestor_of_its_cells() {
+        let corridor = (10.10, 56.460, 10.12, 56.461); // ~110 m tall
+        let res12 = Resolution::try_from(12).unwrap();
+        let cells = generate_covering_cells(Some(corridor), res12).expect("covering");
+        assert!(!cells.is_empty());
+        for cell in cells {
+            let (lat, lon) = cell_center(cell);
+            if !(lon >= corridor.0 && lon <= corridor.2 && lat >= corridor.1 && lat <= corridor.3) {
+                continue;
+            }
+            for r in 4..12 {
+                let ancestor = cell.parent(Resolution::try_from(r).unwrap()).unwrap();
+                assert!(
+                    in_passage_corridor(ancestor, &[corridor]),
+                    "res-{r} ancestor of {cell} not protected"
+                );
+            }
+        }
     }
 
     #[test]
