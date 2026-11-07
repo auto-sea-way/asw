@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Points next to a narrow channel snapped to a coarse node far away. `nearest_node` searched the cells at res 10 to 14 only three rings around the point (about 0.2 nm at res 10 and 0.01 nm at res 13). So a port pin on land 0.2 to 0.5 nm from a channel in a passage snapped to a node up to 3 nm away, and the route started with a long land leg (Morlaix, Turku and Stockholm, found with 500 random port pairs). When nothing is closer than 0.5 nm, it now also searches these cells as children of res-9 cells, up to about 1.4 nm away. Of the 1,081 Natural Earth ports, 918 have a node within 2 nm. 862 of them now snap to the nearest node (679 before), and 1 is more than 0.5 nm off (39 before, up to 4.4 nm). In the planet reference test five routes change by 0.1 to 1.5 nm. Short `asw bench` routes with endpoints on land take up to 0.3 ms more, because they now start at a shore cell and A* visits more nodes.
+
 ## [0.11.2] - 2026-11-06
 
 The planet graph file is unchanged from 0.10.0 (format v5); the release carries the same `asw.graph`.
