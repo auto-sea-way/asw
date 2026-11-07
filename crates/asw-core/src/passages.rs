@@ -229,6 +229,30 @@ pub static PASSAGES: &[Passage] = &[
         ),
         cut: Some((-75.70, 39.50, -75.68, 39.58)),
     },
+    // The OSM coastline closes across the Elk River mouth, so the river and
+    // Back Creek, the west end of the C&D Canal, are land. The river water is
+    // only in the Maryland extract. A separate passage with no cut, so the
+    // canal's shore penalty exemption stays inside the canal box.
+    Passage {
+        name: "Elk River and Back Creek",
+        corridor: (-75.90, 39.49, -75.85, 39.53),
+        leaf_resolution: 12,
+        geofabrik_url: Some(
+            "https://download.geofabrik.de/north-america/us/maryland-latest.osm.pbf",
+        ),
+        cut: None,
+    },
+    // In OSM the canal polygon stops 49 m short of the Delaware River at
+    // Reedy Point, so the east end connects through the Delaware City Branch
+    // Channel, 35 m wide at its narrowest. Its water comes with the canal's
+    // Delaware extract.
+    Passage {
+        name: "Delaware City Branch Channel",
+        corridor: (-75.600, 39.556, -75.585, 39.580),
+        leaf_resolution: 13,
+        geofabrik_url: None,
+        cut: None,
+    },
     // Narrow sounds found by the ferry-route audit: OSM route=ferry lines whose
     // route was much longer than the ferry line. One box per blocked stretch;
     // the comment is the narrowest width measured land to land along the line.
