@@ -1,6 +1,7 @@
 //! Land polygon R-tree used only at build time.
 
-use geo::algorithm::bool_ops::BooleanOps;
+use geo::algorithm::bool_ops::{BooleanOps, FillRule};
+use geo::algorithm::orient::{Direction, Orient};
 use geo::{BoundingRect, Contains, Coord, Intersects, LineString, MultiPolygon, Polygon};
 use rayon::prelude::*;
 use rstar::{Envelope, RTree, RTreeObject, AABB};
@@ -165,9 +166,21 @@ impl LandIndex {
                 if nearby_water.is_empty() {
                     return vec![lp];
                 }
-                // Subtract only the nearby water polygons
-                let water_multi = MultiPolygon::new(nearby_water.into_iter().cloned().collect());
-                let diff = lp.polygon.difference(&water_multi);
+                // Subtract only the nearby water polygons. Both sides get the
+                // same orientation and the non-zero rule: with the default
+                // even-odd rule a polygon that two passages bring twice (once
+                // per extract), or the overlap of two water polygons, counts
+                // twice and stays land.
+                let water_multi = MultiPolygon::new(
+                    nearby_water
+                        .into_iter()
+                        .map(|p| p.orient(Direction::Default))
+                        .collect(),
+                );
+                let diff = lp
+                    .polygon
+                    .orient(Direction::Default)
+                    .difference_with_fill_rule(&water_multi, FillRule::NonZero);
                 diff.into_iter().map(LandPolygon::new).collect::<Vec<_>>()
             })
             .collect();
@@ -226,24 +239,43 @@ fn shift_polygon(poly: &Polygon<f64>, dx: f64) -> Polygon<f64> {
 mod tests {
     use super::*;
 
+    fn square(x0: f64, x1: f64, y0: f64, y1: f64) -> Polygon<f64> {
+        Polygon::new(
+            LineString::new(vec![
+                Coord { x: x0, y: y0 },
+                Coord { x: x1, y: y0 },
+                Coord { x: x1, y: y1 },
+                Coord { x: x0, y: y1 },
+                Coord { x: x0, y: y0 },
+            ]),
+            vec![],
+        )
+    }
+
+    /// Two passages can bring the same OSM polygon from two extracts (the
+    /// C&D Canal is in the Delaware and the Maryland extract), next to a
+    /// polygon that shares an edge with it (the Elk River). All of it must
+    /// become water, including the shared edge.
+    #[test]
+    fn subtract_water_handles_duplicate_and_touching_polygons() {
+        let mut index = LandIndex::new(vec![LandPolygon::new(square(0.0, 10.0, 0.0, 10.0))]);
+        let river = square(2.0, 5.0, 2.0, 8.0);
+        let canal = square(5.0, 8.0, 2.0, 8.0);
+        index.subtract_water(&[canal.clone(), river, canal]);
+        for (x, y) in [(3.0, 5.0), (5.0, 5.0), (7.0, 5.0)] {
+            assert!(
+                !index.intersects_polygon(&square(x - 0.01, x + 0.01, y - 0.01, y + 0.01)),
+                "land left at ({x}, {y}): {:?}",
+                index.polygons()
+            );
+        }
+    }
+
     /// `cell_polygon` (h3.rs) unwraps transmeridian cells into a compact ring whose
     /// longitudes may fall slightly outside [-180, 180]. LandIndex queries must still
     /// find land on either physical side of the seam for such a polygon.
     #[test]
     fn land_index_intersects_polygon_handles_unwrapped_transmeridian_ring() {
-        fn square(x0: f64, x1: f64, y0: f64, y1: f64) -> Polygon<f64> {
-            Polygon::new(
-                LineString::new(vec![
-                    Coord { x: x0, y: y0 },
-                    Coord { x: x1, y: y0 },
-                    Coord { x: x1, y: y1 },
-                    Coord { x: x0, y: y1 },
-                    Coord { x: x0, y: y0 },
-                ]),
-                vec![],
-            )
-        }
-
         // Simulate an unwrapped transmeridian cell polygon straddling the seam: a raw
         // vertex at -179.5 becomes 180.5 once unwrapped, giving a continuous ring
         // spanning lon 179.5..180.5.
