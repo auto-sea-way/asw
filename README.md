@@ -34,7 +34,7 @@ You run it yourself: one binary and one graph file. Routing happens on your own 
 
 ```bash
 # Start the routing server (graph file included in image)
-docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2-full
+docker run -e ASW_API_KEY=changeme -p 3000:3000 ghcr.io/auto-sea-way/asw:0.12.0-full
 ```
 
 Wait for the `/ready` endpoint to return 200 (a few seconds while the graph file is mapped and read in), then query a route:
@@ -64,7 +64,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 | | auto-sea-way | [scgraph](https://github.com/connor-makowski/scgraph) | [searoute-py](https://github.com/genthalili/searoute-py) | [searoute-ts](https://github.com/mayurrawte/searoute-ts) | [eurostat/searoute](https://github.com/eurostat/searoute) | [@arcnautical/maritime-routing](https://github.com/arcnautical/maritime-routing) | Commercial SaaS APIs |
 |---|---|---|---|---|---|---|---|
-| **Routing graph** | Generated from OSM land polygons (~39M cells) | marnet geograph (from searoute, ~11K nodes) | MARNET shipping lanes (~4K lanes, ~10K points) | MARNET, 100 km by default (20 km tested) | MARNET 5 to 100 km (up to ~72K points) | 0.05° grid from OSM water (~5.5 km) | Proprietary |
+| **Routing graph** | Generated from OSM land polygons (~41M cells) | marnet geograph (from searoute, ~11K nodes) | MARNET shipping lanes (~4K lanes, ~10K points) | MARNET, 100 km by default (20 km tested) | MARNET 5 to 100 km (up to ~72K points) | 0.05° grid from OSM water (~5.5 km) | Proprietary |
 | **Coastline detail** | Adaptive res-3 to res-14 | None, routes along lane waypoints | None, fixed lanes | None, fixed lanes | None, fixed lanes | Grid cells of ~5.5 km | Varies |
 | **Narrow passages** | Suez, Panama, Kiel, Corinth, Bosphorus and more | Only if in the network | Approximate | Approximate | Approximate | Forced grid cells for some | Usually yes |
 | **Arbitrary coordinates** | Yes, exact start and end | Joins the nearest network node | Joins the nearest network node | Joins the nearest network node | Joins the nearest network node | Yes, straight lines where it finds no path | Varies |
@@ -80,7 +80,7 @@ Returns a GeoJSON LineString. See [API Endpoints](#api-endpoints) for all availa
 
 ## Benchmarks
 
-On 5 and 6 November 2026 auto-sea-way was compared with the five open source routers above on 45 routes: the 23 benchmark routes of `asw bench` and 22 port pairs from NGA Pub 151, *Distances Between Ports*. All lines were measured by the same code, from the requested start to the requested end, and checked for land against the OpenStreetMap land polygons and Natural Earth. A line that goes over land was not compared. auto-sea-way had the shortest line on water on 40 of the 45 routes and on 15 of the 16 routes under 200 nm, and it was the closest to Pub 151 on 15 of the 22 pairs. scgraph and searoute-py are much faster, and all five are much smaller than the 1.43 GB graph. The [benchmarks page](https://auto-sea-way.github.io/benchmarks.html) has the method, the numbers for every route, a map to compare the routes and the speed tables of `asw bench`.
+On 5 and 6 November 2026 auto-sea-way was compared with the five open source routers above on 45 routes: the 23 benchmark routes of `asw bench` and 22 port pairs from NGA Pub 151, *Distances Between Ports*. All lines were measured by the same code, from the requested start to the requested end, and checked for land against the OpenStreetMap land polygons and Natural Earth. A line that goes over land was not compared. auto-sea-way had the shortest line on water on 40 of the 45 routes and on 15 of the 16 routes under 200 nm, and it was the closest to Pub 151 on 15 of the 22 pairs. scgraph and searoute-py are much faster, and all five are much smaller than the 1.47 GB graph. The [benchmarks page](https://auto-sea-way.github.io/benchmarks.html) has the method, the numbers for every route, a map to compare the routes and the speed tables of `asw bench`.
 
 `asw bench` writes the latest local run to [benchmarks/BENCHMARKS.md](benchmarks/BENCHMARKS.md) and the routes to [bench-routes.geojson](benchmarks/bench-routes.geojson). Routes longer than 500 nm first find their way on the coarse graph and then search only a corridor around it; the three ocean crossings take 0.36 to 0.74 s. Graphs in an older format must be rebuilt: older files are rejected at load time.
 
@@ -112,26 +112,26 @@ Hosted on [GitHub Container Registry](https://ghcr.io/auto-sea-way/asw):
 
 | Image | Tag | Description |
 |-------|-----|-------------|
-| `ghcr.io/auto-sea-way/asw` | `latest`, `0.11.2` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
-| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.11.2-full` | Full image — graph file included (~1.5 GB) |
+| `ghcr.io/auto-sea-way/asw` | `latest`, `0.12.0` | Slim image — bring your own graph file or auto-download via `ASW_GRAPH_URL` |
+| `ghcr.io/auto-sea-way/asw` | `latest-full`, `0.12.0-full` | Full image — graph file included (~1.5 GB) |
 
 Both images are available for `linux/amd64` and `linux/arm64`.
 
 ```bash
 # Full image — zero config, graph included (~1.5 GB)
-docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2-full
+docker run -e ASW_API_KEY=your-secret -p 3000:3000 ghcr.io/auto-sea-way/asw:0.12.0-full
 
 # Slim image — auto-download graph on first start (cached in volume)
 docker run -e ASW_API_KEY=your-secret \
-  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.11.2/asw.graph.zst \
-  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2
+  -e ASW_GRAPH_URL=https://github.com/auto-sea-way/asw/releases/download/v0.12.0/asw.graph.zst \
+  -v asw-data:/data -p 3000:3000 ghcr.io/auto-sea-way/asw:0.12.0
 
 # Slim image — mounted graph file
 docker run -e ASW_API_KEY=your-secret \
-  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.11.2
+  -v /path/to/asw.graph:/data/asw.graph -p 3000:3000 ghcr.io/auto-sea-way/asw:0.12.0
 ```
 
-The planet graph is memory-mapped. Measured on Linux with the 1.44 GB planet file: `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
+The planet graph is memory-mapped. Measured on Linux with the 1.44 GB v4 planet file (the current file is 1.47 GB): `/ready` in 0.2 s when the file is in the page cache (a few seconds from cold disk), 1.38 GB RSS after open, 1.43 GB after four transoceanic routes. Resident memory is the file plus the A* buffer pages a query touches, so a **4 GB instance** runs it comfortably. Wait for `/ready` to return 200 before sending route queries.
 
 See [Deployment Guide](docs/deployment.md) for Docker Compose, Kubernetes, and bare-metal examples.
 
@@ -162,11 +162,11 @@ Built on Hetzner ccx53 (32 dedicated vCPU, 128 GB RAM) in about 4.5 hours:
 
 | Metric | Value |
 |--------|-------|
-| Nodes | 39,068,079 |
-| Edges | 296,619,250 |
-| Graph file size | 1,429 MB (v5, uncompressed, memory-mapped) |
+| Nodes | 40,569,057 |
+| Edges | 306,603,632 |
+| Graph file size | 1,467 MB (v5, uncompressed, memory-mapped) |
 | Connectivity | 100% (single connected component after build-time pruning) |
-| Server memory (RSS) | 1.38 GB after open, 1.43 GB after a transoceanic route mix (measured on the v4 file, 12 MB larger) |
+| Server memory (RSS) | 1.38 GB after open, 1.43 GB after a transoceanic route mix (measured on the 1,437 MB v4 file) |
 | Server memory (total) | plan for ~2.5 GB |
 | Minimum instance | 4 GB RAM, no swap needed |
 
@@ -242,7 +242,7 @@ auto-sea-way computes routes for planning and for software that needs sea distan
 
 - **No depth data.** Routing treats all water as navigable — there is no bathymetry or draft-clearance check. This is generally fine for small craft like sailing boats but may route larger vessels through shallow areas. The `shore_buffer` parameter partially mitigates this by keeping routes off headlands and uncharted near-shore hazards, but it is not a substitute for nautical charts.
 - **No sea-ice data.** The graph comes from land polygons, so ice is modelled with fixed areas: everything north of 80°N is closed, and the Northern Sea Route (Vilkitsky Strait and Severnaya Zemlya) and the Northwest Passage (across the Canadian Arctic Archipelago) are closed unless the request sets `arctic=true`. Ports inside these areas, such as Resolute, need `arctic=true`. Seasonal ice elsewhere, including around Antarctica, is not considered.
-- **Only water inside the OSM coastline, plus selected passages.** Lakes, lagoons and rivers are land in the source data. A harbour behind a river mouth or inside a lagoon is reachable only when a passage entry adds its water (Šibenik is added this way). The Venice lagoon and the Great Lakes are not in the graph. The Chesapeake–Delaware Canal is reachable from the Delaware side only: about 1 nm of Back Creek on the Chesapeake side has no water area in OSM.
+- **Only water inside the OSM coastline, plus selected passages.** Lakes, lagoons and rivers are land in the source data. A harbour behind a river mouth or inside a lagoon is reachable only when a passage entry adds its water (Šibenik is added this way). The Venice lagoon and the Great Lakes are not in the graph. The graph has no cells on the Delaware River north of about 39.85°N, so Philadelphia is not reachable.
 
 ## Data Sources
 
